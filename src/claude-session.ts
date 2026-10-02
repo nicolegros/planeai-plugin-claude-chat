@@ -1,5 +1,5 @@
-import type { CanUseTool, Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { clip, summarizeInput, translate, type ChatEvent } from "./events";
+import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { clip, isEphemeral, summarizeInput, toolInput, translate, type ChatEvent, type SessionMeta } from "./events";
 import { InputQueue } from "./input-queue";
 import type { StoredEvent, TranscriptStore } from "./transcript";
 
@@ -7,6 +7,10 @@ import type { StoredEvent, TranscriptStore } from "./transcript";
 const SNAPSHOT_PAGE_BYTES = 40_000;
 
 export type SessionStatus = "busy" | "idle" | "needs_attention" | "exited";
+
+export type PermissionDecision = "allow" | "allow_session" | "deny";
+
+const BASE_MODES: PermissionMode[] = ["default", "acceptEdits", "plan"];
 
 export type QueryFactory = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => Query;
 
@@ -32,7 +36,7 @@ export interface SessionConfig {
 }
 
 interface PendingPermission {
-  title: string;
+  suggestions: PermissionUpdate[];
   resolve(result: PermissionResult): void;
 }
 
@@ -51,6 +55,7 @@ export class ClaudeSession {
   private readonly pending = new Map<string, PendingPermission>();
   private nextPermission = 0;
   private stopped = false;
+  private meta: SessionMeta;
 
   constructor(
     private readonly config: SessionConfig,
@@ -60,6 +65,10 @@ export class ClaudeSession {
   ) {
     this.events = store.load(config.id);
     this.seq = this.events.at(-1)?.seq ?? 0;
+    // Bypass is offered only to sessions created with auto-approve, which is the only
+    // way the SDK lets a session drop permission prompts later.
+    const modes = config.yolo ? [...BASE_MODES, "bypassPermissions"] : BASE_MODES;
+    this.meta = { model: null, permission_mode: config.yolo ? "bypassPermissions" : "default", modes, models: [], context: null };
   }
 
   get id(): string {
@@ -67,7 +76,7 @@ export class ClaudeSession {
   }
 
   /** One page of the transcript after `afterSeq`, sized to fit a single host frame. */
-  snapshot(afterSeq = 0): { seq: number; status: SessionStatus; events: StoredEvent[]; more: boolean } {
+  snapshot(afterSeq = 0): { seq: number; status: SessionStatus; meta: SessionMeta; events: StoredEvent[]; more: boolean } {
     const remaining = this.events.filter((event) => event.seq > afterSeq);
     const events: StoredEvent[] = [];
     let bytes = 0;
@@ -77,7 +86,7 @@ export class ClaudeSession {
       events.push(event);
       bytes += size;
     }
-    return { seq: this.seq, status: this.status, events, more: events.length < remaining.length };
+    return { seq: this.seq, status: this.status, meta: this.meta, events, more: events.length < remaining.length };
   }
 
   announce(): void {
@@ -113,13 +122,32 @@ export class ClaudeSession {
     await this.query?.interrupt();
   }
 
-  respondToPermission(requestId: string, allowed: boolean): void {
+  respondToPermission(requestId: string, decision: PermissionDecision, reason?: string): void {
     const pending = this.pending.get(requestId);
     if (!pending) throw new Error(`no pending permission request ${requestId}`);
     this.pending.delete(requestId);
-    pending.resolve(allowed ? { behavior: "allow" } : { behavior: "deny", message: "The user denied this action." });
-    this.emit({ type: "permission_resolved", request_id: requestId, allowed });
+    const note = reason?.trim() ? clip(reason.trim(), 2_000) : undefined;
+    if (decision === "deny") {
+      pending.resolve({ behavior: "deny", message: note ? `The user denied this action: ${note}` : "The user denied this action." });
+      this.emit({ type: "permission_resolved", request_id: requestId, allowed: false, ...(note ? { reason: note } : {}) });
+    } else {
+      const remembered = decision === "allow_session" && pending.suggestions.length > 0;
+      pending.resolve(remembered ? { behavior: "allow", updatedPermissions: pending.suggestions } : { behavior: "allow" });
+      this.emit({ type: "permission_resolved", request_id: requestId, allowed: true, ...(remembered ? { remembered } : {}) });
+    }
     this.setStatus(this.pending.size > 0 ? "needs_attention" : "busy");
+  }
+
+  async setPermissionMode(mode: string): Promise<void> {
+    if (!this.meta.modes.includes(mode)) throw new Error(`permission mode ${mode} is not available in this session`);
+    await this.query?.setPermissionMode(mode as PermissionMode);
+    this.updateMeta({ permission_mode: mode });
+  }
+
+  /** `null` returns to the user's configured default model. */
+  async setModel(model: string | null): Promise<void> {
+    await this.query?.setModel(model ?? undefined);
+    this.updateMeta({ model });
   }
 
   stop(): void {
@@ -151,8 +179,9 @@ export class ClaudeSession {
         settingSources: ["user", "project", "local"],
         systemPrompt: { type: "preset", preset: "claude_code" },
         includePartialMessages: true,
-        permissionMode: this.config.yolo ? "bypassPermissions" : "default",
+        permissionMode: this.meta.permission_mode as PermissionMode,
         allowDangerouslySkipPermissions: this.config.yolo,
+        ...(this.meta.model ? { model: this.meta.model } : {}),
         canUseTool: this.canUseTool,
         ...(resume ? { resume: this.config.id } : { sessionId: this.config.id }),
         stderr: (data) => process.stderr.write(data),
@@ -166,7 +195,7 @@ export class ClaudeSession {
 
   private async consume(query: Query): Promise<void> {
     try {
-      for await (const message of query) this.handle(message);
+      for await (const message of query) this.handle(query, message);
     } catch (error) {
       if (!this.stopped) this.emit({ type: "error", message: clip(error instanceof Error ? error.message : String(error), 2_000) });
     } finally {
@@ -181,30 +210,64 @@ export class ClaudeSession {
     }
   }
 
-  private handle(message: SDKMessage): void {
-    if (message.type === "system" && message.subtype === "init" && !this.store.hasStarted(this.config.id)) {
-      this.store.markStarted(this.config.id);
+  private handle(query: Query, message: SDKMessage): void {
+    if (message.type === "system" && message.subtype === "init") {
+      if (!this.store.hasStarted(this.config.id)) this.store.markStarted(this.config.id);
+      void this.loadModels(query);
     }
     for (const event of translate(message)) this.emit(event);
     if (message.type === "result") {
       this.setStatus(this.pending.size > 0 ? "needs_attention" : "idle");
+      void this.loadContextUsage(query);
     } else if (this.status === "idle" && (message.type === "assistant" || message.type === "stream_event")) {
       // A queued follow-up started its own turn after the previous result.
       this.setStatus("busy");
     }
   }
 
+  private async loadModels(query: Query): Promise<void> {
+    try {
+      const models = await query.supportedModels();
+      this.updateMeta({ models: models.map((model) => ({ value: model.value, label: model.displayName })) });
+    } catch (error) {
+      console.error(`failed to list models: ${String(error)}`);
+    }
+  }
+
+  private async loadContextUsage(query: Query): Promise<void> {
+    try {
+      const usage = await query.getContextUsage();
+      this.updateMeta({ context: { total_tokens: usage.totalTokens, max_tokens: usage.maxTokens, percentage: usage.percentage } });
+    } catch (error) {
+      console.error(`failed to read context usage: ${String(error)}`);
+    }
+  }
+
+  private updateMeta(meta: Partial<SessionMeta>): void {
+    this.emit({ type: "meta", meta });
+  }
+
   private readonly canUseTool: CanUseTool = (toolName, input, options) =>
     new Promise<PermissionResult>((resolve) => {
       const requestId = `permission-${++this.nextPermission}`;
       const title = options.title ?? `Claude wants to use ${toolName}`;
-      this.pending.set(requestId, { title, resolve });
+      const suggestions = options.suggestions ?? [];
+      this.pending.set(requestId, { suggestions, resolve });
       options.signal.addEventListener("abort", () => {
         if (!this.pending.delete(requestId)) return;
         resolve({ behavior: "deny", message: "The request was cancelled." });
         this.emit({ type: "permission_resolved", request_id: requestId, allowed: false });
       });
-      this.emit({ type: "permission", request_id: requestId, tool: toolName, title, summary: summarizeInput(input) });
+      const rendered = toolInput(toolName, input);
+      this.emit({
+        type: "permission",
+        request_id: requestId,
+        tool: toolName,
+        title,
+        summary: summarizeInput(input),
+        ...(rendered ? { input: rendered } : {}),
+        can_remember: suggestions.length > 0,
+      });
       this.setStatus("needs_attention");
     });
 
@@ -217,8 +280,9 @@ export class ClaudeSession {
   }
 
   private emit(payload: ChatEvent): void {
+    if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
     const event = { seq: ++this.seq, payload };
-    if (payload.type !== "delta") {
+    if (!isEphemeral(payload)) {
       this.events.push(event);
       this.store.append(this.config.id, event);
     }

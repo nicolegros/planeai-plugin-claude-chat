@@ -17,6 +17,10 @@ export class FakeQuery {
   readonly sent: SDKUserMessage[] = [];
   readonly interrupt = vi.fn(async () => undefined);
   readonly close = vi.fn(() => this.finish());
+  readonly setPermissionMode = vi.fn(async () => {});
+  readonly setModel = vi.fn(async () => {});
+  readonly supportedModels = vi.fn(async () => [{ value: "sonnet", displayName: "Sonnet" }, { value: "opus", displayName: "Opus" }]);
+  readonly getContextUsage = vi.fn(async () => ({ totalTokens: 12_000, maxTokens: 200_000, percentage: 6 }));
   private readonly queue: SDKMessage[] = [];
   private wake: (() => void) | null = null;
   private done = false;
@@ -60,7 +64,14 @@ export function fakeQueryFactory(): { factory: QueryFactory; queries: FakeQuery[
     const fake = new FakeQuery(options, prompt);
     queries.push(fake);
     const generator = fake.stream();
-    return Object.assign(generator, { interrupt: fake.interrupt, close: fake.close }) as unknown as Query;
+    return Object.assign(generator, {
+      interrupt: fake.interrupt,
+      close: fake.close,
+      setPermissionMode: fake.setPermissionMode,
+      setModel: fake.setModel,
+      supportedModels: fake.supportedModels,
+      getContextUsage: fake.getContextUsage,
+    }) as unknown as Query;
   };
   return { factory, queries };
 }

@@ -57,8 +57,8 @@ describe("ClaudeSession", () => {
 
     query.emit(...fixture("bash-turn"));
     await flush();
-    expect(events.map(({ payload }) => payload.type)).toEqual(["user", "tool", "tool_result", "delta", "assistant", "result"]);
-    expect(events.map(({ seq }) => seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(events.map(({ payload }) => payload.type).filter((type) => type !== "meta")).toEqual(["user", "tool", "tool_result", "delta", "assistant", "result"]);
+    expect(events.map(({ seq }) => seq)).toEqual(events.map((_, index) => index + 1));
     expect(statuses).toEqual(["busy", "idle"]);
   });
 
@@ -70,8 +70,9 @@ describe("ClaudeSession", () => {
     first.stop();
 
     const resumed = session();
-    expect(resumed.snapshot().seq).toBe(6);
-    expect(resumed.snapshot().events.map(({ payload }) => payload.type)).not.toContain("delta");
+    const lastStored = events.filter(({ payload }) => !["delta", "meta"].includes(payload.type)).at(-1)!.seq;
+    expect(resumed.snapshot().seq).toBe(lastStored);
+    expect(resumed.snapshot().events.map(({ payload }) => payload.type)).toEqual(["user", "tool", "tool_result", "assistant", "result"]);
     await resumed.send("again");
     expect(fake.queries[1].options).toMatchObject({ resume: SESSION_ID });
     expect(fake.queries[1].options.sessionId).toBeUndefined();
@@ -103,10 +104,58 @@ describe("ClaudeSession", () => {
     expect(request).toMatchObject({ type: "permission", tool: "Edit", title: "Claude wants to edit src/a.ts", summary: "src/a.ts" });
     expect(statuses.at(-1)).toBe("needs_attention");
 
-    chat.respondToPermission((request as { request_id: string }).request_id, true);
+    chat.respondToPermission((request as { request_id: string }).request_id, "allow");
     await expect(decision).resolves.toEqual({ behavior: "allow" });
     expect(events.at(-1)!.payload).toMatchObject({ type: "permission_resolved", allowed: true });
     expect(statuses.at(-1)).toBe("busy");
+  });
+
+  it("remembers an approval for the session with the SDK's suggested rules", async () => {
+    const chat = session();
+    await chat.send("run it");
+    const suggestions = [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test" }], behavior: "allow", destination: "session" }];
+    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "npm test" }, { signal: new AbortController().signal, suggestions, toolUseID: "t" } as never);
+    const request = events.at(-1)!.payload as { request_id: string; can_remember: boolean; input: unknown };
+    expect(request.can_remember).toBe(true);
+    expect(request.input).toEqual({ kind: "bash", command: "npm test" });
+    chat.respondToPermission(request.request_id, "allow_session");
+    await expect(decision).resolves.toEqual({ behavior: "allow", updatedPermissions: suggestions });
+    expect(events.at(-1)!.payload).toMatchObject({ type: "permission_resolved", allowed: true, remembered: true });
+  });
+
+  it("tells Claude why the user denied an action", async () => {
+    const chat = session();
+    await chat.send("clean up");
+    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf dist" }, { signal: new AbortController().signal, toolUseID: "t" } as never);
+    const { request_id } = events.at(-1)!.payload as { request_id: string };
+    chat.respondToPermission(request_id, "deny", "keep the build output");
+    await expect(decision).resolves.toEqual({ behavior: "deny", message: "The user denied this action: keep the build output" });
+    expect(events.at(-1)!.payload).toMatchObject({ allowed: false, reason: "keep the build output" });
+  });
+
+  it("switches permission mode and model, live and for the next start", async () => {
+    const chat = session();
+    await chat.setPermissionMode("plan");
+    await chat.setModel("opus");
+    await expect(chat.setPermissionMode("bypassPermissions")).rejects.toThrow("not available");
+    await chat.send("plan it");
+    expect(fake.queries[0].options).toMatchObject({ permissionMode: "plan", model: "opus" });
+    await chat.setPermissionMode("acceptEdits");
+    expect(fake.queries[0].setPermissionMode).toHaveBeenCalledWith("acceptEdits");
+    expect(chat.snapshot().meta).toMatchObject({ permission_mode: "acceptEdits", model: "opus", modes: ["default", "acceptEdits", "plan"] });
+  });
+
+  it("reports models after init and context usage after each turn", async () => {
+    const chat = session({ yolo: true });
+    await chat.send("hello");
+    fake.queries[0].emit(...fixture("bash-turn"));
+    await flush();
+    await flush();
+    expect(chat.snapshot().meta).toMatchObject({
+      modes: ["default", "acceptEdits", "plan", "bypassPermissions"],
+      models: [{ value: "sonnet", label: "Sonnet" }, { value: "opus", label: "Opus" }],
+      context: { total_tokens: 12_000, max_tokens: 200_000, percentage: 6 },
+    });
   });
 
   it("denies outstanding permission requests when interrupted", async () => {

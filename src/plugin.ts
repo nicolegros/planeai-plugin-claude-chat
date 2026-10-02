@@ -99,8 +99,24 @@ export class ClaudeHeadlessPlugin {
       }
       case "claude.permission.respond": {
         const request = object(params);
-        if (typeof request.allow !== "boolean") throw new RpcError(INVALID_PARAMS, "allow must be a boolean");
-        this.session(request).respondToPermission(string(request, "request_id"), request.allow);
+        const decision = request.decision;
+        if (decision !== "allow" && decision !== "allow_session" && decision !== "deny") {
+          throw new RpcError(INVALID_PARAMS, "decision must be allow, allow_session or deny");
+        }
+        const reason = typeof request.reason === "string" ? request.reason : undefined;
+        this.session(request).respondToPermission(string(request, "request_id"), decision, reason);
+        return {};
+      }
+      case "claude.mode.set": {
+        const request = object(params);
+        await this.session(request).setPermissionMode(string(request, "mode"));
+        return {};
+      }
+      case "claude.model.set": {
+        const request = object(params);
+        const model = request.model;
+        if (model !== null && (typeof model !== "string" || !model.trim())) throw new RpcError(INVALID_PARAMS, "model must be a nonempty string or null");
+        await this.session(request).setModel(model);
         return {};
       }
       default:

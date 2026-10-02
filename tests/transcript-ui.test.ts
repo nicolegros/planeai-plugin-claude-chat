@@ -24,7 +24,7 @@ describe("Transcript", () => {
     const transcript = new Transcript();
     transcript.apply({ seq: 1, payload: { type: "tool", id: "t1", name: "Bash", summary: "npm test" } });
     transcript.apply({ seq: 2, payload: { type: "tool_result", tool_use_id: "t1", is_error: true, summary: "1 failed" } });
-    transcript.apply({ seq: 3, payload: { type: "permission", request_id: "p1", tool: "Edit", title: "Edit a.ts?", summary: "a.ts" } });
+    transcript.apply({ seq: 3, payload: { type: "permission", request_id: "p1", tool: "Edit", title: "Edit a.ts?", summary: "a.ts", can_remember: false } });
     transcript.apply({ seq: 4, payload: { type: "permission_resolved", request_id: "p1", allowed: false } });
     const [tool, permission] = transcript.entries;
     expect(tool).toMatchObject({ kind: "tool", result: { is_error: true, summary: "1 failed" } });

@@ -76,7 +76,7 @@ describe("Chat", () => {
     await settle();
     expect(value.host.session.send).toHaveBeenCalledWith("run the tests");
 
-    push(1, { type: "permission", request_id: "p1", tool: "Bash", title: "Claude wants to run npm test", summary: "npm test" });
+    push(1, { type: "permission", request_id: "p1", tool: "Bash", title: "Claude wants to run npm test", summary: "npm test", can_remember: false });
     await settle();
     const allow = [...document.querySelectorAll("button")].find((button) => button.textContent === "Allow")!;
     allow.click();
