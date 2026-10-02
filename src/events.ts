@@ -30,6 +30,8 @@ export interface SessionMeta {
   permission_mode: string;
   /** Permission modes this session may switch to. */
   modes: string[];
+  /** The conversation is continuing in a terminal tab; the chat is read-only. */
+  handed_off: boolean;
   models: ModelOption[];
   context: ContextUsage | null;
 }
@@ -48,6 +50,7 @@ export type ChatEvent =
   | { type: "permission_resolved"; request_id: string; allowed: boolean; remembered?: boolean; reason?: string }
   | { type: "result"; is_error: boolean; subtype: string; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { type: "error"; message: string }
+  | { type: "handoff"; in_terminal: boolean }
   | { type: "meta"; meta: Partial<SessionMeta> };
 
 export function isEphemeral(event: ChatEvent): boolean {

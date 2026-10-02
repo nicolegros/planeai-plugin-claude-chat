@@ -68,7 +68,7 @@ export class ClaudeSession {
     // Bypass is offered only to sessions created with auto-approve, which is the only
     // way the SDK lets a session drop permission prompts later.
     const modes = config.yolo ? [...BASE_MODES, "bypassPermissions"] : BASE_MODES;
-    this.meta = { model: null, permission_mode: config.yolo ? "bypassPermissions" : "default", modes, models: [], context: null };
+    this.meta = { model: null, permission_mode: config.yolo ? "bypassPermissions" : "default", modes, models: [], context: null, handed_off: false };
   }
 
   get id(): string {
@@ -95,6 +95,7 @@ export class ClaudeSession {
 
   async send(text: string): Promise<void> {
     if (this.stopped) throw new Error("session is stopped");
+    if (this.meta.handed_off) throw new Error("This session is continuing in a terminal tab. Close it or select Return to chat first.");
     if (!this.config.claudeExecutable) {
       this.emit({ type: "error", message: "Claude Code was not found on PATH. Install it, then run `claude` once in a terminal to log in." });
       throw new Error("claude executable not found on PATH");
@@ -150,13 +151,48 @@ export class ClaudeSession {
     this.updateMeta({ model });
   }
 
+  /**
+   * Detach so Claude Code's TUI can continue this conversation, and return the
+   * command that does it. Only one side may drive a session at a time.
+   */
+  async handoff(): Promise<string[]> {
+    if (!this.config.claudeExecutable) throw new Error("claude executable not found on PATH");
+    if (!this.meta.handed_off) {
+      if (this.status === "busy" || this.status === "needs_attention") await this.interrupt();
+      this.detach("Continued in the terminal");
+      this.emit({ type: "handoff", in_terminal: true });
+      this.updateMeta({ handed_off: true });
+      this.setStatus("idle");
+    }
+    const resume = this.store.hasStarted(this.config.id) || (await this.runtime.hasTranscript(this.config.id, this.config.cwd));
+    const mode = this.meta.permission_mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : ["--permission-mode", this.meta.permission_mode];
+    return [
+      this.config.claudeExecutable,
+      ...(resume ? ["--resume", this.config.id] : ["--session-id", this.config.id]),
+      ...mode,
+      ...(this.meta.model ? ["--model", this.meta.model] : []),
+    ];
+  }
+
+  /** The terminal closed; the next prompt resumes the conversation here. */
+  handback(): void {
+    if (!this.meta.handed_off) return;
+    this.emit({ type: "handoff", in_terminal: false });
+    this.updateMeta({ handed_off: false });
+  }
+
   stop(): void {
     this.stopped = true;
-    this.denyPending("The session was stopped");
-    this.input?.close();
-    this.query?.close();
+    this.detach("The session was stopped");
+  }
+
+  private detach(reason: string): void {
+    this.denyPending(reason);
+    const query = this.query;
     this.query = null;
+    this.input?.close();
     this.input = null;
+    query?.close();
   }
 
   private ensureQuery(): Promise<InputQueue<SDKUserMessage>> {

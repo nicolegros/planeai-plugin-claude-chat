@@ -69,6 +69,14 @@
     void run(() => context.host.call("claude.mode.set", { session_id: sessionId, mode }));
   }
 
+  function handoff(): void {
+    void run(() => context.host.session.handoff());
+  }
+
+  function handback(): void {
+    void run(() => context.host.session.handback());
+  }
+
   function setModel(model: string | null): void {
     void run(() => context.host.call("claude.model.set", { session_id: sessionId, model }));
   }
@@ -140,7 +148,7 @@
 </script>
 
 <main class="chat">
-  <Header meta={transcript.meta} onMode={setMode} onModel={setModel} />
+  <Header meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff} />
   <div class="log" bind:this={log} onscroll={onScroll} aria-live="polite">
     {#if transcript.entries.length === 0 && !transcript.live}
       <p class="empty">Send a message to start Claude in this worktree.</p>
@@ -158,6 +166,8 @@
         <p class="turn" class:failed={entry.is_error}>{turnSummary(entry)}</p>
       {:else if entry.kind === "error"}
         <p class="error" role="alert">{entry.message}</p>
+      {:else if entry.kind === "handoff"}
+        <p class="divider">{entry.in_terminal ? "Continued in the terminal" : "Back in the chat. Turns taken in the terminal are in Claude's history but not shown here."}</p>
       {/if}
     {/each}
     {#if transcript.live}
@@ -166,6 +176,12 @@
       <p class="working">{status === "needs_attention" ? "Waiting for your answer" : "Claude is working"}<span class="ellipsis" aria-hidden="true"></span></p>
     {/if}
   </div>
+  {#if transcript.meta.handed_off}
+    <div class="handed-off" role="status">
+      <p>This conversation is continuing in a terminal tab. Closing that tab brings it back here.</p>
+      <button type="button" class="primary" onclick={handback}>Return to chat</button>
+    </div>
+  {:else}
   <form class="composer" onsubmit={(event) => { event.preventDefault(); send(); }}>
     <textarea
       bind:this={composer}
@@ -181,6 +197,7 @@
     {/if}
     <button type="submit" class="primary" disabled={!draft.trim()}>{working ? "Queue" : "Send"}</button>
   </form>
+  {/if}
 </main>
 
 <style>
@@ -193,6 +210,10 @@
   .turn { color: var(--planeai-text-subtle); font-size: 11.5px; font-variant-numeric: tabular-nums; }
   .failed, .error { color: var(--planeai-danger); }
   .working { color: var(--planeai-text-subtle); font-size: 12.5px; }
+  .divider { display: flex; align-items: center; gap: var(--planeai-space-2); color: var(--planeai-text-subtle); font-size: 11.5px; }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--planeai-border); }
+  .handed-off { display: flex; align-items: center; gap: var(--planeai-space-3); padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); background: var(--planeai-surface); }
+  .handed-off p { flex: 1; color: var(--planeai-text-muted); }
   .ellipsis::after { content: "…"; animation: blink 1.4s steps(4, end) infinite; }
   .composer { display: flex; gap: var(--planeai-space-2); align-items: flex-end; padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); }
   textarea { flex: 1; resize: none; min-height: 34px; max-height: 240px; line-height: 18px; }

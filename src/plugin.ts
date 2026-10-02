@@ -92,6 +92,11 @@ export class ClaudeHeadlessPlugin {
         if (request.reason === "destroy") this.store.remove(id);
         return { stopped: true };
       }
+      case "provider.session.handoff":
+        return { argv: await this.session(object(params)).handoff() };
+      case "provider.session.handback":
+        this.session(object(params)).handback();
+        return {};
       case "claude.snapshot": {
         const request = object(params);
         const after = typeof request.after_seq === "number" ? request.after_seq : 0;

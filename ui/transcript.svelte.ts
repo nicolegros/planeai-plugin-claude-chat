@@ -18,9 +18,10 @@ export type Entry =
   | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string } | null }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
   | { kind: "result"; seq: number; is_error: boolean; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
-  | { kind: "error"; seq: number; message: string };
+  | { kind: "error"; seq: number; message: string }
+  | { kind: "handoff"; seq: number; in_terminal: boolean };
 
-const EMPTY_META: SessionMeta = { model: null, permission_mode: "default", modes: [], models: [], context: null };
+const EMPTY_META: SessionMeta = { model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false };
 
 /** Folds the ordered event stream into renderable entries; events at or below `seq` are ignored. */
 export class Transcript {
@@ -81,6 +82,10 @@ export class Transcript {
       case "error":
         this.live = "";
         this.entries.push({ kind: "error", seq, message: event.message });
+        return;
+      case "handoff":
+        this.live = "";
+        this.entries.push({ kind: "handoff", seq, in_terminal: event.in_terminal });
         return;
     }
   }

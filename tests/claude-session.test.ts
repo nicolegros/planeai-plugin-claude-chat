@@ -158,6 +158,33 @@ describe("ClaudeSession", () => {
     });
   });
 
+  it("hands the conversation to the terminal and refuses input until it comes back", async () => {
+    const chat = session();
+    await chat.send("hello");
+    fake.queries[0].emit(...fixture("bash-turn"));
+    await flush();
+    await chat.setPermissionMode("plan");
+    await chat.setModel("opus");
+
+    const argv = await chat.handoff();
+    expect(argv).toEqual(["/usr/local/bin/claude", "--resume", SESSION_ID, "--permission-mode", "plan", "--model", "opus"]);
+    expect(fake.queries[0].close).toHaveBeenCalled();
+    expect(chat.snapshot().meta.handed_off).toBe(true);
+    expect(statuses.at(-1)).toBe("idle");
+    await expect(chat.send("from the chat")).rejects.toThrow("continuing in a terminal");
+
+    chat.handback();
+    expect(chat.snapshot().meta.handed_off).toBe(false);
+    expect(chat.snapshot().events.map(({ payload }) => payload.type).filter((type) => type === "handoff")).toHaveLength(2);
+    await chat.send("back in the chat");
+    expect(fake.queries[1].options).toMatchObject({ resume: SESSION_ID });
+  });
+
+  it("starts a new terminal session under the PlaneAI id when Claude never ran", async () => {
+    const argv = await session({ yolo: true }).handoff();
+    expect(argv).toEqual(["/usr/local/bin/claude", "--session-id", SESSION_ID, "--dangerously-skip-permissions"]);
+  });
+
   it("denies outstanding permission requests when interrupted", async () => {
     const chat = session();
     await chat.send("edit it");

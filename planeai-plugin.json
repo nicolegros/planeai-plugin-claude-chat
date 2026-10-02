@@ -10,13 +10,18 @@
     "linux-x64": "bin/linux-x64/planeai-plugin-claude-headless",
     "windows-x64": "bin/windows-x64/planeai-plugin-claude-headless.exe"
   },
-  "capabilities": ["providers"],
+  "capabilities": [
+    "providers"
+  ],
   "providers": [
     {
       "id": "claude",
       "label": "Claude (chat)",
       "entrypoint": "ui/chat.js",
-      "supports": ["yolo"]
+      "supports": [
+        "yolo",
+        "handoff"
+      ]
     }
   ]
 }

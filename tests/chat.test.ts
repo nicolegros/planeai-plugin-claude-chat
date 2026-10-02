@@ -9,6 +9,7 @@ const META: SessionMeta = {
   modes: ["default", "acceptEdits", "plan"],
   models: [{ value: "opus", label: "Opus" }],
   context: null,
+  handed_off: false,
 };
 
 function context(snapshot: Partial<Snapshot> = {}) {
@@ -21,6 +22,8 @@ function context(snapshot: Partial<Snapshot> = {}) {
       session: {
         send: vi.fn(async () => {}),
         interrupt: vi.fn(async () => {}),
+        handoff: vi.fn(async () => {}),
+        handback: vi.fn(async () => {}),
         onEvent: (next) => {
           listener = next;
           return () => (listener = null);
@@ -177,6 +180,26 @@ describe("Chat", () => {
     expect(harness.value.host.session.send).toHaveBeenCalledWith("also update the docs");
     textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(harness.value.host.session.interrupt).toHaveBeenCalledOnce();
+  });
+
+  it("opens the terminal and shows a read-only banner until the session comes back", async () => {
+    const harness = await render();
+    button("Open in terminal").click();
+    expect(harness.value.host.session.handoff).toHaveBeenCalledOnce();
+
+    harness.push(1, { type: "handoff", in_terminal: true });
+    harness.push(2, { type: "meta", meta: { handed_off: true } });
+    await settle();
+    expect(document.querySelector("textarea")).toBeNull();
+    expect(() => button("Open in terminal")).toThrow();
+    expect(document.body.textContent).toContain("Continued in the terminal");
+    button("Return to chat").click();
+    expect(harness.value.host.session.handback).toHaveBeenCalledOnce();
+
+    harness.push(3, { type: "handoff", in_terminal: false });
+    harness.push(4, { type: "meta", meta: { handed_off: false } });
+    await settle();
+    expect(document.querySelector("textarea")).not.toBeNull();
   });
 
   it("summarizes each turn with duration, cost and tokens", async () => {

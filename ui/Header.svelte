@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { SessionMeta } from "./host";
 
-  let { meta, onMode, onModel }: { meta: SessionMeta; onMode: (mode: string) => void; onModel: (model: string | null) => void } = $props();
+  let { meta, onMode, onModel, onHandoff }: { meta: SessionMeta; onMode: (mode: string) => void; onModel: (model: string | null) => void; onHandoff?: () => void } = $props();
 
   const MODE_LABELS: Record<string, string> = {
     default: "Ask before acting",
@@ -42,6 +42,9 @@
       <span class="context-label">{contextLabel}</span>
     </div>
   {/if}
+  {#if onHandoff && !meta.handed_off}
+    <button type="button" class="handoff" class:pushed={!meta.context} onclick={onHandoff} title="Continue this conversation in Claude Code's terminal UI">Open in terminal</button>
+  {/if}
 </header>
 
 <style>
@@ -53,5 +56,7 @@
   .meter { width: 64px; height: 4px; border-radius: 2px; background: var(--planeai-border); overflow: hidden; }
   .fill { display: block; height: 100%; background: var(--planeai-accent); }
   .fill.high { background: var(--planeai-warning); }
+  .handoff { min-height: 28px; padding: 3px 10px; font-size: 12.5px; }
+  .handoff.pushed { margin-left: auto; }
   .context-label { color: var(--planeai-text-subtle); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 </style>

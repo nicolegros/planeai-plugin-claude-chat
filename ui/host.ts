@@ -11,6 +11,8 @@ export interface ProviderUiContext {
       interrupt(): Promise<void>;
       /** Payloads are this plugin's own ChatEvents, forwarded opaquely by the host. */
       onEvent(listener: (event: StoredEvent) => void): () => void;
+      handoff(): Promise<void>;
+      handback(): Promise<void>;
     };
     data: { notify(message: string, kind?: "success" | "error"): void };
     navigation: { openExternal(url: string): void };
