@@ -9,11 +9,13 @@
 
   let { context }: { context: ProviderUiContext } = $props();
 
+  /** PlaneAI's limit for one prompt, so it fits a single JSON-RPC frame. */
+  const MAX_MESSAGE_BYTES = 48 * 1024;
+
   const transcript = new Transcript();
   let draft = $state("");
   /** Streaming text re-rendered as markdown at most once per frame, not once per delta. */
   let liveMarkdown = $state("");
-  let liveFrame = 0;
   let log: HTMLElement | undefined = $state();
   let composer: HTMLTextAreaElement | undefined = $state();
   let unsubscribe: (() => void) | undefined;
@@ -21,18 +23,17 @@
 
   const status = $derived(transcript.status);
   const working = $derived(status === "busy" || status === "needs_attention");
+  const sessionId = $derived(context.session.id);
 
   $effect(() => {
     const live = transcript.live;
     if (!live) {
-      cancelAnimationFrame(liveFrame);
       liveMarkdown = "";
       return;
     }
-    cancelAnimationFrame(liveFrame);
-    liveFrame = requestAnimationFrame(() => (liveMarkdown = live));
+    const frame = requestAnimationFrame(() => (liveMarkdown = live));
+    return () => cancelAnimationFrame(frame);
   });
-  const sessionId = $derived(context.session.id);
 
   function apply(event: StoredEvent): void {
     transcript.apply(event);
@@ -61,6 +62,10 @@
   function send(): void {
     const text = draft.trim();
     if (!text) return;
+    if (new TextEncoder().encode(text).length > MAX_MESSAGE_BYTES) {
+      context.host.data.notify(`This message is too long to send; keep it under ${MAX_MESSAGE_BYTES / 1024} KB.`);
+      return;
+    }
     draft = "";
     stickToBottom = true;
     void resizeComposer();
@@ -159,7 +164,7 @@
 
 <main class="chat">
   <Header meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff} />
-  <div class="log" bind:this={log} onscroll={onScroll} role="log" aria-label="Conversation">
+  <div class="log" bind:this={log} onscroll={onScroll} role="log" aria-label="Conversation" aria-busy={!!transcript.live}>
     {#if transcript.entries.length === 0 && !transcript.live}
       <p class="empty">Send a message to start Claude in this worktree.</p>
     {/if}
@@ -175,7 +180,7 @@
       {:else if entry.kind === "result"}
         <p class="turn" class:failed={entry.is_error}>{turnSummary(entry)}</p>
       {:else if entry.kind === "error"}
-        <p class="error" role="alert">{entry.message}</p>
+        <p class="error">{entry.message}</p>
       {:else if entry.kind === "handoff"}
         <p class="divider">{entry.in_terminal ? "Continued in the terminal" : "Back in the chat. Turns taken in the terminal are in Claude's history but not shown here."}</p>
       {/if}
@@ -183,7 +188,7 @@
     {#if transcript.live}
       <div class="message assistant"><Markdown text={liveMarkdown || transcript.live} onLink={openExternal} /></div>
     {:else if working}
-      <p class="working">{status === "needs_attention" ? "Waiting for your answer" : "Claude is working"}<span class="ellipsis" aria-hidden="true"></span></p>
+      <p class="working" aria-hidden="true">{status === "needs_attention" ? "Waiting for your answer" : "Claude is working"}<span class="ellipsis"></span></p>
     {/if}
   </div>
   <p class="visually-hidden" role="status">{status === "needs_attention" ? "Claude is waiting for your answer" : working ? "Claude is working" : ""}</p>

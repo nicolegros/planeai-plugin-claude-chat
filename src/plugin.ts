@@ -59,7 +59,7 @@ export class ClaudeHeadlessPlugin {
     private readonly runtime: ClaudeRuntime,
   ) {}
 
-  async handle(method: string, params: unknown): Promise<unknown> {
+  async handle(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     switch (method) {
       case "plugin.handshake":
         return {
@@ -75,10 +75,10 @@ export class ClaudeHeadlessPlugin {
         return { stopping: true };
       case "provider.session.start":
       case "provider.session.resume":
-        return await this.open(object(params), method === "provider.session.start");
+        return await this.open(object(params), method === "provider.session.start", signal);
       case "provider.session.send": {
         const request = object(params);
-        await this.session(request).send(string(request, "text"));
+        await this.session(request).send(string(request, "text"), signal);
         return { accepted: true };
       }
       case "provider.session.interrupt":
@@ -129,7 +129,7 @@ export class ClaudeHeadlessPlugin {
     }
   }
 
-  private async open(params: Record<string, unknown>, isNew: boolean): Promise<Record<string, never>> {
+  private async open(params: Record<string, unknown>, isNew: boolean, signal?: AbortSignal): Promise<Record<string, never>> {
     const id = string(params, "session_id");
     if (params.provider_id !== PROVIDER_ID) throw new RpcError(INVALID_PARAMS, `unknown provider ${String(params.provider_id)}`);
     // A repeated resume must not cut off the turn the live session is running.
@@ -153,7 +153,7 @@ export class ClaudeHeadlessPlugin {
     const prompt = params.initial_prompt;
     if (isNew && typeof prompt === "string" && prompt.trim()) {
       try {
-        await session.send(prompt);
+        await session.send(prompt, signal);
       } catch (error) {
         // The host rolls the session back, so nothing of it may linger here.
         session.stop();

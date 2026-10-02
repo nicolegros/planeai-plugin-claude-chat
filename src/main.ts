@@ -22,8 +22,8 @@ const plugin = new ClaudeHeadlessPlugin(
     hasTranscript: async (sessionId, cwd) => (await getSessionMessages(sessionId, { dir: cwd, limit: 1 })).length > 0,
   },
 );
-peer = new JsonRpcPeer(process.stdin, process.stdout, async (method, params) => {
-  const result = await plugin.handle(method, params);
+peer = new JsonRpcPeer(process.stdin, process.stdout, async (method, params, signal) => {
+  const result = await plugin.handle(method, params, signal);
   // Exit once the acknowledgement has been flushed to the host.
   if (method === "plugin.shutdown") setTimeout(() => process.stdout.write("", () => process.exit(0)), 0);
   return result;

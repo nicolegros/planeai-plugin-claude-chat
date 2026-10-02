@@ -24,7 +24,7 @@ function plugin() {
 const start = (session_id = SESSION_ID) => ({ session_id, provider_id: "claude", cwd: "/workspace", env: {}, yolo: false });
 
 describe("ClaudeHeadlessPlugin", () => {
-  it("hands shakes with the identity the manifest declares", async () => {
+  it("handshakes with the identity the manifest declares", async () => {
     const result = await plugin().instance.handle("plugin.handshake", { host_api_version: HOST_API_VERSION });
     expect(result).toMatchObject({ plugin_id: manifest.id, plugin_name: manifest.name, plugin_version: manifest.version, host_api_version: manifest.host_api_version });
     expect(manifest.providers[0].id).toBe("claude");
@@ -54,6 +54,16 @@ describe("ClaudeHeadlessPlugin", () => {
     expect(existsSync(join(root, `${SESSION_ID}.jsonl`))).toBe(true);
     await instance.handle("provider.session.stop", { session_id: SESSION_ID, reason: "destroy" });
     expect(existsSync(join(root, `${SESSION_ID}.jsonl`))).toBe(false);
+  });
+
+  it("drops a session whose start was cancelled before its first prompt ran", async () => {
+    const { instance, fake } = plugin();
+    const controller = new AbortController();
+    const starting = instance.handle("provider.session.start", { ...start(), env: { PATH: "/usr/bin" }, initial_prompt: "hello" }, controller.signal);
+    controller.abort();
+    await starting.catch(() => {});
+    await expect(instance.handle("claude.snapshot", { session_id: SESSION_ID })).rejects.toThrow("not running");
+    expect(fake.queries.flatMap((query) => query.sent)).toHaveLength(0);
   });
 
   it("finds claude on the PATH the host provides", () => {

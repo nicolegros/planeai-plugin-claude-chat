@@ -23,6 +23,9 @@ describe("translate", () => {
     expect(toolInput("MultiEdit", { file_path: "a.ts", edits: [{ old_string: "1", new_string: "2" }, { old_string: "3", new_string: "4" }] })).toMatchObject({ edits: [{ new_string: "2" }, { new_string: "4" }] });
     expect(toolInput("Write", { file_path: "b.ts", content: "x" })).toEqual({ kind: "write", file_path: "b.ts", content: "x" });
     expect(toolInput("Grep", { pattern: "x" })).toBeUndefined();
+    const many = toolInput("MultiEdit", { file_path: "a.ts", edits: Array.from({ length: 20 }, (_, i) => ({ old_string: `${i}`, new_string: `${i + 1}` })) });
+    expect(many).toMatchObject({ hidden_edits: 8 });
+    expect(many?.kind === "edit" && many.edits).toHaveLength(12);
     const large = toolInput("Edit", { file_path: "a.ts", old_string: "o".repeat(50_000), new_string: "n".repeat(50_000) });
     expect(JSON.stringify(large).length).toBeLessThan(8_000);
   });

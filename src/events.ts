@@ -3,7 +3,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 /** What the chat needs to render a tool call; anything else falls back to the summary. */
 export type ToolInput =
   | { kind: "bash"; command: string; description?: string }
-  | { kind: "edit"; file_path: string; edits: { old_string: string; new_string: string }[] }
+  | { kind: "edit"; file_path: string; edits: { old_string: string; new_string: string }[]; hidden_edits?: number }
   | { kind: "write"; file_path: string; content: string };
 
 export interface TokenUsage {
@@ -14,6 +14,8 @@ export interface TokenUsage {
 }
 
 export type SessionStatus = "busy" | "idle" | "needs_attention" | "exited";
+
+export type PermissionDecision = "allow" | "allow_session" | "deny";
 
 export interface ModelOption {
   value: string;
@@ -123,10 +125,8 @@ function edit(file_path: string, edits: { old_string: string; new_string: string
   return {
     kind: "edit",
     file_path,
-    edits: [
-      ...shown.map((entry) => ({ old_string: clip(entry.old_string, budget), new_string: clip(entry.new_string, budget) })),
-      ...(hidden > 0 ? [{ old_string: "", new_string: `… ${hidden} more edits` }] : []),
-    ],
+    edits: shown.map((entry) => ({ old_string: clip(entry.old_string, budget), new_string: clip(entry.new_string, budget) })),
+    ...(hidden > 0 ? { hidden_edits: hidden } : {}),
   };
 }
 

@@ -1,14 +1,10 @@
 import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { clip, isEphemeral, summarizeInput, toolInput, translate, type ChatEvent, type SessionMeta, type SessionStatus } from "./events";
+import { clip, isEphemeral, summarizeInput, toolInput, translate, type ChatEvent, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
 import { InputQueue } from "./input-queue";
 import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
 
 /** Leaves headroom under the 64 KiB frame for the response envelope. */
 const SNAPSHOT_PAGE_BYTES = 40_000;
-
-export type { SessionStatus };
-
-export type PermissionDecision = "allow" | "allow_session" | "deny";
 
 const BASE_MODES: PermissionMode[] = ["default", "acceptEdits", "plan"];
 
@@ -118,7 +114,8 @@ export class ClaudeSession {
     this.setStatus(this.status, true);
   }
 
-  async send(text: string): Promise<void> {
+  /** `signal` is the request's: a prompt whose request was cancelled is never delivered. */
+  async send(text: string, signal?: AbortSignal): Promise<void> {
     if (this.stopped) throw new Error("session is stopped");
     if (this.meta.handed_off) throw new Error("This session is continuing in a terminal tab. Close it or select Return to chat first.");
     if (!this.config.claudeExecutable) {
@@ -137,6 +134,7 @@ export class ClaudeSession {
       }
       throw error;
     }
+    if (signal?.aborted) throw new Error("request cancelled");
     input.push({
       type: "user",
       message: { role: "user", content: text },

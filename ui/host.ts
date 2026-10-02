@@ -1,5 +1,4 @@
-import type { PermissionDecision } from "../src/claude-session";
-import type { ChatEvent, ContextUsage, ModelOption, SessionMeta, SessionStatus, TokenUsage, ToolInput } from "../src/events";
+import type { ChatEvent, ContextUsage, ModelOption, PermissionDecision, SessionMeta, SessionStatus, TokenUsage, ToolInput } from "../src/events";
 import type { StoredEvent } from "../src/transcript";
 
 /** The slice of PlaneAI's plugin UI bridge a provider session UI uses. */

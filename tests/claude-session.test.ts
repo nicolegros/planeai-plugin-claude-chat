@@ -2,8 +2,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { ClaudeSession, type SessionStatus } from "../src/claude-session";
-import type { ChatEvent } from "../src/events";
+import { ClaudeSession } from "../src/claude-session";
+import type { ChatEvent, SessionStatus } from "../src/events";
 import { TranscriptStore } from "../src/transcript";
 import { fakeQueryFactory, fixture, flush } from "./helpers";
 
@@ -118,6 +118,16 @@ describe("ClaudeSession", () => {
     const restarted = session();
     expect(restarted.snapshot().meta.handed_off).toBe(true);
     await expect(restarted.send("hello")).rejects.toThrow("continuing in a terminal");
+  });
+
+  it("never delivers a prompt whose request was cancelled while Claude started", async () => {
+    const controller = new AbortController();
+    const chat = session();
+    const sending = chat.send("late", controller.signal);
+    controller.abort();
+    await expect(sending).rejects.toThrow("request cancelled");
+    await flush();
+    expect(fake.queries[0].sent).toHaveLength(0);
   });
 
   it("does not start Claude when the session stops while it was checking for a transcript", async () => {
