@@ -1,4 +1,4 @@
-import type { ChatEvent, SessionMeta, StoredEvent, TokenUsage, ToolInput } from "./host";
+import type { ChatEvent, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput } from "./host";
 
 export interface PermissionEntry {
   request_id: string;
@@ -29,6 +29,7 @@ export class Transcript {
   /** Streaming text of the assistant message in progress. */
   live = $state("");
   meta = $state<SessionMeta>({ ...EMPTY_META });
+  status = $state<SessionStatus>("idle");
   seq = 0;
 
   apply({ seq, payload }: StoredEvent): void {
@@ -48,6 +49,9 @@ export class Transcript {
         return;
       case "meta":
         this.meta = { ...this.meta, ...event.meta };
+        return;
+      case "status":
+        this.status = event.status;
         return;
       case "user":
         this.entries.push({ kind: "user", seq, text: event.text });

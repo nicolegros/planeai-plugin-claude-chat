@@ -202,6 +202,18 @@ describe("Chat", () => {
     expect(document.querySelector("textarea")).not.toBeNull();
   });
 
+  it("follows the sidecar's status rather than guessing it from events", async () => {
+    const harness = await render();
+    harness.push(1, { type: "status", status: "busy" });
+    await settle();
+    expect(button("Stop")).toBeTruthy();
+    expect(document.querySelector("[role=status]")?.textContent).toBe("Claude is working");
+    // A turn can end without a result, e.g. when Claude exits; the status still clears it.
+    harness.push(2, { type: "status", status: "idle" });
+    await settle();
+    expect(() => button("Stop")).toThrow();
+  });
+
   it("summarizes each turn with duration, cost and tokens", async () => {
     const harness = await render();
     harness.push(1, {

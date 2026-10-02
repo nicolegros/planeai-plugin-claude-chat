@@ -82,7 +82,7 @@ export class ClaudeHeadlessPlugin {
         return { accepted: true };
       }
       case "provider.session.interrupt":
-        await this.session(object(params)).interrupt();
+        this.session(object(params)).interrupt();
         return {};
       case "provider.session.stop": {
         const request = object(params);
@@ -114,14 +114,14 @@ export class ClaudeHeadlessPlugin {
       }
       case "claude.mode.set": {
         const request = object(params);
-        await this.session(request).setPermissionMode(string(request, "mode"));
+        this.session(request).setPermissionMode(string(request, "mode"));
         return {};
       }
       case "claude.model.set": {
         const request = object(params);
         const model = request.model;
         if (model !== null && (typeof model !== "string" || !model.trim())) throw new RpcError(INVALID_PARAMS, "model must be a nonempty string or null");
-        await this.session(request).setModel(model);
+        this.session(request).setModel(model);
         return {};
       }
       default:
@@ -132,6 +132,8 @@ export class ClaudeHeadlessPlugin {
   private async open(params: Record<string, unknown>, isNew: boolean): Promise<Record<string, never>> {
     const id = string(params, "session_id");
     if (params.provider_id !== PROVIDER_ID) throw new RpcError(INVALID_PARAMS, `unknown provider ${String(params.provider_id)}`);
+    // A repeated resume must not cut off the turn the live session is running.
+    if (!isNew && this.sessions.has(id)) return {};
     this.sessions.get(id)?.stop();
     const env = environment(params);
     const session = new ClaudeSession(
@@ -149,7 +151,17 @@ export class ClaudeHeadlessPlugin {
     this.sessions.set(id, session);
     session.announce();
     const prompt = params.initial_prompt;
-    if (isNew && typeof prompt === "string" && prompt.trim()) await session.send(prompt);
+    if (isNew && typeof prompt === "string" && prompt.trim()) {
+      try {
+        await session.send(prompt);
+      } catch (error) {
+        // The host rolls the session back, so nothing of it may linger here.
+        session.stop();
+        this.sessions.delete(id);
+        this.store.remove(id);
+        throw error;
+      }
+    }
     return {};
   }
 

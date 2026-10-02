@@ -4,28 +4,38 @@
   import Markdown from "./Markdown.svelte";
   import PermissionCard from "./PermissionCard.svelte";
   import ToolCard from "./ToolCard.svelte";
-  import type { ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
+  import type { PermissionDecision, ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
   import { Transcript } from "./transcript.svelte";
 
   let { context }: { context: ProviderUiContext } = $props();
 
   const transcript = new Transcript();
-  let status = $state<Snapshot["status"]>("idle");
   let draft = $state("");
+  /** Streaming text re-rendered as markdown at most once per frame, not once per delta. */
+  let liveMarkdown = $state("");
+  let liveFrame = 0;
   let log: HTMLElement | undefined = $state();
   let composer: HTMLTextAreaElement | undefined = $state();
   let unsubscribe: (() => void) | undefined;
   let stickToBottom = true;
 
+  const status = $derived(transcript.status);
   const working = $derived(status === "busy" || status === "needs_attention");
+
+  $effect(() => {
+    const live = transcript.live;
+    if (!live) {
+      cancelAnimationFrame(liveFrame);
+      liveMarkdown = "";
+      return;
+    }
+    cancelAnimationFrame(liveFrame);
+    liveFrame = requestAnimationFrame(() => (liveMarkdown = live));
+  });
   const sessionId = $derived(context.session.id);
 
   function apply(event: StoredEvent): void {
     transcript.apply(event);
-    const type = (event.payload as { type?: string }).type;
-    if (type === "user" || type === "delta" || type === "tool" || type === "permission_resolved") status = "busy";
-    if (type === "permission") status = "needs_attention";
-    if (type === "result" || type === "error") status = "idle";
     void scrollToBottom();
   }
 
@@ -61,7 +71,7 @@
     void run(() => context.host.session.interrupt());
   }
 
-  function respond(requestId: string, decision: "allow" | "allow_session" | "deny", reason?: string): void {
+  function respond(requestId: string, decision: PermissionDecision, reason?: string): void {
     void run(() => context.host.call("claude.permission.respond", { session_id: sessionId, request_id: requestId, decision, ...(reason ? { reason } : {}) }));
   }
 
@@ -103,8 +113,8 @@
     for (;;) {
       const page = await context.host.call<Snapshot>("claude.snapshot", { session_id: sessionId, ...(after ? { after_seq: after } : {}) });
       page.events.forEach((event) => transcript.apply(event));
-      if (page.meta) transcript.setMeta(page.meta);
-      status = page.status;
+      transcript.setMeta(page.meta);
+      transcript.status = page.status;
       const last = page.events.at(-1);
       if (!page.more || !last) return;
       after = last.seq;
@@ -149,7 +159,7 @@
 
 <main class="chat">
   <Header meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff} />
-  <div class="log" bind:this={log} onscroll={onScroll} aria-live="polite">
+  <div class="log" bind:this={log} onscroll={onScroll} role="log" aria-label="Conversation">
     {#if transcript.entries.length === 0 && !transcript.live}
       <p class="empty">Send a message to start Claude in this worktree.</p>
     {/if}
@@ -171,11 +181,12 @@
       {/if}
     {/each}
     {#if transcript.live}
-      <div class="message assistant"><Markdown text={transcript.live} onLink={openExternal} /></div>
+      <div class="message assistant"><Markdown text={liveMarkdown || transcript.live} onLink={openExternal} /></div>
     {:else if working}
       <p class="working">{status === "needs_attention" ? "Waiting for your answer" : "Claude is working"}<span class="ellipsis" aria-hidden="true"></span></p>
     {/if}
   </div>
+  <p class="visually-hidden" role="status">{status === "needs_attention" ? "Claude is waiting for your answer" : working ? "Claude is working" : ""}</p>
   {#if transcript.meta.handed_off}
     <div class="handed-off" role="status">
       <p>This conversation is continuing in a terminal tab. Closing that tab brings it back here.</p>
@@ -214,6 +225,7 @@
   .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--planeai-border); }
   .handed-off { display: flex; align-items: center; gap: var(--planeai-space-3); padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); background: var(--planeai-surface); }
   .handed-off p { flex: 1; color: var(--planeai-text-muted); }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .ellipsis::after { content: "…"; animation: blink 1.4s steps(4, end) infinite; }
   .composer { display: flex; gap: var(--planeai-space-2); align-items: flex-end; padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); }
   textarea { flex: 1; resize: none; min-height: 34px; max-height: 240px; line-height: 18px; }

@@ -55,28 +55,32 @@ export class JsonRpcPeer {
     }
     if (message.method === "$/cancelRequest") {
       const id = (message.params as { id?: Id } | undefined)?.id;
-      if (id !== undefined) this.inFlight.get(id)?.abort();
+      const controller = id === undefined ? undefined : this.inFlight.get(id);
+      if (id === undefined || !controller) return;
+      // Acknowledge at once: the host stops a sidecar that misses its cancel deadline,
+      // and a handler blocked on Claude may never notice the abort.
+      this.inFlight.delete(id);
+      controller.abort();
+      this.write({ jsonrpc: "2.0", id, error: { code: CANCELLED, message: "request cancelled" } });
       return;
     }
     if (typeof message.method !== "string" || message.id === undefined) return;
     const id = message.id;
     const controller = new AbortController();
     this.inFlight.set(id, controller);
-    void this.handler(message.method, message.params ?? null, controller.signal)
-      .then(
-        (result) => {
-          if (controller.signal.aborted) throw new RpcError(CANCELLED, "request cancelled");
-          this.write({ jsonrpc: "2.0", id, result: result ?? null });
-        },
-        (error: unknown) => {
-          throw controller.signal.aborted ? new RpcError(CANCELLED, "request cancelled") : error;
-        },
-      )
-      .catch((error: unknown) => {
+    const answer = (frame: Frame) => {
+      // A cancelled request was already answered; its late result is dropped.
+      if (this.inFlight.get(id) !== controller) return;
+      this.inFlight.delete(id);
+      this.write(frame);
+    };
+    void this.handler(message.method, message.params ?? null, controller.signal).then(
+      (result) => answer({ jsonrpc: "2.0", id, result: result ?? null }),
+      (error: unknown) => {
         const code = error instanceof RpcError ? error.code : -32000;
-        this.write({ jsonrpc: "2.0", id, error: { code, message: error instanceof Error ? error.message : String(error) } });
-      })
-      .finally(() => this.inFlight.delete(id));
+        answer({ jsonrpc: "2.0", id, error: { code, message: error instanceof Error ? error.message : String(error) } });
+      },
+    );
   }
 
   private write(frame: Frame): void {

@@ -38,6 +38,18 @@ describe("JsonRpcPeer", () => {
     expect(frames).toContainEqual({ jsonrpc: "2.0", id: "two", error: { code: -32602, message: "bad params" } });
   });
 
+  it("acknowledges a cancel at once, even when the handler never finishes", async () => {
+    let finish: (value: unknown) => void = () => {};
+    const { frames, send } = harness(() => new Promise((resolve) => (finish = resolve)));
+    send({ jsonrpc: "2.0", id: 8, method: "stuck" });
+    send({ jsonrpc: "2.0", method: "$/cancelRequest", params: { id: 8 } });
+    await until(() => frames.length === 1);
+    expect(frames[0]).toEqual({ jsonrpc: "2.0", id: 8, error: { code: CANCELLED, message: "request cancelled" } });
+    finish("late");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(frames).toHaveLength(1);
+  });
+
   it("answers a cancelled request with -32800", async () => {
     const { frames, send } = harness((_, __, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve("late"))));
     send({ jsonrpc: "2.0", id: 7, method: "slow" });

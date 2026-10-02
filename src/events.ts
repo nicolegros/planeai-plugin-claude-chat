@@ -13,6 +13,8 @@ export interface TokenUsage {
   cache_creation_input_tokens: number;
 }
 
+export type SessionStatus = "busy" | "idle" | "needs_attention" | "exited";
+
 export interface ModelOption {
   value: string;
   label: string;
@@ -51,10 +53,11 @@ export type ChatEvent =
   | { type: "result"; is_error: boolean; subtype: string; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { type: "error"; message: string }
   | { type: "handoff"; in_terminal: boolean }
+  | { type: "status"; status: SessionStatus }
   | { type: "meta"; meta: Partial<SessionMeta> };
 
 export function isEphemeral(event: ChatEvent): boolean {
-  return event.type === "delta" || event.type === "meta";
+  return event.type === "delta" || event.type === "meta" || event.type === "status";
 }
 
 /** Keeps every event below the host's 64 KiB frame limit, even at 4 bytes per character. */
@@ -110,12 +113,20 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
   }
 }
 
+/** Edits shown in full; the rest of a large MultiEdit is summarized so the event fits one frame. */
+const MAX_SHOWN_EDITS = 12;
+
 function edit(file_path: string, edits: { old_string: string; new_string: string }[]): ToolInput {
-  const budget = Math.max(200, Math.floor(MAX_INPUT_CHARS / Math.max(1, edits.length * 2)));
+  const shown = edits.slice(0, MAX_SHOWN_EDITS);
+  const budget = Math.floor(MAX_INPUT_CHARS / Math.max(1, shown.length * 2));
+  const hidden = edits.length - shown.length;
   return {
     kind: "edit",
     file_path,
-    edits: edits.map((entry) => ({ old_string: clip(entry.old_string, budget), new_string: clip(entry.new_string, budget) })),
+    edits: [
+      ...shown.map((entry) => ({ old_string: clip(entry.old_string, budget), new_string: clip(entry.new_string, budget) })),
+      ...(hidden > 0 ? [{ old_string: "", new_string: `… ${hidden} more edits` }] : []),
+    ],
   };
 }
 

@@ -22,11 +22,16 @@ describe("ClaudeSession", () => {
     fake = fakeQueryFactory();
   });
 
+  // Status also streams to the UI as events; tests read it from host.status instead.
+  const record = (_: string, seq: number, payload: ChatEvent) => {
+    if (payload.type !== "status") events.push({ seq, payload });
+  };
+
   function session(overrides: { yolo?: boolean; claudeExecutable?: string | null; hasTranscript?: boolean } = {}): ClaudeSession {
     return new ClaudeSession(
       { id: SESSION_ID, cwd: "/workspace", env: { PLANEAI_SESSION_ID: SESSION_ID }, yolo: overrides.yolo ?? false, claudeExecutable: overrides.claudeExecutable === undefined ? "/usr/local/bin/claude" : overrides.claudeExecutable },
       store,
-      { event: (_, seq, payload) => events.push({ seq, payload }), status: (_, status) => statuses.push(status) },
+      { event: record, status: (_, status) => statuses.push(status) },
       { createQuery: fake.factory, hasTranscript: async () => overrides.hasTranscript ?? false },
     );
   }
@@ -58,7 +63,7 @@ describe("ClaudeSession", () => {
     query.emit(...fixture("bash-turn"));
     await flush();
     expect(events.map(({ payload }) => payload.type).filter((type) => type !== "meta")).toEqual(["user", "tool", "tool_result", "delta", "assistant", "result"]);
-    expect(events.map(({ seq }) => seq)).toEqual(events.map((_, index) => index + 1));
+    expect(events.every(({ seq }, index) => index === 0 || seq > events[index - 1].seq)).toBe(true);
     expect(statuses).toEqual(["busy", "idle"]);
   });
 
@@ -91,7 +96,43 @@ describe("ClaudeSession", () => {
       after = page.events.at(-1)!.seq;
     }
     expect(pages.length).toBeGreaterThan(1);
-    expect(pages.flatMap((page) => page.events).map(({ seq }) => seq)).toEqual(Array.from({ length: 12 }, (_, i) => i + 1));
+    const paged = pages.flatMap((page) => page.events);
+    expect(paged.map(({ payload }) => payload.type)).toEqual(Array(12).fill("user"));
+    expect(paged.every(({ seq }, index) => index === 0 || seq > paged[index - 1].seq)).toBe(true);
+  });
+
+  it("caps a single oversized event so later snapshot pages still load", async () => {
+    const chat = session();
+    await chat.send("x");
+    const huge = { seq: 999, payload: { type: "assistant" as const, text: "y".repeat(50_000) } };
+    (chat as unknown as { events: unknown[] }).events.push(huge);
+    const page = chat.snapshot(0);
+    expect(page.events.at(-1)).toEqual({ seq: 999, payload: { type: "error", message: "A assistant entry was too large to show." } });
+    expect(page.more).toBe(false);
+  });
+
+  it("restores a terminal handoff after the sidecar restarts", async () => {
+    const first = session();
+    await first.handoff();
+    first.stop();
+    const restarted = session();
+    expect(restarted.snapshot().meta.handed_off).toBe(true);
+    await expect(restarted.send("hello")).rejects.toThrow("continuing in a terminal");
+  });
+
+  it("does not start Claude when the session stops while it was checking for a transcript", async () => {
+    let finishCheck: (value: boolean) => void = () => {};
+    const chat = new ClaudeSession(
+      { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: "/usr/local/bin/claude" },
+      store,
+      { event: record, status: (_, status) => statuses.push(status) },
+      { createQuery: fake.factory, hasTranscript: () => new Promise((resolve) => (finishCheck = resolve)) },
+    );
+    const sending = chat.send("hello");
+    chat.stop();
+    finishCheck(false);
+    await expect(sending).rejects.toThrow("no longer drives");
+    expect(fake.queries).toHaveLength(0);
   });
 
   it("asks for permission in the chat and blocks the tool until answered", async () => {
@@ -135,12 +176,12 @@ describe("ClaudeSession", () => {
 
   it("switches permission mode and model, live and for the next start", async () => {
     const chat = session();
-    await chat.setPermissionMode("plan");
-    await chat.setModel("opus");
-    await expect(chat.setPermissionMode("bypassPermissions")).rejects.toThrow("not available");
+    chat.setPermissionMode("plan");
+    chat.setModel("opus");
+    expect(() => chat.setPermissionMode("bypassPermissions")).toThrow("not available");
     await chat.send("plan it");
     expect(fake.queries[0].options).toMatchObject({ permissionMode: "plan", model: "opus" });
-    await chat.setPermissionMode("acceptEdits");
+    chat.setPermissionMode("acceptEdits");
     expect(fake.queries[0].setPermissionMode).toHaveBeenCalledWith("acceptEdits");
     expect(chat.snapshot().meta).toMatchObject({ permission_mode: "acceptEdits", model: "opus", modes: ["default", "acceptEdits", "plan"] });
   });
@@ -163,8 +204,8 @@ describe("ClaudeSession", () => {
     await chat.send("hello");
     fake.queries[0].emit(...fixture("bash-turn"));
     await flush();
-    await chat.setPermissionMode("plan");
-    await chat.setModel("opus");
+    chat.setPermissionMode("plan");
+    chat.setModel("opus");
 
     const argv = await chat.handoff();
     expect(argv).toEqual(["/usr/local/bin/claude", "--resume", SESSION_ID, "--permission-mode", "plan", "--model", "opus"]);
@@ -189,7 +230,7 @@ describe("ClaudeSession", () => {
     const chat = session();
     await chat.send("edit it");
     const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf build" }, { signal: new AbortController().signal, toolUseID: "toolu_2" } as never);
-    await chat.interrupt();
+    chat.interrupt();
     await expect(decision).resolves.toMatchObject({ behavior: "deny", interrupt: true });
     expect(fake.queries[0].interrupt).toHaveBeenCalledOnce();
   });
@@ -212,7 +253,7 @@ describe("ClaudeSession", () => {
     const chat = new ClaudeSession(
       { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: "/usr/local/bin/claude" },
       store,
-      { event: (_, seq, payload) => events.push({ seq, payload }), status: (_, status) => statuses.push(status) },
+      { event: record, status: (_, status) => statuses.push(status) },
       { createQuery: fake.factory, hasTranscript: async () => { throw new Error("transcript unreadable"); } },
     );
     await expect(chat.send("hello")).rejects.toThrow("transcript unreadable");

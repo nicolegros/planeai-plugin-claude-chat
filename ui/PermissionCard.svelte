@@ -1,9 +1,9 @@
 <script lang="ts">
   import ToolInputView from "./ToolInputView.svelte";
+  import type { PermissionDecision } from "./host";
   import type { PermissionEntry } from "./transcript.svelte";
 
-  type Decision = "allow" | "allow_session" | "deny";
-  let { permission, onRespond }: { permission: PermissionEntry; onRespond: (decision: Decision, reason?: string) => void } = $props();
+  let { permission, onRespond }: { permission: PermissionEntry; onRespond: (decision: PermissionDecision, reason?: string) => void } = $props();
   let denying = $state(false);
   let reason = $state("");
 </script>

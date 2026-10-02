@@ -1,4 +1,5 @@
-import type { ChatEvent, ContextUsage, ModelOption, SessionMeta, TokenUsage, ToolInput } from "../src/events";
+import type { PermissionDecision } from "../src/claude-session";
+import type { ChatEvent, ContextUsage, ModelOption, SessionMeta, SessionStatus, TokenUsage, ToolInput } from "../src/events";
 import type { StoredEvent } from "../src/transcript";
 
 /** The slice of PlaneAI's plugin UI bridge a provider session UI uses. */
@@ -21,11 +22,11 @@ export interface ProviderUiContext {
 
 export interface Snapshot {
   seq: number;
-  status: "busy" | "idle" | "needs_attention" | "exited";
+  status: SessionStatus;
   meta: SessionMeta;
   events: StoredEvent[];
   /** More transcript follows; request the next page after the last event's seq. */
   more: boolean;
 }
 
-export type { ChatEvent, ContextUsage, ModelOption, SessionMeta, StoredEvent, TokenUsage, ToolInput };
+export type { ChatEvent, ContextUsage, ModelOption, PermissionDecision, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput };

@@ -1,12 +1,12 @@
 import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { clip, isEphemeral, summarizeInput, toolInput, translate, type ChatEvent, type SessionMeta } from "./events";
+import { clip, isEphemeral, summarizeInput, toolInput, translate, type ChatEvent, type SessionMeta, type SessionStatus } from "./events";
 import { InputQueue } from "./input-queue";
-import type { StoredEvent, TranscriptStore } from "./transcript";
+import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
 
 /** Leaves headroom under the 64 KiB frame for the response envelope. */
 const SNAPSHOT_PAGE_BYTES = 40_000;
 
-export type SessionStatus = "busy" | "idle" | "needs_attention" | "exited";
+export type { SessionStatus };
 
 export type PermissionDecision = "allow" | "allow_session" | "deny";
 
@@ -40,6 +40,22 @@ interface PendingPermission {
   resolve(result: PermissionResult): void;
 }
 
+export function errorMessage(error: unknown): string {
+  return clip(error instanceof Error ? error.message : String(error), 2_000);
+}
+
+/** Index of the first event after `seq`; events are stored in increasing seq order. */
+function firstAfter(events: StoredEvent[], seq: number): number {
+  let low = 0;
+  let high = events.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (events[middle].seq <= seq) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
 /**
  * One PlaneAI session driven through the Agent SDK. The Claude session id is the
  * PlaneAI session id, so resuming needs no mapping. Claude starts lazily on the
@@ -68,7 +84,10 @@ export class ClaudeSession {
     // Bypass is offered only to sessions created with auto-approve, which is the only
     // way the SDK lets a session drop permission prompts later.
     const modes = config.yolo ? [...BASE_MODES, "bypassPermissions"] : BASE_MODES;
-    this.meta = { model: null, permission_mode: config.yolo ? "bypassPermissions" : "default", modes, models: [], context: null, handed_off: false };
+    // A terminal may still be driving the session after a sidecar restart.
+    const lastHandoff = this.events.findLast((event) => event.payload.type === "handoff")?.payload;
+    const handedOff = lastHandoff?.type === "handoff" && lastHandoff.in_terminal;
+    this.meta = { model: null, permission_mode: config.yolo ? "bypassPermissions" : "default", modes, models: [], context: null, handed_off: handedOff };
   }
 
   get id(): string {
@@ -77,16 +96,22 @@ export class ClaudeSession {
 
   /** One page of the transcript after `afterSeq`, sized to fit a single host frame. */
   snapshot(afterSeq = 0): { seq: number; status: SessionStatus; meta: SessionMeta; events: StoredEvent[]; more: boolean } {
-    const remaining = this.events.filter((event) => event.seq > afterSeq);
+    const start = firstAfter(this.events, afterSeq);
     const events: StoredEvent[] = [];
     let bytes = 0;
-    for (const event of remaining) {
-      const size = Buffer.byteLength(JSON.stringify(event));
+    let index = start;
+    for (; index < this.events.length; index++) {
+      let event = this.events[index];
+      let size = Buffer.byteLength(JSON.stringify(event));
+      if (size > SNAPSHOT_PAGE_BYTES) {
+        event = { seq: event.seq, payload: { type: "error", message: `A ${event.payload.type} entry was too large to show.` } };
+        size = Buffer.byteLength(JSON.stringify(event));
+      }
       if (events.length > 0 && bytes + size > SNAPSHOT_PAGE_BYTES) break;
       events.push(event);
       bytes += size;
     }
-    return { seq: this.seq, status: this.status, meta: this.meta, events, more: events.length < remaining.length };
+    return { seq: this.seq, status: this.status, meta: this.meta, events, more: index < this.events.length };
   }
 
   announce(): void {
@@ -106,8 +131,10 @@ export class ClaudeSession {
     try {
       input = await this.ensureQuery();
     } catch (error) {
-      this.emit({ type: "error", message: clip(error instanceof Error ? error.message : String(error), 2_000) });
-      this.setStatus("idle");
+      if (!this.stopped) {
+        this.emit({ type: "error", message: errorMessage(error) });
+        this.setStatus("idle");
+      }
       throw error;
     }
     input.push({
@@ -118,9 +145,10 @@ export class ClaudeSession {
     });
   }
 
-  async interrupt(): Promise<void> {
+  /** Returns at once; the SDK's control channel can stall while Claude boots. */
+  interrupt(): void {
     this.denyPending("Interrupted by the user");
-    await this.query?.interrupt();
+    this.control(this.query?.interrupt(), "interrupt");
   }
 
   respondToPermission(requestId: string, decision: PermissionDecision, reason?: string): void {
@@ -139,16 +167,16 @@ export class ClaudeSession {
     this.setStatus(this.pending.size > 0 ? "needs_attention" : "busy");
   }
 
-  async setPermissionMode(mode: string): Promise<void> {
+  setPermissionMode(mode: string): void {
     if (!this.meta.modes.includes(mode)) throw new Error(`permission mode ${mode} is not available in this session`);
-    await this.query?.setPermissionMode(mode as PermissionMode);
     this.updateMeta({ permission_mode: mode });
+    this.control(this.query?.setPermissionMode(mode as PermissionMode), "switch permission mode");
   }
 
   /** `null` returns to the user's configured default model. */
-  async setModel(model: string | null): Promise<void> {
-    await this.query?.setModel(model ?? undefined);
+  setModel(model: string | null): void {
     this.updateMeta({ model });
+    this.control(this.query?.setModel(model ?? undefined), "switch model");
   }
 
   /**
@@ -158,17 +186,16 @@ export class ClaudeSession {
   async handoff(): Promise<string[]> {
     if (!this.config.claudeExecutable) throw new Error("claude executable not found on PATH");
     if (!this.meta.handed_off) {
-      if (this.status === "busy" || this.status === "needs_attention") await this.interrupt();
+      if (this.status === "busy" || this.status === "needs_attention") this.interrupt();
       this.detach("Continued in the terminal");
       this.emit({ type: "handoff", in_terminal: true });
       this.updateMeta({ handed_off: true });
       this.setStatus("idle");
     }
-    const resume = this.store.hasStarted(this.config.id) || (await this.runtime.hasTranscript(this.config.id, this.config.cwd));
     const mode = this.meta.permission_mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : ["--permission-mode", this.meta.permission_mode];
     return [
       this.config.claudeExecutable,
-      ...(resume ? ["--resume", this.config.id] : ["--session-id", this.config.id]),
+      ...((await this.shouldResume()) ? ["--resume", this.config.id] : ["--session-id", this.config.id]),
       ...mode,
       ...(this.meta.model ? ["--model", this.meta.model] : []),
     ];
@@ -195,6 +222,19 @@ export class ClaudeSession {
     query?.close();
   }
 
+  /** Runs an SDK control request without blocking the RPC that asked for it. */
+  private control(request: Promise<unknown> | undefined, action: string): void {
+    request?.catch((error: unknown) => this.emit({ type: "error", message: `Could not ${action}: ${errorMessage(error)}` }));
+  }
+
+  /**
+   * The plugin's marker is lost when its data is wiped (plugin reinstall), but Claude
+   * still owns the id then: starting fresh would fail as "already in use".
+   */
+  private async shouldResume(): Promise<boolean> {
+    return this.store.hasStarted(this.config.id) || (await this.runtime.hasTranscript(this.config.id, this.config.cwd));
+  }
+
   private ensureQuery(): Promise<InputQueue<SDKUserMessage>> {
     if (this.input) return Promise.resolve(this.input);
     this.starting ??= this.startQuery().finally(() => (this.starting = null));
@@ -202,9 +242,9 @@ export class ClaudeSession {
   }
 
   private async startQuery(): Promise<InputQueue<SDKUserMessage>> {
-    // The plugin's marker is lost when its data is wiped (plugin reinstall), but
-    // Claude still owns the id then: starting fresh would fail as "already in use".
-    const resume = this.store.hasStarted(this.config.id) || (await this.runtime.hasTranscript(this.config.id, this.config.cwd));
+    const resume = await this.shouldResume();
+    // Stopping or handing off while that check ran must not leave a second driver behind.
+    if (this.stopped || this.meta.handed_off) throw new Error("The chat no longer drives this session.");
     const input = new InputQueue<SDKUserMessage>();
     const query = this.runtime.createQuery({
       prompt: input,
@@ -233,7 +273,7 @@ export class ClaudeSession {
     try {
       for await (const message of query) this.handle(query, message);
     } catch (error) {
-      if (!this.stopped) this.emit({ type: "error", message: clip(error instanceof Error ? error.message : String(error), 2_000) });
+      if (!this.stopped) this.emit({ type: "error", message: errorMessage(error) });
     } finally {
       if (this.query === query) {
         // The Claude process ended; the next prompt resumes it.
@@ -320,6 +360,7 @@ export class ClaudeSession {
     const event = { seq: ++this.seq, payload };
     if (!isEphemeral(payload)) {
       this.events.push(event);
+      if (this.events.length > MAX_SNAPSHOT_EVENTS) this.events.splice(0, this.events.length - MAX_SNAPSHOT_EVENTS);
       this.store.append(this.config.id, event);
     }
     this.host.event(this.config.id, event.seq, payload);
@@ -329,5 +370,7 @@ export class ClaudeSession {
     if (this.status === status && !force) return;
     this.status = status;
     this.host.status(this.config.id, status);
+    // The chat follows the same status the host shows, instead of inferring its own.
+    this.emit({ type: "status", status });
   }
 }

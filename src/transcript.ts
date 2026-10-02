@@ -8,7 +8,7 @@ export interface StoredEvent {
 }
 
 /** Keep reattach snapshots bounded; the full conversation lives in Claude's own transcript. */
-const MAX_SNAPSHOT_EVENTS = 2_000;
+export const MAX_SNAPSHOT_EVENTS = 2_000;
 
 /**
  * Per-session event log under the plugin data dir, so a remounted or restarted UI

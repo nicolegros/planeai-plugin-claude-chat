@@ -37,8 +37,10 @@
     </label>
   {/if}
   {#if meta.context}
-    <div class="context" title={contextLabel} aria-label={contextLabel}>
-      <span class="meter"><span class="fill" style:width="{Math.min(100, meta.context.percentage)}%" class:high={meta.context.percentage >= 80}></span></span>
+    <div class="context" title={contextLabel}>
+      <span class="meter" role="meter" aria-label="Context usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(meta.context.percentage)}>
+        <span class="fill" style:width="{Math.min(100, meta.context.percentage)}%" class:high={meta.context.percentage >= 80}></span>
+      </span>
       <span class="context-label">{contextLabel}</span>
     </div>
   {/if}
