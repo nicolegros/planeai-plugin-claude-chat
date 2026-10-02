@@ -9,7 +9,7 @@
 
   let { context }: { context: ProviderUiContext } = $props();
 
-  /** PlaneAI's limit for one prompt, so it fits a single JSON-RPC frame. */
+  /** The provider prompt limit from PlaneAI's plugin guide, measured as JSON-escaped text. */
   const MAX_MESSAGE_BYTES = 48 * 1024;
 
   const transcript = new Transcript();
@@ -62,7 +62,7 @@
   function send(): void {
     const text = draft.trim();
     if (!text) return;
-    if (new TextEncoder().encode(text).length > MAX_MESSAGE_BYTES) {
+    if (new TextEncoder().encode(JSON.stringify(text)).length > MAX_MESSAGE_BYTES) {
       context.host.data.notify(`This message is too long to send; keep it under ${MAX_MESSAGE_BYTES / 1024} KB.`);
       return;
     }

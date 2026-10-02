@@ -214,6 +214,22 @@ describe("Chat", () => {
     expect(() => button("Stop")).toThrow();
   });
 
+  it("counts a single hidden edit in the singular", async () => {
+    const harness = await render();
+    harness.push(1, { type: "tool", id: "t1", name: "MultiEdit", summary: "a.ts", input: { kind: "edit", file_path: "a.ts", edits: [{ old_string: "a", new_string: "b" }], hidden_edits: 1 } });
+    await settle();
+    expect(document.body.textContent).toContain("1 more edit not shown");
+  });
+
+  it("refuses a message that would exceed PlaneAI's prompt limit once escaped", async () => {
+    const harness = await render();
+    const textarea = document.querySelector("textarea")!;
+    type(textarea, `x${"\n".repeat(30_000)}x`);
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(harness.value.host.session.send).not.toHaveBeenCalled();
+    expect(harness.value.host.data.notify).toHaveBeenCalledWith(expect.stringContaining("too long"));
+  });
+
   it("summarizes each turn with duration, cost and tokens", async () => {
     const harness = await render();
     harness.push(1, {

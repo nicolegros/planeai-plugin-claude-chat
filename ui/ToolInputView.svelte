@@ -13,7 +13,7 @@
   {#each input.edits as edit, index (index)}
     <DiffView before={edit.old_string} after={edit.new_string} />
   {/each}
-  {#if input.hidden_edits}<p class="caption">{input.hidden_edits} more edits not shown</p>{/if}
+  {#if input.hidden_edits}<p class="caption">{input.hidden_edits} more {input.hidden_edits === 1 ? "edit" : "edits"} not shown</p>{/if}
 {:else if input?.kind === "write"}
   <p class="caption">{input.file_path}</p>
   <DiffView before="" after={input.content} />

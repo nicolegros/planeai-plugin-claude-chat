@@ -128,6 +128,8 @@ describe("ClaudeSession", () => {
     await expect(sending).rejects.toThrow("request cancelled");
     await flush();
     expect(fake.queries[0].sent).toHaveLength(0);
+    expect(events.at(-1)!.payload).toMatchObject({ type: "error", message: expect.stringContaining("not sent") });
+    expect(statuses.at(-1)).toBe("idle");
   });
 
   it("does not start Claude when the session stops while it was checking for a transcript", async () => {

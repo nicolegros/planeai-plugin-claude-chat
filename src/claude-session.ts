@@ -134,7 +134,11 @@ export class ClaudeSession {
       }
       throw error;
     }
-    if (signal?.aborted) throw new Error("request cancelled");
+    if (signal?.aborted) {
+      this.emit({ type: "error", message: "This message was not sent because PlaneAI stopped waiting for it. Send it again." });
+      this.setStatus("idle");
+      throw new Error("request cancelled");
+    }
     input.push({
       type: "user",
       message: { role: "user", content: text },
