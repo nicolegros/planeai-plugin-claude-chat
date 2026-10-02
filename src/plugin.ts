@@ -1,0 +1,138 @@
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
+import { ClaudeSession, type ClaudeRuntime, type SessionHost } from "./claude-session";
+import { RpcError } from "./rpc";
+import type { TranscriptStore } from "./transcript";
+
+export const PLUGIN_ID = "claude-headless";
+export const PLUGIN_NAME = "Claude Headless";
+export const PROVIDER_ID = "claude";
+export const HOST_API_VERSION = "planeai.plugin-host.v3";
+/** Replaced by scripts/inject-release-version.mjs in release builds. */
+export const PLUGIN_VERSION = "0.0.0";
+
+const INVALID_PARAMS = -32602;
+const METHOD_NOT_FOUND = -32601;
+
+/** Locate `claude` on the PATH PlaneAI hands the session (it includes the user's extra_path_dirs). */
+export function findExecutable(name: string, path: string | undefined, platform = process.platform): string | null {
+  const names = platform === "win32" ? [`${name}.exe`, `${name}.cmd`] : [name];
+  for (const directory of (path ?? "").split(platform === "win32" ? ";" : delimiter)) {
+    if (!directory) continue;
+    for (const candidate of names) {
+      const full = join(directory, candidate);
+      try {
+        accessSync(full, constants.X_OK);
+        return full;
+      } catch {
+        // keep looking
+      }
+    }
+  }
+  return null;
+}
+
+function object(params: unknown): Record<string, unknown> {
+  if (!params || typeof params !== "object" || Array.isArray(params)) throw new RpcError(INVALID_PARAMS, "params must be an object");
+  return params as Record<string, unknown>;
+}
+
+function string(params: Record<string, unknown>, field: string): string {
+  const value = params[field];
+  if (typeof value !== "string" || !value.trim()) throw new RpcError(INVALID_PARAMS, `${field} must be a nonempty string`);
+  return value;
+}
+
+function environment(params: Record<string, unknown>): Record<string, string> {
+  const env = params.env ?? {};
+  if (!env || typeof env !== "object" || Array.isArray(env)) throw new RpcError(INVALID_PARAMS, "env must be an object");
+  return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+/** Routes host and UI requests to the sessions this sidecar drives. */
+export class ClaudeHeadlessPlugin {
+  private readonly sessions = new Map<string, ClaudeSession>();
+
+  constructor(
+    private readonly store: TranscriptStore,
+    private readonly host: SessionHost,
+    private readonly runtime: ClaudeRuntime,
+  ) {}
+
+  async handle(method: string, params: unknown): Promise<unknown> {
+    switch (method) {
+      case "plugin.handshake":
+        return {
+          plugin_id: PLUGIN_ID,
+          plugin_name: PLUGIN_NAME,
+          plugin_version: PLUGIN_VERSION,
+          host_api_version: HOST_API_VERSION,
+          lifecycle_event_subscriptions: [],
+        };
+      case "plugin.shutdown":
+        for (const session of this.sessions.values()) session.stop();
+        this.sessions.clear();
+        return { stopping: true };
+      case "provider.session.start":
+      case "provider.session.resume":
+        return await this.open(object(params), method === "provider.session.start");
+      case "provider.session.send": {
+        const request = object(params);
+        await this.session(request).send(string(request, "text"));
+        return { accepted: true };
+      }
+      case "provider.session.interrupt":
+        await this.session(object(params)).interrupt();
+        return {};
+      case "provider.session.stop": {
+        const request = object(params);
+        const id = string(request, "session_id");
+        this.sessions.get(id)?.stop();
+        this.sessions.delete(id);
+        if (request.reason === "destroy") this.store.remove(id);
+        return { stopped: true };
+      }
+      case "claude.snapshot":
+        return this.session(object(params)).snapshot();
+      case "claude.permission.respond": {
+        const request = object(params);
+        if (typeof request.allow !== "boolean") throw new RpcError(INVALID_PARAMS, "allow must be a boolean");
+        this.session(request).respondToPermission(string(request, "request_id"), request.allow);
+        return {};
+      }
+      default:
+        throw new RpcError(METHOD_NOT_FOUND, `method not found: ${method}`);
+    }
+  }
+
+  private async open(params: Record<string, unknown>, isNew: boolean): Promise<Record<string, never>> {
+    const id = string(params, "session_id");
+    if (params.provider_id !== PROVIDER_ID) throw new RpcError(INVALID_PARAMS, `unknown provider ${String(params.provider_id)}`);
+    this.sessions.get(id)?.stop();
+    const env = environment(params);
+    const session = new ClaudeSession(
+      {
+        id,
+        cwd: string(params, "cwd"),
+        env,
+        yolo: params.yolo === true,
+        claudeExecutable: findExecutable("claude", env.PATH ?? process.env.PATH),
+      },
+      this.store,
+      this.host,
+      this.runtime,
+    );
+    this.sessions.set(id, session);
+    session.announce();
+    const prompt = params.initial_prompt;
+    if (isNew && typeof prompt === "string" && prompt.trim()) await session.send(prompt);
+    return {};
+  }
+
+  private session(params: Record<string, unknown>): ClaudeSession {
+    const id = string(params, "session_id");
+    const session = this.sessions.get(id);
+    if (!session) throw new RpcError(INVALID_PARAMS, `session ${id} is not running in this plugin`);
+    return session;
+  }
+}

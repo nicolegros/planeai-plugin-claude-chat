@@ -1,0 +1,78 @@
+import { flushSync, mount, unmount } from "svelte";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import Chat from "../ui/Chat.svelte";
+import type { ProviderUiContext, Snapshot, StoredEvent } from "../ui/host";
+
+function context(snapshot: Snapshot) {
+  let listener: ((event: StoredEvent) => void) | null = null;
+  const value: ProviderUiContext = {
+    session: { id: "s1" },
+    host: {
+      call: vi.fn(async (method: string) => (method === "claude.snapshot" ? snapshot : {})) as ProviderUiContext["host"]["call"],
+      session: {
+        send: vi.fn(async () => {}),
+        interrupt: vi.fn(async () => {}),
+        onEvent: (next) => {
+          listener = next;
+          return () => (listener = null);
+        },
+      },
+      data: { notify: vi.fn() },
+    },
+  };
+  return { value, push: (seq: number, payload: StoredEvent["payload"]) => listener?.({ seq, payload }) };
+}
+
+const settle = async () => {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  flushSync();
+};
+
+describe("Chat", () => {
+  let app: ReturnType<typeof mount> | undefined;
+  afterEach(() => {
+    if (app) unmount(app);
+    document.body.replaceChildren();
+  });
+
+  it("rebuilds the conversation from the snapshot, then follows live events", async () => {
+    const { value, push } = context({ seq: 1, status: "idle", events: [{ seq: 1, payload: { type: "user", text: "earlier question" } }] });
+    app = mount(Chat, { target: document.body, props: { context: value } });
+    await settle();
+    expect(document.body.textContent).toContain("earlier question");
+
+    push(1, { type: "user", text: "earlier question" });
+    push(2, { type: "delta", text: "Thinking it" });
+    push(3, { type: "assistant", text: "Thinking it through" });
+    await settle();
+    expect(document.body.textContent?.match(/earlier question/g)).toHaveLength(1);
+    expect(document.body.textContent).toContain("Thinking it through");
+  });
+
+  it("sends on Enter and answers permission prompts", async () => {
+    const { value, push } = context({ seq: 0, status: "idle", events: [] });
+    app = mount(Chat, { target: document.body, props: { context: value } });
+    await settle();
+
+    const textarea = document.querySelector("textarea")!;
+    textarea.value = "run the tests";
+    textarea.dispatchEvent(new Event("input"));
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    expect(value.host.session.send).toHaveBeenCalledWith("run the tests");
+
+    push(1, { type: "permission", request_id: "p1", tool: "Bash", title: "Claude wants to run npm test", summary: "npm test" });
+    await settle();
+    const allow = [...document.querySelectorAll("button")].find((button) => button.textContent === "Allow")!;
+    allow.click();
+    expect(value.host.call).toHaveBeenCalledWith("claude.permission.respond", { session_id: "s1", request_id: "p1", allow: true });
+  });
+
+  it("interrupts a running turn with Escape", async () => {
+    const { value } = context({ seq: 0, status: "busy", events: [] });
+    app = mount(Chat, { target: document.body, props: { context: value } });
+    await settle();
+    document.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(value.host.session.interrupt).toHaveBeenCalledOnce();
+  });
+});
