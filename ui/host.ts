@@ -20,6 +20,8 @@ export interface Snapshot {
   seq: number;
   status: "busy" | "idle" | "needs_attention" | "exited";
   events: StoredEvent[];
+  /** More transcript follows; request the next page after the last event's seq. */
+  more: boolean;
 }
 
 export type { ChatEvent, StoredEvent };

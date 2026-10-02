@@ -77,6 +77,22 @@ describe("ClaudeSession", () => {
     expect(fake.queries[1].options.sessionId).toBeUndefined();
   });
 
+  it("pages snapshots so every response fits in one host frame", async () => {
+    const chat = session();
+    for (let i = 0; i < 12; i++) await chat.send("x".repeat(15_000));
+    const pages = [];
+    let after = 0;
+    for (;;) {
+      const page = chat.snapshot(after);
+      pages.push(page);
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(60_000);
+      if (!page.more) break;
+      after = page.events.at(-1)!.seq;
+    }
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.flatMap((page) => page.events).map(({ seq }) => seq)).toEqual(Array.from({ length: 12 }, (_, i) => i + 1));
+  });
+
   it("asks for permission in the chat and blocks the tool until answered", async () => {
     const chat = session();
     await chat.send("edit it");

@@ -92,8 +92,11 @@ export class ClaudeHeadlessPlugin {
         if (request.reason === "destroy") this.store.remove(id);
         return { stopped: true };
       }
-      case "claude.snapshot":
-        return this.session(object(params)).snapshot();
+      case "claude.snapshot": {
+        const request = object(params);
+        const after = typeof request.after_seq === "number" ? request.after_seq : 0;
+        return this.session(request).snapshot(after);
+      }
       case "claude.permission.respond": {
         const request = object(params);
         if (typeof request.allow !== "boolean") throw new RpcError(INVALID_PARAMS, "allow must be a boolean");

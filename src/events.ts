@@ -15,8 +15,8 @@ export type ChatEvent =
   | { type: "result"; is_error: boolean; subtype: string; cost_usd: number; duration_ms: number; text?: string }
   | { type: "error"; message: string };
 
-/** Keeps every event comfortably below the host's 64 KiB frame limit. */
-export const MAX_TEXT_CHARS = 16_000;
+/** Keeps every event below the host's 64 KiB frame limit, even at 4 bytes per character. */
+export const MAX_TEXT_CHARS = 8_000;
 
 export function clip(text: string, limit = MAX_TEXT_CHARS): string {
   return text.length <= limit ? text : `${text.slice(0, limit)}\n… [${text.length - limit} more characters]`;

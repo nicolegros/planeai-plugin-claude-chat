@@ -36,7 +36,7 @@ describe("Chat", () => {
   });
 
   it("rebuilds the conversation from the snapshot, then follows live events", async () => {
-    const { value, push } = context({ seq: 1, status: "idle", events: [{ seq: 1, payload: { type: "user", text: "earlier question" } }] });
+    const { value, push } = context({ seq: 1, status: "idle", events: [{ seq: 1, payload: { type: "user", text: "earlier question" } }], more: false });
     app = mount(Chat, { target: document.body, props: { context: value } });
     await settle();
     expect(document.body.textContent).toContain("earlier question");
@@ -49,8 +49,23 @@ describe("Chat", () => {
     expect(document.body.textContent).toContain("Thinking it through");
   });
 
+  it("loads every snapshot page before following live events", async () => {
+    const { value } = context({ seq: 0, status: "idle", events: [], more: false });
+    const pages = [
+      { seq: 2, status: "idle", events: [{ seq: 1, payload: { type: "user", text: "first page" } }], more: true },
+      { seq: 2, status: "idle", events: [{ seq: 2, payload: { type: "assistant", text: "second page" } }], more: false },
+    ];
+    value.host.call = vi.fn(async () => pages.shift()) as typeof value.host.call;
+    app = mount(Chat, { target: document.body, props: { context: value } });
+    await settle();
+    await settle();
+    expect(document.body.textContent).toContain("first page");
+    expect(document.body.textContent).toContain("second page");
+    expect(value.host.call).toHaveBeenNthCalledWith(2, "claude.snapshot", { session_id: "s1", after_seq: 1 });
+  });
+
   it("sends on Enter and answers permission prompts", async () => {
-    const { value, push } = context({ seq: 0, status: "idle", events: [] });
+    const { value, push } = context({ seq: 0, status: "idle", events: [], more: false });
     app = mount(Chat, { target: document.body, props: { context: value } });
     await settle();
 
@@ -69,7 +84,7 @@ describe("Chat", () => {
   });
 
   it("interrupts a running turn with Escape", async () => {
-    const { value } = context({ seq: 0, status: "busy", events: [] });
+    const { value } = context({ seq: 0, status: "busy", events: [], more: false });
     app = mount(Chat, { target: document.body, props: { context: value } });
     await settle();
     document.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

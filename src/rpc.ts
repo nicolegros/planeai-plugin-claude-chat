@@ -17,6 +17,7 @@ export class RpcError extends Error {
 export type Handler = (method: string, params: unknown, signal: AbortSignal) => Promise<unknown>;
 
 type Id = string | number;
+type Frame = { jsonrpc: "2.0"; id?: Id } & Record<string, unknown>;
 
 /**
  * Newline-framed JSON-RPC 2.0 over stdio, as the PlaneAI plugin host speaks it.
@@ -78,12 +79,16 @@ export class JsonRpcPeer {
       .finally(() => this.inFlight.delete(id));
   }
 
-  private write(frame: unknown): void {
+  private write(frame: Frame): void {
     const line = `${JSON.stringify(frame)}\n`;
-    if (Buffer.byteLength(line) > MAX_FRAME_BYTES) {
-      console.error(`dropped JSON-RPC frame over ${MAX_FRAME_BYTES} bytes`);
+    if (Buffer.byteLength(line) <= MAX_FRAME_BYTES) {
+      this.output.write(line);
       return;
     }
-    this.output.write(line);
+    console.error(`JSON-RPC frame over ${MAX_FRAME_BYTES} bytes not sent`);
+    // A response must still answer its request, or the host waits out its deadline.
+    if (frame.id !== undefined) {
+      this.write({ jsonrpc: "2.0", id: frame.id, error: { code: -32000, message: `response exceeds the ${MAX_FRAME_BYTES}-byte frame limit` } });
+    }
   }
 }

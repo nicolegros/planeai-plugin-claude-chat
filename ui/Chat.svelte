@@ -75,17 +75,24 @@
     }
   }
 
+  async function loadSnapshot(): Promise<void> {
+    let after = 0;
+    for (;;) {
+      const page = await context.host.call<Snapshot>("claude.snapshot", { session_id: context.session.id, ...(after ? { after_seq: after } : {}) });
+      page.events.forEach((event) => transcript.apply(event));
+      status = page.status;
+      const last = page.events.at(-1);
+      if (!page.more || !last) return;
+      after = last.seq;
+    }
+  }
+
   onMount(() => {
     // Subscribe before the snapshot so nothing emitted in between is lost; seq drops duplicates.
     const buffered: StoredEvent[] = [];
     let replaying = true;
     unsubscribe = context.host.session.onEvent((event) => (replaying ? buffered.push(event) : apply(event)));
-    void context.host
-      .call<Snapshot>("claude.snapshot", { session_id: context.session.id })
-      .then((snapshot) => {
-        snapshot.events.forEach((event) => transcript.apply(event));
-        status = snapshot.status;
-      })
+    void loadSnapshot()
       .catch((error) => context.host.data.notify(String(error)))
       .finally(() => {
         replaying = false;

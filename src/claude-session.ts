@@ -3,6 +3,9 @@ import { clip, summarizeInput, translate, type ChatEvent } from "./events";
 import { InputQueue } from "./input-queue";
 import type { StoredEvent, TranscriptStore } from "./transcript";
 
+/** Leaves headroom under the 64 KiB frame for the response envelope. */
+const SNAPSHOT_PAGE_BYTES = 40_000;
+
 export type SessionStatus = "busy" | "idle" | "needs_attention" | "exited";
 
 export type QueryFactory = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => Query;
@@ -63,8 +66,18 @@ export class ClaudeSession {
     return this.config.id;
   }
 
-  snapshot(): { seq: number; status: SessionStatus; events: StoredEvent[] } {
-    return { seq: this.seq, status: this.status, events: [...this.events] };
+  /** One page of the transcript after `afterSeq`, sized to fit a single host frame. */
+  snapshot(afterSeq = 0): { seq: number; status: SessionStatus; events: StoredEvent[]; more: boolean } {
+    const remaining = this.events.filter((event) => event.seq > afterSeq);
+    const events: StoredEvent[] = [];
+    let bytes = 0;
+    for (const event of remaining) {
+      const size = Buffer.byteLength(JSON.stringify(event));
+      if (events.length > 0 && bytes + size > SNAPSHOT_PAGE_BYTES) break;
+      events.push(event);
+      bytes += size;
+    }
+    return { seq: this.seq, status: this.status, events, more: events.length < remaining.length };
   }
 
   announce(): void {

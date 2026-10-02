@@ -46,6 +46,13 @@ describe("JsonRpcPeer", () => {
     expect(frames[0]).toEqual({ jsonrpc: "2.0", id: 7, error: { code: CANCELLED, message: "request cancelled" } });
   });
 
+  it("answers an oversized result with an error instead of leaving the host waiting", async () => {
+    const { frames, send } = harness(async () => "x".repeat(70_000));
+    send({ jsonrpc: "2.0", id: 3, method: "big" });
+    await until(() => frames.length === 1);
+    expect(frames[0]).toMatchObject({ id: 3, error: { code: -32000, message: expect.stringContaining("frame limit") } });
+  });
+
   it("sends notifications and drops frames over the host limit", async () => {
     const { peer, frames } = harness(async () => null);
     peer.notify("host.session.status", { session_id: "s", status: "idle" });
