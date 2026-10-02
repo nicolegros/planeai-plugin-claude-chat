@@ -1,4 +1,4 @@
-import type { ChatEvent } from "../src/events";
+import type { ChatEvent, ContextUsage, ModelOption, SessionMeta, TokenUsage, ToolInput } from "../src/events";
 import type { StoredEvent } from "../src/transcript";
 
 /** The slice of PlaneAI's plugin UI bridge a provider session UI uses. */
@@ -13,15 +13,17 @@ export interface ProviderUiContext {
       onEvent(listener: (event: StoredEvent) => void): () => void;
     };
     data: { notify(message: string, kind?: "success" | "error"): void };
+    navigation: { openExternal(url: string): void };
   };
 }
 
 export interface Snapshot {
   seq: number;
   status: "busy" | "idle" | "needs_attention" | "exited";
+  meta: SessionMeta;
   events: StoredEvent[];
   /** More transcript follows; request the next page after the last event's seq. */
   more: boolean;
 }
 
-export type { ChatEvent, StoredEvent };
+export type { ChatEvent, ContextUsage, ModelOption, SessionMeta, StoredEvent, TokenUsage, ToolInput };

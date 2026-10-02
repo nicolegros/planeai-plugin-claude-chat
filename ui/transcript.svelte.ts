@@ -1,26 +1,33 @@
-import type { ChatEvent, StoredEvent } from "./host";
+import type { ChatEvent, SessionMeta, StoredEvent, TokenUsage, ToolInput } from "./host";
 
 export interface PermissionEntry {
   request_id: string;
   tool: string;
   title: string;
   summary: string;
+  input?: ToolInput;
+  can_remember: boolean;
   resolved: boolean | null;
+  remembered?: boolean;
+  reason?: string;
 }
 
 export type Entry =
   | { kind: "user"; seq: number; text: string }
   | { kind: "assistant"; seq: number; text: string }
-  | { kind: "tool"; seq: number; name: string; summary: string; result: { is_error: boolean; summary: string } | null; id: string }
+  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string } | null }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
-  | { kind: "result"; seq: number; is_error: boolean; cost_usd: number; duration_ms: number; text?: string }
+  | { kind: "result"; seq: number; is_error: boolean; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { kind: "error"; seq: number; message: string };
+
+const EMPTY_META: SessionMeta = { model: null, permission_mode: "default", modes: [], models: [], context: null };
 
 /** Folds the ordered event stream into renderable entries; events at or below `seq` are ignored. */
 export class Transcript {
   entries = $state<Entry[]>([]);
   /** Streaming text of the assistant message in progress. */
   live = $state("");
+  meta = $state<SessionMeta>({ ...EMPTY_META });
   seq = 0;
 
   apply({ seq, payload }: StoredEvent): void {
@@ -29,10 +36,17 @@ export class Transcript {
     this.fold(seq, payload as ChatEvent);
   }
 
+  setMeta(meta: SessionMeta): void {
+    this.meta = { ...EMPTY_META, ...meta };
+  }
+
   private fold(seq: number, event: ChatEvent): void {
     switch (event.type) {
       case "delta":
         this.live += event.text;
+        return;
+      case "meta":
+        this.meta = { ...this.meta, ...event.meta };
         return;
       case "user":
         this.entries.push({ kind: "user", seq, text: event.text });
@@ -43,24 +57,26 @@ export class Transcript {
         return;
       case "tool":
         this.live = "";
-        this.entries.push({ kind: "tool", seq, id: event.id, name: event.name, summary: event.summary, result: null });
+        this.entries.push({ kind: "tool", seq, id: event.id, name: event.name, summary: event.summary, input: event.input, result: null });
         return;
       case "tool_result": {
         const tool = this.entries.findLast((entry) => entry.kind === "tool" && entry.id === event.tool_use_id);
         if (tool?.kind === "tool") tool.result = { is_error: event.is_error, summary: event.summary };
         return;
       }
-      case "permission":
-        this.entries.push({ kind: "permission", seq, permission: { ...event, resolved: null } });
+      case "permission": {
+        const { type: _type, ...permission } = event;
+        this.entries.push({ kind: "permission", seq, permission: { ...permission, resolved: null } });
         return;
+      }
       case "permission_resolved": {
         const entry = this.entries.findLast((candidate) => candidate.kind === "permission" && candidate.permission.request_id === event.request_id);
-        if (entry?.kind === "permission") entry.permission.resolved = event.allowed;
+        if (entry?.kind === "permission") Object.assign(entry.permission, { resolved: event.allowed, remembered: event.remembered, reason: event.reason });
         return;
       }
       case "result":
         this.live = "";
-        this.entries.push({ kind: "result", seq, is_error: event.is_error, cost_usd: event.cost_usd, duration_ms: event.duration_ms, text: event.text });
+        this.entries.push({ kind: "result", seq, is_error: event.is_error, cost_usd: event.cost_usd, duration_ms: event.duration_ms, usage: event.usage, text: event.text });
         return;
       case "error":
         this.live = "";

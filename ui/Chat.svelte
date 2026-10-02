@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
-  import type { ProviderUiContext, Snapshot, StoredEvent } from "./host";
+  import Header from "./Header.svelte";
+  import Markdown from "./Markdown.svelte";
+  import PermissionCard from "./PermissionCard.svelte";
+  import ToolCard from "./ToolCard.svelte";
+  import type { ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
   import { Transcript } from "./transcript.svelte";
 
   let { context }: { context: ProviderUiContext } = $props();
@@ -14,15 +18,14 @@
   let stickToBottom = true;
 
   const working = $derived(status === "busy" || status === "needs_attention");
+  const sessionId = $derived(context.session.id);
 
   function apply(event: StoredEvent): void {
     transcript.apply(event);
-    if (event.payload && typeof event.payload === "object") {
-      const type = (event.payload as { type?: string }).type;
-      if (type === "user" || type === "delta" || type === "tool" || type === "permission_resolved") status = "busy";
-      if (type === "permission") status = "needs_attention";
-      if (type === "result" || type === "error") status = "idle";
-    }
+    const type = (event.payload as { type?: string }).type;
+    if (type === "user" || type === "delta" || type === "tool" || type === "permission_resolved") status = "busy";
+    if (type === "permission") status = "needs_attention";
+    if (type === "result" || type === "error") status = "idle";
     void scrollToBottom();
   }
 
@@ -37,49 +40,62 @@
     stickToBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
   }
 
-  async function send(): Promise<void> {
+  async function run(action: () => Promise<unknown>): Promise<void> {
+    try {
+      await action();
+    } catch (error) {
+      context.host.data.notify(String(error));
+    }
+  }
+
+  function send(): void {
     const text = draft.trim();
     if (!text) return;
     draft = "";
     stickToBottom = true;
-    try {
-      await context.host.session.send(text);
-    } catch (error) {
-      context.host.data.notify(String(error));
-    }
+    void resizeComposer();
+    void run(() => context.host.session.send(text));
   }
 
-  async function interrupt(): Promise<void> {
-    try {
-      await context.host.session.interrupt();
-    } catch (error) {
-      context.host.data.notify(String(error));
-    }
+  function interrupt(): void {
+    void run(() => context.host.session.interrupt());
   }
 
-  async function respond(requestId: string, allow: boolean): Promise<void> {
-    try {
-      await context.host.call("claude.permission.respond", { session_id: context.session.id, request_id: requestId, allow });
-    } catch (error) {
-      context.host.data.notify(String(error));
-    }
+  function respond(requestId: string, decision: "allow" | "allow_session" | "deny", reason?: string): void {
+    void run(() => context.host.call("claude.permission.respond", { session_id: sessionId, request_id: requestId, decision, ...(reason ? { reason } : {}) }));
+  }
+
+  function setMode(mode: string): void {
+    void run(() => context.host.call("claude.mode.set", { session_id: sessionId, mode }));
+  }
+
+  function setModel(model: string | null): void {
+    void run(() => context.host.call("claude.model.set", { session_id: sessionId, model }));
+  }
+
+  async function resizeComposer(): Promise<void> {
+    await tick();
+    if (!composer) return;
+    composer.style.height = "auto";
+    composer.style.height = `${Math.min(composer.scrollHeight, 240)}px`;
   }
 
   function onKeydown(event: KeyboardEvent): void {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      void send();
+      send();
     } else if (event.key === "Escape" && working) {
       event.preventDefault();
-      void interrupt();
+      interrupt();
     }
   }
 
   async function loadSnapshot(): Promise<void> {
     let after = 0;
     for (;;) {
-      const page = await context.host.call<Snapshot>("claude.snapshot", { session_id: context.session.id, ...(after ? { after_seq: after } : {}) });
+      const page = await context.host.call<Snapshot>("claude.snapshot", { session_id: sessionId, ...(after ? { after_seq: after } : {}) });
       page.events.forEach((event) => transcript.apply(event));
+      if (page.meta) transcript.setMeta(page.meta);
       status = page.status;
       const last = page.events.at(-1);
       if (!page.more || !last) return;
@@ -104,67 +120,66 @@
 
   onDestroy(() => unsubscribe?.());
 
+  const openExternal = (url: string) => context.host.navigation.openExternal(url);
+
   function seconds(ms: number): string {
     return `${(ms / 1000).toFixed(1)}s`;
+  }
+
+  function turnSummary(entry: { is_error: boolean; text?: string; duration_ms: number; cost_usd: number; usage?: TokenUsage }): string {
+    return [entry.is_error ? (entry.text ?? "Turn failed") : null, seconds(entry.duration_ms), `$${entry.cost_usd.toFixed(4)}`, entry.usage ? tokens(entry.usage) : null]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  function tokens(usage: TokenUsage): string {
+    const input = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+    const short = (count: number) => (count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count));
+    return `${short(input)} in · ${short(usage.output_tokens)} out`;
   }
 </script>
 
 <main class="chat">
+  <Header meta={transcript.meta} onMode={setMode} onModel={setModel} />
   <div class="log" bind:this={log} onscroll={onScroll} aria-live="polite">
     {#if transcript.entries.length === 0 && !transcript.live}
       <p class="empty">Send a message to start Claude in this worktree.</p>
     {/if}
     {#each transcript.entries as entry (entry.seq)}
       {#if entry.kind === "user"}
-        <div class="entry user"><span class="role">You</span><pre>{entry.text}</pre></div>
+        <div class="message user"><p class="text">{entry.text}</p></div>
       {:else if entry.kind === "assistant"}
-        <div class="entry assistant"><span class="role">Claude</span><pre>{entry.text}</pre></div>
+        <div class="message assistant"><Markdown text={entry.text} onLink={openExternal} /></div>
       {:else if entry.kind === "tool"}
-        <div class="entry tool">
-          <pre><span class="tool-name">{entry.name}</span> {entry.summary}</pre>
-          {#if entry.result}
-            <pre class="tool-result" class:failed={entry.result.is_error}>{entry.result.summary || (entry.result.is_error ? "failed" : "done")}</pre>
-          {/if}
-        </div>
+        <ToolCard name={entry.name} summary={entry.summary} input={entry.input} result={entry.result} />
       {:else if entry.kind === "permission"}
-        <div class="entry permission" data-permission={entry.permission.request_id}>
-          <p>{entry.permission.title}</p>
-          <pre>{entry.permission.summary}</pre>
-          {#if entry.permission.resolved === null}
-            <div class="actions">
-              <button type="button" class="primary" onclick={() => respond(entry.permission.request_id, true)}>Allow</button>
-              <button type="button" onclick={() => respond(entry.permission.request_id, false)}>Deny</button>
-            </div>
-          {:else}
-            <p class="resolution">{entry.permission.resolved ? "Allowed" : "Denied"}</p>
-          {/if}
-        </div>
+        <PermissionCard permission={entry.permission} onRespond={(decision, reason) => respond(entry.permission.request_id, decision, reason)} />
       {:else if entry.kind === "result"}
-        <p class="entry result" class:failed={entry.is_error}>
-          {entry.is_error ? (entry.text ?? "Turn failed") : "Done"} · {seconds(entry.duration_ms)} · ${entry.cost_usd.toFixed(4)}
-        </p>
+        <p class="turn" class:failed={entry.is_error}>{turnSummary(entry)}</p>
       {:else if entry.kind === "error"}
-        <p class="entry error" role="alert">{entry.message}</p>
+        <p class="error" role="alert">{entry.message}</p>
       {/if}
     {/each}
     {#if transcript.live}
-      <div class="entry assistant"><span class="role">Claude</span><pre>{transcript.live}</pre></div>
+      <div class="message assistant"><Markdown text={transcript.live} onLink={openExternal} /></div>
+    {:else if working}
+      <p class="working">{status === "needs_attention" ? "Waiting for your answer" : "Claude is working"}<span class="ellipsis" aria-hidden="true"></span></p>
     {/if}
   </div>
-  <form class="composer" onsubmit={(event) => { event.preventDefault(); void send(); }}>
+  <form class="composer" onsubmit={(event) => { event.preventDefault(); send(); }}>
     <textarea
       bind:this={composer}
       bind:value={draft}
+      oninput={resizeComposer}
       onkeydown={onKeydown}
-      rows="3"
-      placeholder={working ? "Claude is working… (Esc to interrupt)" : "Message Claude (Enter to send, Shift+Enter for a new line)"}
+      rows="1"
+      placeholder={working ? "Queue a follow-up · Esc to stop" : "Message Claude · Enter to send, Shift+Enter for a new line"}
       aria-label="Message Claude"
     ></textarea>
     {#if working}
       <button type="button" onclick={interrupt}>Stop</button>
-    {:else}
-      <button type="submit" class="primary" disabled={!draft.trim()}>Send</button>
     {/if}
+    <button type="submit" class="primary" disabled={!draft.trim()}>{working ? "Queue" : "Send"}</button>
   </form>
 </main>
 
@@ -172,19 +187,15 @@
   .chat { display: flex; flex-direction: column; height: 100vh; }
   .log { flex: 1; overflow-y: auto; padding: var(--planeai-space-4); display: flex; flex-direction: column; gap: var(--planeai-space-3); }
   .empty { margin: auto; color: var(--planeai-text-subtle); }
-  .entry { display: flex; flex-direction: column; gap: var(--planeai-space-1); }
-  .role { font-size: 11px; font-weight: 600; color: var(--planeai-text-subtle); text-transform: uppercase; letter-spacing: 0.04em; }
-  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--planeai-font-mono); font-size: 12.5px; line-height: 1.5; }
-  .user pre { color: var(--planeai-text-muted); }
-  .tool pre { color: var(--planeai-text-muted); }
-  .tool-name { color: var(--planeai-accent); font-weight: 600; }
-  .tool-result { padding-left: var(--planeai-space-3); border-left: 2px solid var(--planeai-border); max-height: 160px; overflow: hidden; }
-  .failed { color: var(--planeai-danger); }
-  .permission { padding: var(--planeai-space-3); border: 1px solid var(--planeai-warning); border-radius: var(--planeai-radius); background: var(--planeai-surface); }
-  .actions { display: flex; gap: var(--planeai-space-2); margin-top: var(--planeai-space-2); }
-  .resolution, .result { color: var(--planeai-text-subtle); font-size: 12px; }
-  .error { color: var(--planeai-danger); }
+  .message.user { align-self: flex-end; max-width: 80%; padding: var(--planeai-space-2) var(--planeai-space-3); border-radius: var(--planeai-radius); background: var(--planeai-accent-subtle); }
+  .text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.55; }
+  .message.assistant { max-width: 100%; }
+  .turn { color: var(--planeai-text-subtle); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .failed, .error { color: var(--planeai-danger); }
+  .working { color: var(--planeai-text-subtle); font-size: 12.5px; }
+  .ellipsis::after { content: "…"; animation: blink 1.4s steps(4, end) infinite; }
   .composer { display: flex; gap: var(--planeai-space-2); align-items: flex-end; padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); }
-  textarea { flex: 1; resize: none; min-height: 0; }
+  textarea { flex: 1; resize: none; min-height: 34px; max-height: 240px; line-height: 18px; }
   button.primary { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
+  @keyframes blink { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }
 </style>
