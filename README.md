@@ -26,9 +26,11 @@ Confirm your use is covered before relying on subscription login for this plugin
 - **Same Claude Code as the terminal.** User, project and local settings load (`CLAUDE.md`, skills, MCP servers, hooks), with the `claude_code` system prompt preset.
 - **Same session id.** The Claude session id is the PlaneAI session id, so PlaneAI restarts resume the conversation with `resume`.
 - **Lazy start.** Starting or resuming a session spawns nothing; Claude starts on the first prompt.
-- **Status.** The plugin reports `busy`, `idle` and `needs_attention` to PlaneAI, which drives the sidebar and notifications. A pending permission prompt is `needs_attention`.
+- **Status.** The plugin reports `busy`, `idle` and `needs_attention` to PlaneAI, which drives the sidebar and notifications.
+  A pending permission prompt is `needs_attention`.
 - **Auto-approve.** PlaneAI's auto-approve maps to `bypassPermissions`; otherwise Claude asks in the chat.
-- **Transcript.** Chat events are stored under the plugin data directory so the chat rebuilds after remounts and restarts. Destroying a session deletes them; archiving keeps them.
+- **Transcript.** Chat events are stored under the plugin data directory so the chat rebuilds after remounts and restarts.
+  Destroying a session deletes them; archiving keeps them.
 
 ## Install
 
