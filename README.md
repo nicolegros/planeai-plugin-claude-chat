@@ -8,7 +8,7 @@ Only its primary tab differs: PlaneAI mounts this plugin's chat UI where the ter
 
 > **Status: v0, unreleased.**
 > It needs a PlaneAI build with the unstable `planeai.plugin-host.v3` provider contract (ADR-0013).
-> v0 shows raw streamed text, tool calls and their output, and Allow/Deny permission prompts.
+> The chat renders markdown, tool calls with diffs, and permission prompts that can be allowed once, for the session, or denied with a reason.
 
 ## Requirements
 
@@ -29,6 +29,9 @@ Confirm your use is covered before relying on subscription login for this plugin
 - **Status.** The plugin reports `busy`, `idle` and `needs_attention` to PlaneAI, which drives the sidebar and notifications.
   A pending permission prompt is `needs_attention`.
 - **Auto-approve.** PlaneAI's auto-approve maps to `bypassPermissions`; otherwise Claude asks in the chat.
+- **Controls.** The header switches model and permission mode (Ask before acting, Accept edits, Plan only, and Bypass for auto-approve sessions) and shows context usage.
+- **Open in terminal.** Continues the conversation in Claude Code's own UI in a terminal tab of the same session, with the current mode and model.
+  The chat stays read-only until that tab closes or Return to chat is selected.
 - **Transcript.** Chat events are stored under the plugin data directory so the chat rebuilds after remounts and restarts.
   Destroying a session deletes them; archiving keeps them.
 
