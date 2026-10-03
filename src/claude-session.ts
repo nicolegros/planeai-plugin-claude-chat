@@ -118,7 +118,8 @@ export class ClaudeSession {
       active_model: null,
       permission_mode: config.yolo ? "bypassPermissions" : "default",
       modes,
-      models: [],
+      // Claude lists its models once it starts; until then, the ones it listed last.
+      models: store.models(),
       context: null,
       handed_off: handedOff,
       compacting: false,
@@ -480,6 +481,7 @@ export class ClaudeSession {
       // The header offers Claude Code's default itself.
       const choices = models.filter((model) => model.value !== "default").map((model) => ({ value: model.value, label: model.displayName }));
       this.updateMeta({ models: choices });
+      this.store.setModels(choices);
       return choices;
     } catch (error) {
       console.error(`failed to list models: ${String(error)}`);

@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ChatEvent } from "./events";
+import type { ChatEvent, ModelOption } from "./events";
 
 export interface StoredEvent {
   seq: number;
@@ -13,7 +13,7 @@ export const MAX_SNAPSHOT_EVENTS = 2_000;
 /**
  * Per-session event log under the plugin data dir, so a remounted or restarted UI
  * can rebuild the chat, plus a `started` marker and the conversation id /clear moved to.
- * Plugin-wide: Claude Code's terminal-only command names.
+ * Plugin-wide: Claude Code's terminal-only command names and the models it last listed.
  */
 export class TranscriptStore {
   constructor(private readonly root: string) {
@@ -30,6 +30,10 @@ export class TranscriptStore {
 
   private get terminalCommandsPath(): string {
     return join(this.root, "terminal-commands.json");
+  }
+
+  private get modelsPath(): string {
+    return join(this.root, "models.json");
   }
 
   private conversationPath(sessionId: string): string {
@@ -79,6 +83,21 @@ export class TranscriptStore {
 
   setTerminalCommands(names: string[]): void {
     writeFileSync(this.terminalCommandsPath, JSON.stringify(names));
+  }
+
+  /** The models Claude Code last listed, so a chat offers them before its Claude starts. */
+  models(): ModelOption[] {
+    try {
+      const models: unknown = JSON.parse(readFileSync(this.modelsPath, "utf8"));
+      if (!Array.isArray(models)) return [];
+      return models.filter((model): model is ModelOption => typeof model?.value === "string" && typeof model?.label === "string").map(({ value, label }) => ({ value, label }));
+    } catch {
+      return [];
+    }
+  }
+
+  setModels(models: ModelOption[]): void {
+    writeFileSync(this.modelsPath, JSON.stringify(models));
   }
 
   /** The Claude session id currently holding this session's conversation, when it is not the PlaneAI id. */

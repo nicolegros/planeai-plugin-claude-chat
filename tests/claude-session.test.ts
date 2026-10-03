@@ -219,6 +219,18 @@ describe("ClaudeSession", () => {
     });
   });
 
+  it("offers the models Claude listed last before its Claude starts", async () => {
+    const first = session();
+    await first.send("hello");
+    await flush();
+    expect(store.models()).toEqual([{ value: "sonnet", label: "Sonnet" }, { value: "opus", label: "Opus" }]);
+    first.stop();
+
+    const next = session();
+    expect(next.snapshot().meta.models).toEqual([{ value: "sonnet", label: "Sonnet" }, { value: "opus", label: "Opus" }]);
+    expect(fake.queries).toHaveLength(1);
+  });
+
   it("hands the conversation to the terminal and refuses input until it comes back", async () => {
     const chat = session();
     await chat.send("hello");
