@@ -122,6 +122,7 @@ export class ClaudeSession {
       context: null,
       handed_off: handedOff,
       compacting: false,
+      cwd: config.cwd,
     };
     this.conversationId = store.conversation(config.id) ?? config.id;
     this.slashCommands = new SlashCommands(store);

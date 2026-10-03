@@ -5,7 +5,14 @@ import type { Appearance } from "./appearance";
 export type ToolInput =
   | { kind: "bash"; command: string; description?: string }
   | { kind: "edit"; file_path: string; edits: { old_string: string; new_string: string }[]; hidden_edits?: number }
-  | { kind: "write"; file_path: string; content: string };
+  | { kind: "write"; file_path: string; content: string }
+  | { kind: "skill"; skill: string; args?: string }
+  | { kind: "todos"; todos: Todo[] };
+
+export interface Todo {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
 
 export interface TokenUsage {
   input_tokens: number;
@@ -44,6 +51,8 @@ export interface SessionMeta {
   context: ContextUsage | null;
   /** Claude is summarizing the conversation, from /compact or automatically. */
   compacting: boolean;
+  /** The session's worktree, so the chat can show paths relative to it. */
+  cwd: string | null;
 }
 
 export interface Compaction {
@@ -99,7 +108,7 @@ export function clip(text: string, limit = MAX_TEXT_CHARS): string {
   return text.length <= limit ? text : `${text.slice(0, limit)}\n… [${text.length - limit} more characters]`;
 }
 
-const SUMMARY_FIELDS = ["command", "file_path", "path", "pattern", "url", "query", "description"];
+const SUMMARY_FIELDS = ["command", "file_path", "path", "pattern", "url", "query", "description", "skill"];
 
 /** One line describing what a tool call does, for compact rendering. */
 export function summarizeInput(input: unknown): string {
@@ -138,9 +147,30 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
     }
     case "Write":
       return { kind: "write", file_path: text(fields.file_path), content: clip(text(fields.content), MAX_INPUT_CHARS) };
+    case "Skill":
+      return {
+        kind: "skill",
+        skill: clip(text(fields.skill), 200),
+        ...(typeof fields.args === "string" && fields.args ? { args: clip(fields.args, 1_000) } : {}),
+      };
+    case "TodoWrite":
+      return { kind: "todos", todos: todos(fields.todos) };
     default:
       return undefined;
   }
+}
+
+const TODO_STATUSES = new Set<Todo["status"]>(["pending", "in_progress", "completed"]);
+const MAX_TODOS = 50;
+
+function todos(value: unknown): Todo[] {
+  if (!Array.isArray(value)) return [];
+  const all = value.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object");
+  const budget = Math.floor(MAX_INPUT_CHARS / Math.max(1, Math.min(all.length, MAX_TODOS)));
+  return all.slice(0, MAX_TODOS).map((entry) => ({
+    content: clip(text(entry.content), budget),
+    status: TODO_STATUSES.has(entry.status as Todo["status"]) ? (entry.status as Todo["status"]) : "pending",
+  }));
 }
 
 /** Edits shown in full; the rest of a large MultiEdit is summarized so the event fits one frame. */

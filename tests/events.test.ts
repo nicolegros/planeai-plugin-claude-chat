@@ -61,6 +61,12 @@ describe("translate", () => {
     expect(toolInput("MultiEdit", { file_path: "a.ts", edits: [{ old_string: "1", new_string: "2" }, { old_string: "3", new_string: "4" }] })).toMatchObject({ edits: [{ new_string: "2" }, { new_string: "4" }] });
     expect(toolInput("Write", { file_path: "b.ts", content: "x" })).toEqual({ kind: "write", file_path: "b.ts", content: "x" });
     expect(toolInput("Grep", { pattern: "x" })).toBeUndefined();
+    expect(toolInput("Skill", { skill: "review", args: "42" })).toEqual({ kind: "skill", skill: "review", args: "42" });
+    expect(toolInput("Skill", { skill: "review" })).toEqual({ kind: "skill", skill: "review" });
+    expect(toolInput("TodoWrite", { todos: [{ content: "a", status: "completed", activeForm: "A" }, { content: "b", status: "unknown" }, null] })).toEqual({
+      kind: "todos",
+      todos: [{ content: "a", status: "completed" }, { content: "b", status: "pending" }],
+    });
     const many = toolInput("MultiEdit", { file_path: "a.ts", edits: Array.from({ length: 20 }, (_, i) => ({ old_string: `${i}`, new_string: `${i + 1}` })) });
     expect(many).toMatchObject({ hidden_edits: 8 });
     expect(many?.kind === "edit" && many.edits).toHaveLength(12);
@@ -77,6 +83,7 @@ describe("translate", () => {
   it("summarizes tool input by its most descriptive field", () => {
     expect(summarizeInput({ file_path: "src/main.ts", content: "…" })).toBe("src/main.ts");
     expect(summarizeInput({ todos: [] })).toBe('{"todos":[]}');
+    expect(summarizeInput({ skill: "review", args: "42" })).toBe("review");
   });
 
   it("clips long text so events stay within the host frame limit", () => {

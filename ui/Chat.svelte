@@ -3,10 +3,13 @@
   import { appearanceStyle, normalizeAppearance } from "../src/appearance";
   import CommandMenu from "./CommandMenu.svelte";
   import { CommandCatalog, matchCommands } from "./commands.svelte";
-  import Header from "./Header.svelte";
+  import ComposerBar from "./ComposerBar.svelte";
+  import Icon from "./Icon.svelte";
   import Markdown from "./Markdown.svelte";
   import PermissionCard from "./PermissionCard.svelte";
-  import ToolCard from "./ToolCard.svelte";
+  import ToolSteps from "./ToolSteps.svelte";
+  import { describeSteps, duration, turns, type Block } from "./tools";
+  import UserPrompt from "./UserPrompt.svelte";
   import type { Appearance, CommandOption, Compaction, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
   import { Transcript } from "./transcript.svelte";
 
@@ -28,6 +31,8 @@
   const status = $derived(transcript.status);
   const working = $derived(status === "busy" || status === "needs_attention");
   const sessionId = $derived(context.session.id);
+  const conversation = $derived(turns(transcript.entries));
+  const root = $derived(transcript.meta.cwd ?? undefined);
 
   const uid = $props.id();
   const MENU_ID = `${uid}-commands`;
@@ -252,80 +257,117 @@
   }
 </script>
 
+{#snippet block(item: Block)}
+  {#if item.kind === "tools"}
+    <ToolSteps tools={item.tools} {root} />
+  {:else if item.entry.kind === "assistant"}
+    <div class="message"><Markdown text={item.entry.text} onLink={openExternal} /></div>
+  {:else if item.entry.kind === "permission"}
+    {@const permission = item.entry.permission}
+    <PermissionCard {permission} onRespond={(decision, reason) => respond(permission.request_id, decision, reason)} />
+  {:else if item.entry.kind === "result"}
+    <p class="turn-summary" class:failed={item.entry.is_error}>{turnSummary(item.entry)}</p>
+  {:else if item.entry.kind === "error"}
+    <p class="error">{item.entry.message}</p>
+  {:else if item.entry.kind === "handoff"}
+    <p class="divider">{item.entry.in_terminal ? "Continued in the terminal" : "Back in the chat. Turns taken in the terminal are in Claude's history but not shown here."}</p>
+  {:else if item.entry.kind === "compacted"}
+    <p class="divider">{compacted(item.entry)}</p>
+  {:else if item.entry.kind === "cleared"}
+    <p class="divider">Context cleared · Claude no longer sees the messages above</p>
+  {:else if item.entry.kind === "notice"}
+    <p class="notice">{item.entry.text}</p>
+  {/if}
+{/snippet}
+
+{#snippet progress()}
+  {#if transcript.live}
+    <div class="message"><Markdown text={liveMarkdown || transcript.live} onLink={openExternal} /></div>
+  {:else if working}
+    <p class="working" aria-hidden="true">{status === "needs_attention" ? "Waiting for your answer" : transcript.meta.compacting ? "Compacting the conversation" : "Claude is working"}<span class="ellipsis"></span></p>
+  {/if}
+{/snippet}
+
 <main class="chat" style={appearanceStyle(appearance)}>
-  <Header meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff} />
   <div class="log" bind:this={log} onscroll={onScroll} role="log" aria-label="Conversation" aria-busy={!!transcript.live}>
-    {#if transcript.entries.length === 0 && !transcript.live}
-      <p class="empty">Send a message to start Claude in this worktree, or type / for commands.</p>
-    {/if}
-    {#each transcript.entries as entry (entry.seq)}
-      {#if entry.kind === "user"}
-        <div class="message user"><p class="text">{entry.text}</p></div>
-      {:else if entry.kind === "assistant"}
-        <div class="message assistant"><Markdown text={entry.text} onLink={openExternal} /></div>
-      {:else if entry.kind === "tool"}
-        <ToolCard name={entry.name} summary={entry.summary} input={entry.input} result={entry.result} />
-      {:else if entry.kind === "permission"}
-        <PermissionCard permission={entry.permission} onRespond={(decision, reason) => respond(entry.permission.request_id, decision, reason)} />
-      {:else if entry.kind === "result"}
-        <p class="turn" class:failed={entry.is_error}>{turnSummary(entry)}</p>
-      {:else if entry.kind === "error"}
-        <p class="error">{entry.message}</p>
-      {:else if entry.kind === "handoff"}
-        <p class="divider">{entry.in_terminal ? "Continued in the terminal" : "Back in the chat. Turns taken in the terminal are in Claude's history but not shown here."}</p>
-      {:else if entry.kind === "compacted"}
-        <p class="divider">{compacted(entry)}</p>
-      {:else if entry.kind === "cleared"}
-        <p class="divider">Context cleared · Claude no longer sees the messages above</p>
-      {:else if entry.kind === "notice"}
-        <p class="notice">{entry.text}</p>
+    {#if conversation.length === 0}
+      {#if transcript.live || working}
+        <div class="body">{@render progress()}</div>
+      {:else}
+        <p class="empty">Send a message to start Claude in this worktree, or type / for commands.</p>
       {/if}
-    {/each}
-    {#if transcript.live}
-      <div class="message assistant"><Markdown text={liveMarkdown || transcript.live} onLink={openExternal} /></div>
-    {:else if working}
-      <p class="working" aria-hidden="true">{status === "needs_attention" ? "Waiting for your answer" : transcript.meta.compacting ? "Compacting the conversation" : "Claude is working"}<span class="ellipsis"></span></p>
     {/if}
+    {#each conversation as turn, index (turn.seq)}
+      <section class="turn">
+        {#if turn.user}<UserPrompt text={turn.user.text} />{/if}
+        <div class="body">
+          {#if turn.folded.length > 0}
+            {@const steps = describeSteps(turn.folded.flatMap((item) => (item.kind === "tools" ? item.tools : [])))}
+            <details class="work">
+              <summary>
+                <Icon name="chevron" size={12} />
+                <span>{turn.result ? `Worked for ${duration(turn.result.duration_ms)}` : "Worked"}</span>
+                <span class="steps">· {steps}</span>
+              </summary>
+              <div class="folded">
+                {#each turn.folded as item (item.seq)}{@render block(item)}{/each}
+              </div>
+            </details>
+          {/if}
+          {#each turn.shown as item (item.seq)}{@render block(item)}{/each}
+          {#if index === conversation.length - 1}{@render progress()}{/if}
+          {#if turn.result}{@render block({ kind: "entry", seq: turn.result.seq, entry: turn.result })}{/if}
+          {#each turn.after as item (item.seq)}{@render block(item)}{/each}
+        </div>
+      </section>
+    {/each}
   </div>
   <p class="visually-hidden" role="status">{status === "needs_attention" ? "Claude is waiting for your answer" : working ? "Claude is working" : ""}</p>
   {#if transcript.meta.handed_off}
-    <div class="handed-off" role="status">
-      <p>This conversation is continuing in a terminal tab. Closing that tab brings it back here.</p>
-      <button type="button" class="primary" onclick={handback}>Return to chat</button>
+    <div class="dock">
+      <div class="handed-off" role="status">
+        <p>This conversation is continuing in a terminal tab. Closing that tab brings it back here.</p>
+        <button type="button" class="primary" onclick={handback}>Return to chat</button>
+      </div>
     </div>
   {:else}
-  <form class="composer" onsubmit={(event) => { event.preventDefault(); send(); }}>
-    {#if menuOpen}
-      <CommandMenu
-        id={MENU_ID}
-        {matches}
-        active={activeIndex}
-        loading={commands.list === null && commands.error === null}
-        error={commands.error}
-        onPick={complete}
-        onHover={(index) => (active = index)}
-      />
-    {/if}
-    <textarea
-      bind:this={composer}
-      bind:value={draft}
-      oninput={onInput}
-      onkeydown={onKeydown}
-      rows="1"
-      placeholder={working ? "Queue a follow-up · Esc to stop" : "Message Claude · Enter to send, Shift+Enter for a new line"}
-      aria-label="Message Claude"
-      role="combobox"
-      aria-autocomplete="list"
-      aria-haspopup="listbox"
-      aria-expanded={menuOpen}
-      aria-controls={menuOpen && matches.length > 0 ? MENU_ID : undefined}
-      aria-activedescendant={menuOpen && matches.length > 0 ? `${MENU_ID}-${activeIndex}` : undefined}
-    ></textarea>
-    {#if working}
-      <button type="button" onclick={interrupt}>Stop</button>
-    {/if}
-    <button type="submit" class="primary" disabled={!draft.trim()}>{working ? "Queue" : "Send"}</button>
-  </form>
+    <div class="dock">
+      <form class="composer" onsubmit={(event) => { event.preventDefault(); send(); }}>
+        {#if menuOpen}
+          <CommandMenu
+            id={MENU_ID}
+            {matches}
+            active={activeIndex}
+            loading={commands.list === null && commands.error === null}
+            error={commands.error}
+            onPick={complete}
+            onHover={(index) => (active = index)}
+          />
+        {/if}
+        <textarea
+          bind:this={composer}
+          bind:value={draft}
+          oninput={onInput}
+          onkeydown={onKeydown}
+          rows="1"
+          placeholder={working ? "Queue a follow-up · Esc to stop" : "Message Claude · / for commands"}
+          aria-label="Message Claude"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-haspopup="listbox"
+          aria-expanded={menuOpen}
+          aria-controls={menuOpen && matches.length > 0 ? MENU_ID : undefined}
+          aria-activedescendant={menuOpen && matches.length > 0 ? `${MENU_ID}-${activeIndex}` : undefined}
+        ></textarea>
+        <div class="bar">
+          <ComposerBar meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff} />
+          {#if working}
+            <button type="button" class="round" onclick={interrupt} title="Stop (Esc)" aria-label="Stop"><Icon name="stop" size={12} /></button>
+          {/if}
+          <button type="submit" class="round primary" disabled={!draft.trim()} title={working ? "Queue (Enter)" : "Send (Enter)"} aria-label={working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
+        </div>
+      </form>
+    </div>
   {/if}
 </main>
 
@@ -349,23 +391,39 @@
   /* PlaneAI's baseline sizes these in px; as element rules after it, these keep its sizes at the default and scale them. */
   :global(p) { font-size: inherit; line-height: var(--chat-line-text); }
   :global(:is(button, input, select, textarea)) { line-height: var(--chat-line); }
-  .log { flex: 1; overflow-y: auto; padding: var(--planeai-space-4); display: flex; flex-direction: column; gap: var(--planeai-space-3); }
-  .empty { margin: auto; color: var(--planeai-text-subtle); }
-  .message.user { align-self: flex-end; max-width: 80%; padding: var(--planeai-space-2) var(--planeai-space-3); border-radius: var(--planeai-radius); background: var(--planeai-accent-subtle); }
-  .text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--chat-size-body); line-height: 1.55; }
-  .message.assistant { max-width: 100%; }
-  .turn { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); font-variant-numeric: tabular-nums; }
+  .log { flex: 1; overflow-y: auto; }
+  .empty { margin: 30vh var(--planeai-space-5) 0; text-align: center; color: var(--planeai-text-subtle); }
+  .turn { border-bottom: 1px solid var(--planeai-border); }
+  .turn:last-child { border-bottom: 0; }
+  .body { display: flex; flex-direction: column; gap: var(--planeai-space-3); padding: var(--planeai-space-4) var(--planeai-space-5) var(--planeai-space-5); }
+  .message { max-width: 100%; }
+  .work summary { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 2px 8px 2px 4px; margin-left: -4px; border-radius: 6px; color: var(--planeai-text-muted); font-size: var(--chat-size-sm); cursor: pointer; list-style: none; }
+  .work summary:hover { background: var(--planeai-accent-subtle); color: var(--planeai-text); }
+  .work summary::-webkit-details-marker { display: none; }
+  .work summary :global(.icon) { transition: transform 120ms; }
+  .work[open] summary :global(.icon) { transform: rotate(90deg); }
+  .steps { overflow: hidden; color: var(--planeai-text-subtle); text-overflow: ellipsis; white-space: nowrap; }
+  .folded { display: flex; flex-direction: column; gap: var(--planeai-space-3); margin: var(--planeai-space-2) 0 0 5px; padding-left: var(--planeai-space-4); border-left: 1px solid var(--planeai-border-strong); }
+  .turn-summary { align-self: flex-end; color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); font-variant-numeric: tabular-nums; }
   .failed, .error { color: var(--planeai-danger); }
+  .turn-summary.failed { align-self: stretch; }
   .working { color: var(--planeai-text-subtle); font-size: var(--chat-size-code); }
-  .divider { display: flex; align-items: center; gap: var(--planeai-space-2); color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
-  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--planeai-border); }
-  .handed-off { display: flex; align-items: center; gap: var(--planeai-space-3); padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); background: var(--planeai-surface); }
-  .handed-off p { flex: 1; color: var(--planeai-text-muted); }
+  .divider { display: flex; align-items: center; gap: var(--planeai-space-3); color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--planeai-border-strong); }
+  .notice { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .ellipsis::after { content: "…"; animation: blink 1.4s steps(4, end) infinite; }
-  .notice { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
-  .composer { position: relative; display: flex; gap: var(--planeai-space-2); align-items: flex-end; padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); }
-  textarea { flex: 1; resize: none; min-height: 34px; max-height: 240px; }
+  .dock { padding: var(--planeai-space-3) var(--planeai-space-5) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); }
+  .composer, .handed-off { position: relative; border: 1px solid var(--planeai-border-strong); border-radius: 12px; background: var(--planeai-surface); }
+  .composer:focus-within { border-color: color-mix(in srgb, var(--planeai-text) 32%, transparent); }
+  textarea { display: block; width: 100%; min-height: 44px; max-height: 240px; padding: var(--planeai-space-3) var(--planeai-space-3) var(--planeai-space-1); border: 0; background: transparent; resize: none; font-size: var(--chat-size-body); }
+  textarea:focus-visible { outline: none; }
+  .composer :global(.commands) { right: 0; left: 0; bottom: calc(100% + var(--planeai-space-2)); }
+  .bar { display: flex; align-items: center; gap: var(--planeai-space-1); min-width: 0; padding: var(--planeai-space-1) var(--planeai-space-2) var(--planeai-space-2); }
+  .round { display: grid; flex: none; place-items: center; width: 28px; height: 28px; min-height: 0; padding: 0; border-radius: 50%; }
+  .round.primary:disabled { opacity: 0.3; }
+  .handed-off { display: flex; align-items: center; gap: var(--planeai-space-3); padding: var(--planeai-space-3) var(--planeai-space-4); }
+  .handed-off p { flex: 1; color: var(--planeai-text-muted); }
   button.primary { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
   @keyframes blink { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }
 </style>

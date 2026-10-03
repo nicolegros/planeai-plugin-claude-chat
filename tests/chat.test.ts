@@ -7,6 +7,7 @@ const META: SessionMeta = {
   model: null,
   active_model: null,
   compacting: false,
+  cwd: "/work/repo",
   permission_mode: "default",
   modes: ["default", "acceptEdits", "plan"],
   models: [{ value: "opus", label: "Opus" }],
@@ -61,7 +62,7 @@ const settle = async () => {
 };
 
 function button(label: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === label);
+  const found = [...document.querySelectorAll("button")].find((candidate) => (candidate.getAttribute("aria-label") ?? candidate.textContent?.trim()) === label);
   if (!found) throw new Error(`no button ${label}`);
   return found;
 }
@@ -147,6 +148,11 @@ describe("Chat", () => {
     });
     await settle();
     expect(document.querySelector(".tool")?.getAttribute("data-state")).toBe("running");
+    expect(document.querySelector(".tool .sentence")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Editing a.ts in src");
+    expect(document.querySelector(".tool .meta")?.textContent?.replace(/\s+/g, " ").trim()).toBe("+1 −1");
+    expect(document.querySelector(".diff")).toBeNull();
+    document.querySelector<HTMLButtonElement>(".tool button")!.click();
+    flushSync();
     expect(document.querySelector(".diff .remove")?.textContent).toContain("const a = 1;");
     expect(document.querySelector(".diff .add")?.textContent).toContain("const a = 2;");
 
@@ -183,9 +189,11 @@ describe("Chat", () => {
     expect(harness.value.host.call).toHaveBeenCalledWith("claude.permission.respond", { session_id: "s1", request_id: "p2", decision: "deny", reason: "keep dist" });
   });
 
-  it("switches mode and model from the header and shows context usage", async () => {
+  it("switches mode and model from the composer and shows context usage", async () => {
     const harness = await render({ meta: { ...META, context: { total_tokens: 50_000, max_tokens: 200_000, percentage: 25 } } });
-    expect(document.querySelector(".context-label")?.textContent).toBe("25% context · 50k / 200k");
+    expect(document.querySelector(".context-label")?.textContent).toBe("25%");
+    expect(document.querySelector("[role=meter]")?.getAttribute("aria-valuenow")).toBe("25");
+    expect(document.querySelector(".context")?.getAttribute("title")).toBe("50k of 200k tokens of context used");
     const [model, mode] = document.querySelectorAll("select");
     mode.value = "plan";
     mode.dispatchEvent(new Event("change", { bubbles: true }));
@@ -246,6 +254,8 @@ describe("Chat", () => {
     const harness = await render();
     harness.push(1, { type: "tool", id: "t1", name: "MultiEdit", summary: "a.ts", input: { kind: "edit", file_path: "a.ts", edits: [{ old_string: "a", new_string: "b" }], hidden_edits: 1 } });
     await settle();
+    document.querySelector<HTMLButtonElement>(".tool button")!.click();
+    flushSync();
     expect(document.body.textContent).toContain("1 more edit not shown");
   });
 
@@ -429,6 +439,45 @@ describe("Chat", () => {
       usage: { input_tokens: 100, output_tokens: 340, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 100 },
     });
     await settle();
-    expect(document.querySelector(".turn")?.textContent?.replace(/\s+/g, " ").trim()).toBe("12.9s · $0.1234 · 1.2k in · 340 out");
+    expect(document.querySelector(".turn-summary")?.textContent?.replace(/\s+/g, " ").trim()).toBe("12.9s · $0.1234 · 1.2k in · 340 out");
+  });
+
+  it("pins each prompt over its turn and folds finished work behind a summary", async () => {
+    const harness = await render();
+    harness.push(1, { type: "user", text: "/review 42" });
+    harness.push(2, { type: "tool", id: "t1", name: "Skill", summary: "review", input: { kind: "skill", skill: "review", args: "42" } });
+    harness.push(3, { type: "tool_result", tool_use_id: "t1", is_error: false, summary: "Launching skill: review" });
+    harness.push(4, { type: "tool", id: "t2", name: "Bash", summary: "gh pr diff 42", input: { kind: "bash", command: "gh pr diff 42" } });
+    await settle();
+    expect(document.querySelector(".prompt .command")?.textContent).toBe("/review");
+    expect(document.querySelector(".work")).toBeNull();
+    expect(document.querySelectorAll(".tool")).toHaveLength(2);
+
+    harness.push(5, { type: "tool_result", tool_use_id: "t2", is_error: false, summary: "diff" });
+    harness.push(6, { type: "assistant", text: "Looks good." });
+    harness.push(7, { type: "result", is_error: false, subtype: "success", cost_usd: 0.01, duration_ms: 64_300 });
+    await settle();
+    const work = document.querySelector<HTMLDetailsElement>(".work")!;
+    expect(work.open).toBe(false);
+    expect(work.querySelector("summary")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Worked for 1m 4s · 1 skill, 1 command");
+    expect(work.querySelector(".tool .sentence")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Used the skill review · 42");
+    expect(document.querySelector(".turn .body > .message")?.textContent?.trim()).toBe("Looks good.");
+  });
+
+  it("shows the plan as a checklist without expanding it", async () => {
+    const harness = await render();
+    harness.push(1, {
+      type: "tool",
+      id: "t1",
+      name: "TodoWrite",
+      summary: "{}",
+      input: { kind: "todos", todos: [{ content: "Write tests", status: "completed" }, { content: "Ship", status: "in_progress" }] },
+    });
+    await settle();
+    expect([...document.querySelectorAll(".checklist li")].map((item) => [item.getAttribute("data-status"), item.textContent?.trim()])).toEqual([
+      ["completed", "Write tests"],
+      ["in_progress", "Ship"],
+    ]);
+    expect(document.querySelector(".tool .meta")?.textContent?.trim()).toBe("1 of 2 done");
   });
 });
