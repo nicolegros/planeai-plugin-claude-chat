@@ -22,8 +22,11 @@ BINARY ?= $(PLUGIN)
 
 .PHONY: build-ui build-sidecar check test package verify-package conformance clean
 
+UI_ENTRIES := chat preferences
+
 build-ui:
-	pnpm exec vite build
+	rm -rf build/ui
+	for entry in $(UI_ENTRIES); do UI_ENTRY=$$entry pnpm exec vite build || exit 1; done
 
 build-sidecar:
 	@case "$(PLATFORM)" in unsupported*|"") echo "Unsupported packaging platform; Apple Silicon, linux-x64 and windows-x64 are supported" >&2; exit 2;; esac
@@ -40,7 +43,7 @@ package: build-ui build-sidecar
 	rm -rf $(DIST)
 	mkdir -p $(DIST)/bin/$(PLATFORM) $(DIST)/ui
 	node scripts/stage-manifest.mjs $(PLATFORM) > $(DIST)/planeai-plugin.json
-	cp build/ui/chat.js $(DIST)/ui/chat.js
+	cp build/ui/*.js $(DIST)/ui/
 	cp build/bin/$(BINARY) $(DIST)/bin/$(PLATFORM)/$(BINARY)
 	chmod +x $(DIST)/bin/$(PLATFORM)/$(BINARY)
 	@echo "Staged $(DIST) for $(PLATFORM)"

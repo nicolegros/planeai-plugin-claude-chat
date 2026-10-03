@@ -1,5 +1,6 @@
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
+import { normalizeAppearance } from "./appearance";
 import { ClaudeSession, type ClaudeRuntime, type SessionHost } from "./claude-session";
 import { RpcError } from "./rpc";
 import type { TranscriptStore } from "./transcript";
@@ -107,6 +108,11 @@ export class ClaudeChatPlugin {
         const offset = request.offset ?? 0;
         if (!Number.isInteger(offset) || (offset as number) < 0) throw new RpcError(INVALID_PARAMS, "offset must be a nonnegative integer");
         return await (await this.session(request)).commands(offset as number);
+      }
+      case "claude.appearance.changed": {
+        const appearance = normalizeAppearance(object(params).appearance);
+        for (const session of this.sessions.values()) session.showAppearance(appearance);
+        return {};
       }
       case "claude.permission.respond": {
         const request = object(params);

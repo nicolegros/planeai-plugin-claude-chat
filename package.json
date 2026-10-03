@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:ui": "vite build",
+    "build:ui": "make build-ui",
     "check": "tsc --noEmit && svelte-check --fail-on-warnings",
     "test": "vitest run"
   },

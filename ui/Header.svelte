@@ -55,13 +55,13 @@
 <style>
   .header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--planeai-space-3); padding: var(--planeai-space-2) var(--planeai-space-4); border-bottom: 1px solid var(--planeai-border); }
   label { display: flex; align-items: center; gap: var(--planeai-space-2); }
-  .label { color: var(--planeai-text-subtle); font-size: 11.5px; }
-  select { min-height: 28px; padding-top: 3px; padding-bottom: 3px; font-size: 12.5px; }
+  .label { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
+  select { min-height: 28px; padding-top: 3px; padding-bottom: 3px; font-size: var(--chat-size-code); }
   .context { display: flex; align-items: center; gap: var(--planeai-space-2); margin-left: auto; }
   .meter { width: 64px; height: 4px; border-radius: 2px; background: var(--planeai-border); overflow: hidden; }
   .fill { display: block; height: 100%; background: var(--planeai-accent); }
   .fill.high { background: var(--planeai-warning); }
-  .handoff { min-height: 28px; padding: 3px 10px; font-size: 12.5px; }
+  .handoff { min-height: 28px; padding: 3px 10px; font-size: var(--chat-size-code); }
   .handoff.pushed { margin-left: auto; }
-  .context-label { color: var(--planeai-text-subtle); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .context-label { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); font-variant-numeric: tabular-nums; }
 </style>

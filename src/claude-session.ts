@@ -1,4 +1,5 @@
 import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import type { Appearance } from "./appearance";
 import { SlashCommands } from "./commands";
 import { clip, isEphemeral, replay, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
 import { InputQueue } from "./input-queue";
@@ -168,6 +169,11 @@ export class ClaudeSession {
       payload: { type: "error", message: `A ${event.payload.type} entry was too large to show.` },
     }));
     return { seq: this.seq, status: this.status, meta: this.meta, events, more };
+  }
+
+  /** Lets an open chat apply fonts changed in PlaneAI's preferences. */
+  showAppearance(appearance: Appearance): void {
+    this.emit({ type: "appearance", appearance });
   }
 
   announce(): void {

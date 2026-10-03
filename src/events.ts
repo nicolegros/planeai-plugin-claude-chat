@@ -1,4 +1,5 @@
 import type { SDKMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Appearance } from "./appearance";
 
 /** What the chat needs to render a tool call; anything else falls back to the summary. */
 export type ToolInput =
@@ -61,8 +62,8 @@ export interface CommandOption {
 
 /**
  * Plugin-owned event vocabulary sent to the chat UI as opaque `host.session.event`
- * payloads. `delta`, `meta`, `status` and `commands_changed` are ephemeral; everything
- * else is part of the transcript.
+ * payloads. `delta`, `meta`, `status`, `commands_changed` and `appearance` are ephemeral;
+ * everything else is part of the transcript.
  */
 export type ChatEvent =
   | { type: "user"; text: string }
@@ -81,10 +82,12 @@ export type ChatEvent =
   | { type: "notice"; text: string }
   | { type: "status"; status: SessionStatus }
   | { type: "meta"; meta: Partial<SessionMeta> }
-  | { type: "commands_changed" };
+  | { type: "commands_changed" }
+  /** The fonts changed in PlaneAI's preferences. */
+  | { type: "appearance"; appearance: Appearance };
 
 export function isEphemeral(event: ChatEvent): boolean {
-  return event.type === "delta" || event.type === "meta" || event.type === "status" || event.type === "commands_changed";
+  return event.type === "delta" || event.type === "meta" || event.type === "status" || event.type === "commands_changed" || event.type === "appearance";
 }
 
 /** Keeps every event below the host's 64 KiB frame limit, even at 4 bytes per character. */

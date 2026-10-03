@@ -11,7 +11,8 @@
     "windows-x64": "bin/windows-x64/planeai-plugin-claude-chat.exe"
   },
   "capabilities": [
-    "providers"
+    "providers",
+    "settings"
   ],
   "providers": [
     {
@@ -22,6 +23,14 @@
         "yolo",
         "handoff"
       ]
+    }
+  ],
+  "ui_contributions": [
+    {
+      "id": "appearance",
+      "label": "Claude Chat",
+      "placement": "preferences",
+      "entrypoint": "ui/preferences.js"
     }
   ]
 }

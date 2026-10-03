@@ -41,7 +41,7 @@
   .title { font-weight: 600; }
   .actions, .deny { display: flex; flex-wrap: wrap; gap: var(--planeai-space-2); }
   .deny input { flex: 1; min-width: 200px; }
-  .resolution { color: var(--planeai-text-subtle); font-size: 12px; }
+  .resolution { color: var(--planeai-text-subtle); font-size: var(--chat-size-sm); }
   button.primary { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
   button.quiet { border-color: transparent; background: transparent; }
 </style>
