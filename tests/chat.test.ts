@@ -194,9 +194,10 @@ describe("Chat", () => {
     expect(document.querySelector(".context-label")?.textContent).toBe("25%");
     expect(document.querySelector("[role=meter]")?.getAttribute("aria-valuenow")).toBe("25");
     expect(document.querySelector(".context")?.getAttribute("title")).toBe("50k of 200k tokens of context used");
-    const [model, mode] = document.querySelectorAll("select");
-    mode.value = "plan";
-    mode.dispatchEvent(new Event("change", { bubbles: true }));
+    const modes = () => [...document.querySelectorAll("[role=radiogroup] [role=radio]")].map((mode) => [mode.textContent?.trim(), mode.getAttribute("aria-checked")]);
+    expect(modes()).toEqual([["Ask", "true"], ["Edits", "false"], ["Plan", "false"]]);
+    button("Plan only").click();
+    const model = document.querySelector("select")!;
     model.value = "opus";
     model.dispatchEvent(new Event("change", { bubbles: true }));
     expect(harness.value.host.call).toHaveBeenCalledWith("claude.mode.set", { session_id: "s1", mode: "plan" });
@@ -204,7 +205,7 @@ describe("Chat", () => {
 
     harness.push(1, { type: "meta", meta: { permission_mode: "plan" } });
     await settle();
-    expect((document.querySelectorAll("select")[1] as HTMLSelectElement).value).toBe("plan");
+    expect(modes()).toEqual([["Ask", "false"], ["Edits", "false"], ["Plan", "true"]]);
   });
 
   it("sends on Enter, queues follow-ups while working and stops with Escape", async () => {
@@ -393,15 +394,18 @@ describe("Chat", () => {
     await render({ meta: { ...META, active_model: "claude-opus-5-5" } });
     const model = () => document.querySelector<HTMLSelectElement>("select")!;
     expect(model().selectedOptions[0].textContent).toBe("Default (claude-opus-5-5)");
+    expect(document.querySelector(".model-label")?.textContent).toBe("Opus 5.5");
     unmount(app!);
     document.body.replaceChildren();
     await render({ meta: { ...META, model: "opus", active_model: "claude-opus-5-5" } });
     expect(model().selectedOptions[0].textContent).toBe("Opus");
     expect(model().options[0].textContent).toBe("Default");
+    expect(document.querySelector(".model-label")?.textContent).toBe("Opus");
     unmount(app!);
     document.body.replaceChildren();
     await render({ meta: { ...META, model: "opusplan", active_model: "claude-opus-5-5" } });
     expect(model().selectedOptions[0].textContent).toBe("opusplan");
+    expect(document.querySelector(".model-label")?.textContent).toBe("opusplan");
   });
 
   it("uses the fonts and size from the plugin's settings and follows changes live", async () => {

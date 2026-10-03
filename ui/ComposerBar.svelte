@@ -1,14 +1,15 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
   import type { SessionMeta } from "./host";
+  import { modelLabel } from "./models";
 
   let { meta, onMode, onModel, onHandoff }: { meta: SessionMeta; onMode: (mode: string) => void; onModel: (model: string | null) => void; onHandoff: () => void } = $props();
 
-  const MODE_LABELS: Record<string, string> = {
-    default: "Ask before acting",
-    acceptEdits: "Accept edits",
-    plan: "Plan only",
-    bypassPermissions: "Bypass permissions",
+  const MODES: Record<string, { short: string; label: string }> = {
+    default: { short: "Ask", label: "Ask before acting" },
+    acceptEdits: { short: "Edits", label: "Accept edits" },
+    plan: { short: "Plan", label: "Plan only" },
+    bypassPermissions: { short: "Bypass", label: "Bypass permissions" },
   };
   const DEFAULT_MODEL = "";
   const RING = 2 * Math.PI * 6;
@@ -18,22 +19,34 @@
   const percent = $derived(meta.context ? Math.round(meta.context.percentage) : 0);
 </script>
 
-<select class="quiet" value={meta.model ?? DEFAULT_MODEL} onchange={(event) => onModel(event.currentTarget.value || null)} aria-label="Model">
-  <option value={DEFAULT_MODEL}>{meta.model === null && meta.active_model ? `Default (${meta.active_model})` : "Default"}</option>
-  {#if unlisted}
-    <option value={meta.model}>{meta.model}</option>
-  {/if}
-  {#each meta.models as model (model.value)}
-    <option value={model.value}>{model.label}</option>
-  {/each}
-</select>
 {#if meta.modes.length > 0}
-  <select class="quiet" value={meta.permission_mode} onchange={(event) => onMode(event.currentTarget.value)} aria-label="Permission mode">
+  <div class="modes" role="radiogroup" aria-label="Permission mode">
     {#each meta.modes as mode (mode)}
-      <option value={mode}>{MODE_LABELS[mode] ?? mode}</option>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={meta.permission_mode === mode}
+        aria-label={MODES[mode]?.label ?? mode}
+        title={MODES[mode]?.label ?? mode}
+        data-mode={mode}
+        onclick={() => onMode(mode)}>{MODES[mode]?.short ?? mode}</button
+      >
+    {/each}
+  </div>
+{/if}
+<label class="model" title="Model">
+  <Icon name="sparkle" size={12} />
+  <span class="model-label">{modelLabel(meta)}</span>
+  <select value={meta.model ?? DEFAULT_MODEL} onchange={(event) => onModel(event.currentTarget.value || null)} aria-label="Model">
+    <option value={DEFAULT_MODEL}>{meta.model === null && meta.active_model ? `Default (${meta.active_model})` : "Default"}</option>
+    {#if unlisted}
+      <option value={meta.model}>{meta.model}</option>
+    {/if}
+    {#each meta.models as model (model.value)}
+      <option value={model.value}>{model.label}</option>
     {/each}
   </select>
-{/if}
+</label>
 <span class="spacer"></span>
 {#if meta.context}
   <span class="context" title="{Math.round(meta.context.total_tokens / 1000)}k of {Math.round(meta.context.max_tokens / 1000)}k tokens of context used">
@@ -47,8 +60,19 @@
 <button type="button" class="icon-button" onclick={onHandoff} title="Continue this conversation in Claude Code's terminal UI" aria-label="Open in terminal"><Icon name="terminal" /></button>
 
 <style>
-  .quiet { min-width: 0; min-height: 26px; padding: 2px 24px 2px 8px; border-color: transparent; background-color: transparent; background-position: calc(100% - 11px) 50%, calc(100% - 7px) 50%; color: var(--planeai-text-muted); font-size: var(--chat-size-xs); text-overflow: ellipsis; }
-  .quiet:hover { background-color: var(--planeai-accent-subtle); color: var(--planeai-text); }
+  .modes { display: inline-flex; flex: none; padding: 2px; border-radius: 8px; background: var(--planeai-canvas); }
+  .modes button { min-height: 22px; padding: 1px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--planeai-text-muted); font-size: var(--chat-size-xs); }
+  .modes button:hover:not(:disabled) { background: transparent; color: var(--planeai-text); }
+  .modes [aria-checked="true"], .modes [aria-checked="true"]:hover:not(:disabled) { background: var(--planeai-surface); color: var(--planeai-text); box-shadow: 0 1px 2px color-mix(in srgb, var(--planeai-text) 14%, transparent); }
+  /* Modes that act without asking stand out once picked. */
+  .modes [aria-checked="true"]:is([data-mode="acceptEdits"], [data-mode="bypassPermissions"]), .modes [aria-checked="true"]:is([data-mode="acceptEdits"], [data-mode="bypassPermissions"]):hover:not(:disabled) { color: var(--planeai-danger); }
+  .modes [aria-checked="true"][data-mode="plan"], .modes [aria-checked="true"][data-mode="plan"]:hover:not(:disabled) { color: var(--planeai-warning); }
+  .model { position: relative; display: inline-flex; align-items: center; gap: 5px; min-width: 0; min-height: 26px; padding: 0 8px; border-radius: 6px; color: var(--planeai-text-muted); font-size: var(--chat-size-xs); }
+  .model:hover, .model:focus-within { background: var(--planeai-accent-subtle); color: var(--planeai-text); }
+  .model:has(select:focus-visible) { outline: 2px solid var(--planeai-accent); outline-offset: 2px; }
+  .model-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The native select stays clickable and keyboard-operable over the compact label. */
+  .model select { position: absolute; inset: 0; width: 100%; min-height: 0; padding: 0; opacity: 0; cursor: pointer; }
   .spacer { flex: 1; }
   .context { display: inline-flex; flex: none; align-items: center; gap: 5px; padding: 0 var(--planeai-space-1); color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); font-variant-numeric: tabular-nums; }
   .fill { stroke: var(--planeai-text-muted); }
