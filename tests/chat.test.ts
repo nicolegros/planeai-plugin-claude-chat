@@ -21,7 +21,7 @@ const COMMANDS: CommandOption[] = [
   { name: "review", description: "Review a pull request", argument_hint: "[<pr>]", aliases: [] },
 ];
 
-function context(snapshot: Partial<Snapshot> = {}, commands: CommandOption[] = COMMANDS) {
+function context(snapshot: Partial<Snapshot> = {}, commands: CommandOption[] = COMMANDS, settings: Record<string, unknown> = {}) {
   let listener: ((event: StoredEvent) => void) | null = null;
   const pages: Snapshot[] = [{ seq: 0, status: "idle", meta: META, events: [], more: false, ...snapshot }];
   const catalog = { commands };
@@ -47,6 +47,7 @@ function context(snapshot: Partial<Snapshot> = {}, commands: CommandOption[] = C
           return () => (listener = null);
         },
       },
+      settings: { get: vi.fn(async () => settings) as ProviderUiContext["host"]["settings"]["get"] },
       data: { notify: vi.fn() },
       navigation: { openExternal: vi.fn() },
     },
@@ -391,6 +392,30 @@ describe("Chat", () => {
     document.body.replaceChildren();
     await render({ meta: { ...META, model: "opusplan", active_model: "claude-opus-5-5" } });
     expect(model().selectedOptions[0].textContent).toBe("opusplan");
+  });
+
+  it("uses the fonts and size from the plugin's settings and follows changes live", async () => {
+    const harness = context({}, COMMANDS, { font_family: "Inter", font_size: 16, ignored: true });
+    app = mount(Chat, { target: document.body, props: { context: harness.value } });
+    await settle();
+    const chat = document.querySelector<HTMLElement>(".chat")!;
+    expect(chat.style.getPropertyValue("--chat-font")).toBe('"Inter", var(--planeai-font-sans)');
+    expect(chat.style.getPropertyValue("--chat-code-font")).toBe("var(--planeai-font-mono)");
+    expect(chat.style.getPropertyValue("--chat-size")).toBe("16px");
+    harness.push(1, { type: "appearance", appearance: { code_font_family: "Fira Code" } });
+    await settle();
+    expect(chat.style.getPropertyValue("--chat-font")).toBe("var(--planeai-font-sans)");
+    expect(chat.style.getPropertyValue("--chat-code-font")).toBe('"Fira Code", var(--planeai-font-mono)');
+    expect(chat.style.getPropertyValue("--chat-size")).toBe("13px");
+  });
+
+  it("keeps PlaneAI's fonts when the settings cannot be read", async () => {
+    const harness = context();
+    vi.mocked(harness.value.host.settings.get).mockRejectedValueOnce(new Error("plugin settings capability is not granted"));
+    app = mount(Chat, { target: document.body, props: { context: harness.value } });
+    await settle();
+    expect(document.querySelector<HTMLElement>(".chat")!.style.getPropertyValue("--chat-size")).toBe("13px");
+    expect(harness.value.host.data.notify).not.toHaveBeenCalled();
   });
 
   it("summarizes each turn with duration, cost and tokens", async () => {

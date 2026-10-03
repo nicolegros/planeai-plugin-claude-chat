@@ -67,9 +67,9 @@
   .option { display: grid; gap: 2px; padding: 6px var(--planeai-space-2); border-radius: calc(var(--planeai-radius) - 2px); cursor: pointer; }
   .option[aria-selected="true"] { background: var(--planeai-accent-subtle); }
   .line { display: flex; align-items: baseline; gap: var(--planeai-space-2); min-width: 0; }
-  .name { flex: none; font-family: var(--planeai-font-mono); font-size: 12.5px; font-weight: 600; }
-  .hint, .aliases { min-width: 0; overflow: hidden; color: var(--planeai-text-subtle); font-family: var(--planeai-font-mono); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
-  .aliases { flex: none; margin-left: auto; font-family: var(--planeai-font-sans); }
-  .description { overflow: hidden; color: var(--planeai-text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .state { padding: 6px var(--planeai-space-2); color: var(--planeai-text-subtle); font-size: 12px; }
+  .name { flex: none; font-family: var(--chat-code-font); font-size: var(--chat-size-code); font-weight: 600; }
+  .hint, .aliases { min-width: 0; overflow: hidden; color: var(--planeai-text-subtle); font-family: var(--chat-code-font); font-size: var(--chat-size-xs); text-overflow: ellipsis; white-space: nowrap; }
+  .aliases { flex: none; margin-left: auto; font-family: var(--chat-font); }
+  .description { overflow: hidden; color: var(--planeai-text-muted); font-size: var(--chat-size-sm); text-overflow: ellipsis; white-space: nowrap; }
+  .state { padding: 6px var(--planeai-space-2); color: var(--planeai-text-subtle); font-size: var(--chat-size-sm); }
 </style>

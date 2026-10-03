@@ -18,13 +18,15 @@
 <div class="markdown" {onclick}>{@html html}</div>
 
 <style>
-  .markdown { font-size: 13.5px; line-height: 1.6; overflow-wrap: anywhere; }
+  .markdown { font-size: var(--chat-size-body); line-height: 1.6; overflow-wrap: anywhere; }
   .markdown :global(p), .markdown :global(ul), .markdown :global(ol), .markdown :global(pre), .markdown :global(table), .markdown :global(blockquote) { margin: 0 0 var(--planeai-space-2); }
   .markdown :global(:last-child) { margin-bottom: 0; }
+  /* Paragraphs keep the released chat's base size; lists and tables use the body size. */
+  .markdown :global(p) { font-size: var(--chat-size); }
   .markdown :global(ul), .markdown :global(ol) { padding-left: 20px; }
-  .markdown :global(h1), .markdown :global(h2), .markdown :global(h3) { margin: var(--planeai-space-3) 0 var(--planeai-space-2); font-size: 14px; line-height: 20px; }
+  .markdown :global(h1), .markdown :global(h2), .markdown :global(h3) { margin: var(--planeai-space-3) 0 var(--planeai-space-2); font-size: var(--chat-size-heading); line-height: var(--chat-line-heading); }
   .markdown :global(a) { color: var(--planeai-accent); text-decoration: underline; text-underline-offset: 2px; }
-  .markdown :global(code) { font-family: var(--planeai-font-mono); font-size: 12.5px; }
+  .markdown :global(code) { font-family: var(--chat-code-font); font-size: var(--chat-size-code); }
   .markdown :global(:not(pre) > code) { padding: 1px 4px; border-radius: 4px; background: var(--planeai-surface-raised); }
   .markdown :global(pre.code) { padding: var(--planeai-space-3); border: 1px solid var(--planeai-border); border-radius: var(--planeai-radius); background: var(--planeai-surface); overflow-x: auto; }
   .markdown :global(blockquote) { padding-left: var(--planeai-space-3); border-left: 2px solid var(--planeai-border-strong); color: var(--planeai-text-muted); }

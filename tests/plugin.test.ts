@@ -29,6 +29,8 @@ describe("ClaudeChatPlugin", () => {
     const result = await plugin().instance.handle("plugin.handshake", { host_api_version: HOST_API_VERSION });
     expect(result).toMatchObject({ plugin_id: manifest.id, plugin_name: manifest.name, plugin_version: manifest.version, host_api_version: manifest.host_api_version });
     expect(manifest.providers[0].id).toBe("claude");
+    expect(manifest.capabilities).toEqual(["providers", "settings"]);
+    expect(manifest.ui_contributions).toEqual([{ id: "appearance", label: "Claude Chat", placement: "preferences", entrypoint: "ui/preferences.js" }]);
     expect([PLUGIN_ID, PLUGIN_NAME]).toEqual([manifest.id, manifest.name]);
   });
 
@@ -97,6 +99,23 @@ describe("ClaudeChatPlugin", () => {
     await handoff;
     const snapshot = (await instance.handle("claude.snapshot", { session_id: SESSION_ID })) as { events: { payload: { type: string } }[] };
     expect(snapshot.events.map(({ payload }) => payload.type)).toEqual(["user", "tool", "tool_result", "user", "user", "assistant", "notice", "handoff"]);
+  });
+
+  it("passes appearance changes from the preferences pane to every open chat", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claude-chat-plugin-"));
+    const events: { session_id: string; payload: unknown }[] = [];
+    const instance = new ClaudeChatPlugin(
+      new TranscriptStore(root),
+      { event: (session_id, _seq, payload) => events.push({ session_id, payload }), status: () => {} },
+      { createQuery: fakeQueryFactory().factory, hasTranscript: async () => false, history: async () => [], link: async () => {}, linked: async () => null },
+    );
+    await instance.handle("provider.session.start", start("s-a"));
+    await instance.handle("provider.session.start", start("s-b"));
+    await expect(instance.handle("claude.appearance.changed", { appearance: { font_family: "Inter", font_size: 99 } })).resolves.toEqual({});
+    expect(events.filter(({ payload }) => (payload as { type: string }).type === "appearance")).toEqual([
+      { session_id: "s-a", payload: { type: "appearance", appearance: { font_family: "Inter" } } },
+      { session_id: "s-b", payload: { type: "appearance", appearance: { font_family: "Inter" } } },
+    ]);
   });
 
   it("finds claude on the PATH the host provides", () => {

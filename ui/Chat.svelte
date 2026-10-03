@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { appearanceStyle, normalizeAppearance } from "../src/appearance";
   import CommandMenu from "./CommandMenu.svelte";
   import { CommandCatalog, matchCommands } from "./commands.svelte";
   import Header from "./Header.svelte";
   import Markdown from "./Markdown.svelte";
   import PermissionCard from "./PermissionCard.svelte";
   import ToolCard from "./ToolCard.svelte";
-  import type { CommandOption, Compaction, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
+  import type { Appearance, CommandOption, Compaction, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
   import { Transcript } from "./transcript.svelte";
 
   let { context }: { context: ProviderUiContext } = $props();
@@ -15,6 +16,7 @@
   const MAX_MESSAGE_BYTES = 48 * 1024;
 
   const transcript = new Transcript();
+  let appearance = $state<Appearance>({});
   let draft = $state("");
   /** Streaming text re-rendered as markdown at most once per frame, not once per delta. */
   let liveMarkdown = $state("");
@@ -63,6 +65,7 @@
 
   function apply(event: StoredEvent): void {
     if (event.payload.type === "commands_changed") commands.invalidate();
+    if (event.payload.type === "appearance") appearance = event.payload.appearance;
     transcript.apply(event);
     void scrollToBottom();
   }
@@ -212,6 +215,11 @@
         void scrollToBottom();
       });
     composer?.focus();
+    // Without the settings, PlaneAI's own fonts apply.
+    context.host.settings
+      .get()
+      .then((settings) => (appearance = normalizeAppearance(settings)))
+      .catch(() => {});
   });
 
   onDestroy(() => unsubscribe?.());
@@ -244,7 +252,7 @@
   }
 </script>
 
-<main class="chat">
+<main class="chat" style={appearanceStyle(appearance)}>
   <Header meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff} />
   <div class="log" bind:this={log} onscroll={onScroll} role="log" aria-label="Conversation" aria-busy={!!transcript.live}>
     {#if transcript.entries.length === 0 && !transcript.live}
@@ -322,24 +330,42 @@
 </main>
 
 <style>
-  .chat { display: flex; flex-direction: column; height: 100vh; }
+  .chat {
+    /* The type scale, from the size in the plugin's settings; at 13px it is the chat's original one. */
+    --chat-size-xs: calc(var(--chat-size) - 1.5px);
+    --chat-size-sm: calc(var(--chat-size) - 1px);
+    --chat-size-code: calc(var(--chat-size) - 0.5px);
+    --chat-size-body: calc(var(--chat-size) + 0.5px);
+    --chat-size-heading: calc(var(--chat-size) + 1px);
+    --chat-line: calc(var(--chat-size) + 5px);
+    --chat-line-text: calc(var(--chat-size) + 6px);
+    --chat-line-heading: calc(var(--chat-size) + 7px);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    font-family: var(--chat-font);
+    font-size: var(--chat-size);
+  }
+  /* PlaneAI's baseline sizes these in px; as element rules after it, these keep its sizes at the default and scale them. */
+  :global(p) { font-size: inherit; line-height: var(--chat-line-text); }
+  :global(:is(button, input, select, textarea)) { line-height: var(--chat-line); }
   .log { flex: 1; overflow-y: auto; padding: var(--planeai-space-4); display: flex; flex-direction: column; gap: var(--planeai-space-3); }
   .empty { margin: auto; color: var(--planeai-text-subtle); }
   .message.user { align-self: flex-end; max-width: 80%; padding: var(--planeai-space-2) var(--planeai-space-3); border-radius: var(--planeai-radius); background: var(--planeai-accent-subtle); }
-  .text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.55; }
+  .text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--chat-size-body); line-height: 1.55; }
   .message.assistant { max-width: 100%; }
-  .turn { color: var(--planeai-text-subtle); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .turn { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); font-variant-numeric: tabular-nums; }
   .failed, .error { color: var(--planeai-danger); }
-  .working { color: var(--planeai-text-subtle); font-size: 12.5px; }
-  .divider { display: flex; align-items: center; gap: var(--planeai-space-2); color: var(--planeai-text-subtle); font-size: 11.5px; }
+  .working { color: var(--planeai-text-subtle); font-size: var(--chat-size-code); }
+  .divider { display: flex; align-items: center; gap: var(--planeai-space-2); color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
   .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--planeai-border); }
   .handed-off { display: flex; align-items: center; gap: var(--planeai-space-3); padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); background: var(--planeai-surface); }
   .handed-off p { flex: 1; color: var(--planeai-text-muted); }
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .ellipsis::after { content: "…"; animation: blink 1.4s steps(4, end) infinite; }
-  .notice { color: var(--planeai-text-subtle); font-size: 11.5px; }
+  .notice { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
   .composer { position: relative; display: flex; gap: var(--planeai-space-2); align-items: flex-end; padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); }
-  textarea { flex: 1; resize: none; min-height: 34px; max-height: 240px; line-height: 18px; }
+  textarea { flex: 1; resize: none; min-height: 34px; max-height: 240px; }
   button.primary { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
   @keyframes blink { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }
 </style>

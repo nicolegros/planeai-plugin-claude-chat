@@ -37,6 +37,8 @@ Confirm your use is covered before relying on subscription login for this plugin
   Commands run exactly as in the terminal: `/context` and `/usage` answer in the chat, and `/compact` and `/clear` mark the conversation where they happened.
   `/model <name>` with a model from the header's list switches the header itself; other names go to Claude Code, which validates them and applies them to the running Claude process only, so the header and the next start keep the header's model.
   Terminal-only commands such as `/color` are left out once Claude Code has named them, which it does at the start of every turn; the plugin remembers them across sessions.
+- **Fonts.** **Preferences → Plugins → Claude Chat** sets the chat's font, code font and size; open chats follow changes live.
+  Empty fields keep PlaneAI's fonts, which also stand in for a font that is not installed.
 - **Open in terminal.** Continues the conversation in Claude Code's own UI in a terminal tab of the same session, with the current mode and model.
   The chat stays read-only until that tab closes or Return to chat is selected.
   A `/clear` typed in that terminal is not seen by the plugin, so returning to the chat resumes the conversation from before it.
@@ -73,7 +75,8 @@ Install the staged `dist/planeai-plugin-claude-chat` directory into a PlaneAI de
 | `src/claude-session.ts` | One PlaneAI session driven by an Agent SDK streaming-input query. |
 | `src/events.ts` | Translates SDK messages into the plugin's chat events. |
 | `src/transcript.ts` | Per-session event log for reattach and the Claude session id `/clear` moved to; the plugin-wide terminal-only command names. |
-| `ui/` | Svelte 5 chat UI, built into the single `ui/chat.js` ESM bundle PlaneAI mounts. |
+| `src/appearance.ts` | Font settings validation and the CSS variables the chat reads. |
+| `ui/` | Svelte 5 UIs, each built into one self-contained ESM bundle PlaneAI mounts: `ui/chat.js` for sessions and `ui/preferences.js` for the preferences pane. |
 
 ### Recorded streams
 

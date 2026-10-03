@@ -124,7 +124,7 @@ jobs:
             root="dist/$platform/planeai-plugin-claude-chat"
             mkdir -p "$root/bin/$platform" "$root/ui"
             node scripts/stage-manifest.mjs "$platform" > "$root/planeai-plugin.json"
-            cp build/ui/chat.js "$root/ui/chat.js"
+            cp build/ui/*.js "$root/ui/"
             bun build --compile --minify --target="$target" src/main.ts --outfile "$root/bin/$platform/$binary"
             chmod +x "$root/bin/$platform/$binary"
             if [ "$platform" = linux-x64 ]; then node scripts/verify-package-handshake.mjs "$root" "$platform"; fi

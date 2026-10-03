@@ -106,6 +106,7 @@ export class Transcript {
         this.entries.push({ kind: "notice", seq, text: event.text });
         return;
       case "commands_changed":
+      case "appearance":
         return;
     }
   }

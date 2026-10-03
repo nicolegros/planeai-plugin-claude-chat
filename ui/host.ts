@@ -1,3 +1,4 @@
+import type { Appearance } from "../src/appearance";
 import type { ChatEvent, CommandOption, Compaction, ContextUsage, ModelOption, PermissionDecision, SessionMeta, SessionStatus, TokenUsage, ToolInput } from "../src/events";
 import type { StoredEvent } from "../src/transcript";
 
@@ -14,8 +15,20 @@ export interface ProviderUiContext {
       handoff(): Promise<void>;
       handback(): Promise<void>;
     };
+    settings: { get<T extends Record<string, unknown>>(): Promise<T> };
     data: { notify(message: string, kind?: "success" | "error"): void };
     navigation: { openExternal(url: string): void };
+  };
+}
+
+/** The slice of PlaneAI's plugin UI bridge the preferences pane uses. */
+export interface PreferencesUiContext {
+  host: {
+    call<T>(method: string, params?: unknown): Promise<T>;
+    settings: {
+      get<T extends Record<string, unknown>>(): Promise<T>;
+      replace<T extends Record<string, unknown>>(settings: T): Promise<T>;
+    };
   };
 }
 
@@ -28,4 +41,4 @@ export interface Snapshot {
   more: boolean;
 }
 
-export type { ChatEvent, CommandOption, Compaction, ContextUsage, ModelOption, PermissionDecision, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput };
+export type { Appearance, ChatEvent, CommandOption, Compaction, ContextUsage, ModelOption, PermissionDecision, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput };
