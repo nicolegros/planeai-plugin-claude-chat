@@ -11,16 +11,19 @@
   };
   const DEFAULT_MODEL = "";
 
-  // The init model is a resolved id; show it as the default when no override is set.
-  const knownModel = $derived(meta.models.some((model) => model.value === meta.model));
+  // A model typed with /model may not be in Claude's list; it still shows as selected.
+  const unlisted = $derived(meta.model !== null && !meta.models.some((model) => model.value === meta.model));
   const contextLabel = $derived(meta.context ? `${Math.round(meta.context.percentage)}% context · ${Math.round(meta.context.total_tokens / 1000)}k / ${Math.round(meta.context.max_tokens / 1000)}k` : "");
 </script>
 
 <header class="header">
   <label>
     <span class="label">Model</span>
-    <select value={knownModel ? meta.model : DEFAULT_MODEL} onchange={(event) => onModel(event.currentTarget.value || null)} aria-label="Model">
-      <option value={DEFAULT_MODEL}>{knownModel || !meta.model ? "Default" : `Default (${meta.model})`}</option>
+    <select value={meta.model ?? DEFAULT_MODEL} onchange={(event) => onModel(event.currentTarget.value || null)} aria-label="Model">
+      <option value={DEFAULT_MODEL}>{meta.model === null && meta.active_model ? `Default (${meta.active_model})` : "Default"}</option>
+      {#if unlisted}
+        <option value={meta.model}>{meta.model}</option>
+      {/if}
       {#each meta.models as model (model.value)}
         <option value={model.value}>{model.label}</option>
       {/each}

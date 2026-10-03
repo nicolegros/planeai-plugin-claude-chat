@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ClaudeChatPlugin, findExecutable, HOST_API_VERSION, PLUGIN_ID, PLUGIN_NAME } from "../src/plugin";
 import { TranscriptStore } from "../src/transcript";
-import { fakeQueryFactory } from "./helpers";
+import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import { fakeQueryFactory, history } from "./helpers";
 
 const manifest = JSON.parse(readFileSync(join(process.cwd(), "planeai-plugin.json"), "utf8"));
 const SESSION_ID = "6f1f3a0e-0000-4000-8000-000000000002";
@@ -16,7 +17,7 @@ function plugin() {
   const instance = new ClaudeChatPlugin(
     new TranscriptStore(root),
     { event: () => {}, status: (_, status) => statuses.push(status) },
-    { createQuery: fake.factory, hasTranscript: async () => false },
+    { createQuery: fake.factory, hasTranscript: async () => false, history: async () => [], link: async () => {}, linked: async () => null },
   );
   return { instance, root, fake, statuses };
 }
@@ -64,6 +65,38 @@ describe("ClaudeChatPlugin", () => {
     await starting.catch(() => {});
     await expect(instance.handle("claude.snapshot", { session_id: SESSION_ID })).rejects.toThrow("not running");
     expect(fake.queries.flatMap((query) => query.sent)).toHaveLength(0);
+  });
+
+  it("lists a session's slash commands for the chat's menu", async () => {
+    const { instance, fake } = plugin();
+    const bin = mkdtempSync(join(tmpdir(), "claude-chat-bin-"));
+    writeFileSync(join(bin, "claude"), "#!/bin/sh\n");
+    chmodSync(join(bin, "claude"), 0o755);
+    await instance.handle("provider.session.start", { ...start(), env: { PATH: bin } });
+    const listing = instance.handle("claude.commands", { session_id: SESSION_ID });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fake.queries[0].resolveCommands([{ name: "compact", description: "Free up context", argumentHint: "" }]);
+    await expect(listing).resolves.toEqual({ commands: [{ name: "compact", description: "Free up context", argument_hint: "", aliases: [] }], more: false });
+    await expect(instance.handle("claude.commands", { session_id: SESSION_ID, offset: -1 })).rejects.toThrow("offset");
+  });
+
+  it("lets a resumed session finish rebuilding its chat before anything else touches it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claude-chat-plugin-"));
+    let release: (messages: SessionMessage[]) => void = () => {};
+    const instance = new ClaudeChatPlugin(
+      new TranscriptStore(root),
+      { event: () => {}, status: () => {} },
+      { createQuery: fakeQueryFactory().factory, hasTranscript: async () => true, history: () => new Promise((resolve) => (release = resolve)), link: async () => {}, linked: async () => null },
+    );
+    const bin = mkdtempSync(join(tmpdir(), "claude-chat-bin-"));
+    writeFileSync(join(bin, "claude"), "#!/bin/sh\n");
+    chmodSync(join(bin, "claude"), 0o755);
+    await instance.handle("provider.session.resume", { ...start(), env: { PATH: bin } });
+    const handoff = instance.handle("provider.session.handoff", { session_id: SESSION_ID });
+    release(history(SESSION_ID));
+    await handoff;
+    const snapshot = (await instance.handle("claude.snapshot", { session_id: SESSION_ID })) as { events: { payload: { type: string } }[] };
+    expect(snapshot.events.map(({ payload }) => payload.type)).toEqual(["user", "tool", "tool_result", "user", "user", "assistant", "notice", "handoff"]);
   });
 
   it("finds claude on the PATH the host provides", () => {

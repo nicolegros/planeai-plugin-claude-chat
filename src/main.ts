@@ -1,4 +1,4 @@
-import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionMessages, listSessions, query, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { join } from "node:path";
 import { ClaudeChatPlugin } from "./plugin";
 import { JsonRpcPeer } from "./rpc";
@@ -20,6 +20,12 @@ const plugin = new ClaudeChatPlugin(
   {
     createQuery: query,
     hasTranscript: async (sessionId, cwd) => (await getSessionMessages(sessionId, { dir: cwd, limit: 1 })).length > 0,
+    history: (sessionId, cwd) => getSessionMessages(sessionId, { dir: cwd }),
+    link: (conversationId, sessionId, cwd) => tagSession(conversationId, `planeai:${sessionId}`, { dir: cwd }),
+    linked: async (sessionId, cwd) =>
+      (await listSessions({ dir: cwd }))
+        .filter((session) => session.tag === `planeai:${sessionId}`)
+        .sort((a, b) => b.lastModified - a.lastModified)[0]?.sessionId ?? null,
   },
 );
 peer = new JsonRpcPeer(process.stdin, process.stdout, async (method, params, signal) => {

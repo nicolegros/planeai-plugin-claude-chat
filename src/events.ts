@@ -1,4 +1,4 @@
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
 /** What the chat needs to render a tool call; anything else falls back to the summary. */
 export type ToolInput =
@@ -30,7 +30,10 @@ export interface ContextUsage {
 
 /** Live session state shown around the transcript rather than in it. */
 export interface SessionMeta {
+  /** The model the user picked; `null` is Claude Code's default. */
   model: string | null;
+  /** The model id Claude resolved for the current turn. */
+  active_model: string | null;
   permission_mode: string;
   /** Permission modes this session may switch to. */
   modes: string[];
@@ -38,11 +41,28 @@ export interface SessionMeta {
   handed_off: boolean;
   models: ModelOption[];
   context: ContextUsage | null;
+  /** Claude is summarizing the conversation, from /compact or automatically. */
+  compacting: boolean;
+}
+
+export interface Compaction {
+  trigger: "manual" | "auto";
+  pre_tokens: number;
+  post_tokens?: number;
+}
+
+/** A slash command as the chat's menu lists it. */
+export interface CommandOption {
+  name: string;
+  description: string;
+  argument_hint: string;
+  aliases: string[];
 }
 
 /**
  * Plugin-owned event vocabulary sent to the chat UI as opaque `host.session.event`
- * payloads. `delta` and `meta` are ephemeral; everything else is part of the transcript.
+ * payloads. `delta`, `meta`, `status` and `commands_changed` are ephemeral; everything
+ * else is part of the transcript.
  */
 export type ChatEvent =
   | { type: "user"; text: string }
@@ -55,11 +75,16 @@ export type ChatEvent =
   | { type: "result"; is_error: boolean; subtype: string; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { type: "error"; message: string }
   | { type: "handoff"; in_terminal: boolean }
+  | ({ type: "compacted" } & Compaction)
+  /** /clear started a new conversation; Claude no longer sees what came before. */
+  | { type: "cleared" }
+  | { type: "notice"; text: string }
   | { type: "status"; status: SessionStatus }
-  | { type: "meta"; meta: Partial<SessionMeta> };
+  | { type: "meta"; meta: Partial<SessionMeta> }
+  | { type: "commands_changed" };
 
 export function isEphemeral(event: ChatEvent): boolean {
-  return event.type === "delta" || event.type === "meta" || event.type === "status";
+  return event.type === "delta" || event.type === "meta" || event.type === "status" || event.type === "commands_changed";
 }
 
 /** Keeps every event below the host's 64 KiB frame limit, even at 4 bytes per character. */
@@ -156,13 +181,65 @@ function usage(raw: unknown): TokenUsage | undefined {
 /** Claude Code reports a missing login as a failed turn with this text. */
 const NOT_LOGGED_IN = /not logged in/i;
 
+/** A slash command as Claude Code stores it: `<command-name>/x</command-name>…<command-args>y</command-args>`. */
+const STORED_COMMAND = /^<command-name>([^<]*)<\/command-name>[\s\S]*?(?:<command-args>([\s\S]*?)<\/command-args>)?\s*$/;
+
+/** The text of a message made only of text, or `null`. */
+function textOf(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content) || !content.every((block) => block?.type === "text")) return null;
+  return content.map((block) => String(block.text ?? "")).join("\n");
+}
+
+/** What the user typed, from a stored user message; `null` for Claude Code's own entries. */
+function typed(message: SessionMessage): string | null {
+  const text = textOf((message.message as { content?: unknown } | null)?.content);
+  if (!text?.trim()) return null;
+  const stored = message as { origin?: { kind?: string }; is_meta?: boolean; isMeta?: boolean; isCompactSummary?: boolean };
+  // Compaction summaries, skill bodies and caveats Claude Code injected as user turns.
+  if (stored.is_meta || stored.isMeta || stored.isCompactSummary) return null;
+  const origin = stored.origin?.kind;
+  if (origin === "human") return text;
+  // Transcripts from Claude Code versions before `origin` mark their own entries with tags.
+  if (origin !== undefined) return null;
+  const command = STORED_COMMAND.exec(text);
+  if (command) return [command[1].trim(), command[2]?.trim()].filter(Boolean).join(" ");
+  return text.startsWith("<") || text.startsWith("[Request interrupted") ? null : text;
+}
+
+/** Chat events for a conversation stored by Claude Code, to rebuild a chat whose own history is gone. */
+export function replay(messages: SessionMessage[]): ChatEvent[] {
+  return messages.flatMap((message): ChatEvent[] => {
+    if (message.parent_tool_use_id) return [];
+    if (message.type === "user") {
+      const text = typed(message);
+      if (text !== null) return [{ type: "user", text: clip(text) }];
+    }
+    if (message.type !== "user" && message.type !== "assistant") return [];
+    return translate(message as unknown as SDKMessage);
+  });
+}
+
 /** Translate one SDK message from the main agent into chat events. Subagent traffic is folded away. */
 export function translate(message: SDKMessage): ChatEvent[] {
   if ("parent_tool_use_id" in message && message.parent_tool_use_id) return [];
   switch (message.type) {
     case "system":
-      if (message.subtype !== "init") return [];
-      return [{ type: "meta", meta: { model: message.model, permission_mode: message.permissionMode } }];
+      switch (message.subtype) {
+        case "init":
+          return [{ type: "meta", meta: { active_model: message.model, permission_mode: message.permissionMode } }];
+        case "status":
+          if (message.status === "compacting") return [{ type: "meta", meta: { compacting: true } }];
+          return message.compact_result ? [{ type: "meta", meta: { compacting: false } }] : [];
+        case "compact_boundary": {
+          const { trigger, pre_tokens, post_tokens } = message.compact_metadata;
+          return [{ type: "compacted", trigger, pre_tokens, ...(post_tokens === undefined ? {} : { post_tokens }) }];
+        }
+        default:
+          return [];
+      }
+    case "conversation_reset":
+      return [{ type: "cleared" }];
     case "stream_event": {
       const event = message.event;
       if (event.type === "content_block_delta" && event.delta.type === "text_delta" && event.delta.text) {
@@ -189,6 +266,8 @@ export function translate(message: SDKMessage): ChatEvent[] {
       );
     }
     case "result": {
+      // Local slash commands such as /context end without a model turn; their output is the message.
+      if (message.num_turns === 0 && !message.is_error) return [];
       const failure = message.subtype === "success" && message.is_error ? message.result : undefined;
       if (failure && NOT_LOGGED_IN.test(failure)) {
         return [{ type: "error", message: "Claude Code is not logged in. Run `claude` in a terminal, log in, then send your message again." }];

@@ -1,16 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { clip, summarizeInput, toolInput, translate } from "../src/events";
-import { fixture } from "./helpers";
+import { clip, replay, summarizeInput, toolInput, translate } from "../src/events";
+import { fixture, history } from "./helpers";
 
 describe("translate", () => {
   it("turns a recorded Bash turn into a raw transcript", () => {
     const events = fixture("bash-turn").flatMap(translate);
     expect(events.map((event) => event.type)).toEqual(["meta", "tool", "tool_result", "delta", "assistant", "result"]);
-    expect(events[0]).toEqual({ type: "meta", meta: { model: "claude-opus-5-5", permission_mode: "default" } });
+    expect(events[0]).toEqual({ type: "meta", meta: { active_model: "claude-opus-5-5", permission_mode: "default" } });
     expect(events[1]).toMatchObject({ type: "tool", name: "Bash", summary: "echo planeai-fixture", input: { kind: "bash", command: "echo planeai-fixture" } });
     expect(events[2]).toMatchObject({ type: "tool_result", is_error: false, summary: "planeai-fixture" });
     expect(events[4]).toEqual({ type: "assistant", text: "done" });
     expect(events[5]).toMatchObject({ type: "result", is_error: false, subtype: "success", usage: { output_tokens: expect.any(Number) } });
+  });
+
+  it("renders slash command output without empty turn summaries", () => {
+    const events = fixture("slash-commands").flatMap(translate);
+    expect(events.filter((event) => event.type !== "delta" && event.type !== "meta").map((event) => event.type)).toEqual([
+      "assistant",
+      "result",
+      // /context answers locally, as Claude Code's own markdown, and costs no turn.
+      "assistant",
+      "compacted",
+      // Messages kept through compaction are replayed; ClaudeSession drops them by uuid.
+      "assistant",
+      "cleared",
+      "assistant",
+      "result",
+    ]);
+    const context = events.find((event) => event.type === "assistant" && event.text.startsWith("## Context Usage"));
+    expect(context).toBeDefined();
+    expect(events.find((event) => event.type === "compacted")).toEqual({ type: "compacted", trigger: "manual", pre_tokens: 17_576, post_tokens: 1_094 });
+  });
+
+  it("reports compaction as it runs", () => {
+    const statuses = fixture("slash-commands").filter((message) => message.type === "system" && message.subtype === "status");
+    expect(statuses.flatMap(translate)).toEqual([
+      { type: "meta", meta: { compacting: true } },
+      { type: "meta", meta: { compacting: false } },
+    ]);
+  });
+
+  it("replays a stored transcript as what the user typed and what Claude did", () => {
+    expect(replay(history("s1"))).toEqual([
+      { type: "user", text: "run the tests" },
+      { type: "tool", id: "toolu_1", name: "Bash", summary: "make test", input: { kind: "bash", command: "make test" } },
+      { type: "tool_result", tool_use_id: "toolu_1", is_error: false, summary: "81 passed" },
+      { type: "user", text: "/compact keep the plan" },
+      { type: "user", text: "typed in an older Claude Code" },
+      { type: "assistant", text: "All 81 tests pass." },
+    ]);
   });
 
   it("folds subagent traffic away", () => {

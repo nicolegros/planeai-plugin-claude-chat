@@ -9,6 +9,7 @@ Only its primary tab differs: PlaneAI mounts this plugin's chat UI where the ter
 > **Status: v0, unreleased.**
 > It needs a PlaneAI build with the unstable `planeai.plugin-host.v3` provider contract (ADR-0013).
 > The chat renders markdown, tool calls with diffs, and permission prompts that can be allowed once, for the session, or denied with a reason.
+> Slash commands and skills run as in the terminal, with a `/` menu.
 
 ## Requirements
 
@@ -24,16 +25,24 @@ Confirm your use is covered before relying on subscription login for this plugin
 ## Behavior
 
 - **Same Claude Code as the terminal.** User, project and local settings load (`CLAUDE.md`, skills, MCP servers, hooks), with the `claude_code` system prompt preset.
-- **Same session id.** The Claude session id is the PlaneAI session id, so PlaneAI restarts resume the conversation with `resume`.
-- **Lazy start.** Starting or resuming a session spawns nothing; Claude starts on the first prompt.
+- **Same session id.** The Claude session id starts as the PlaneAI session id, so PlaneAI restarts resume the conversation with `resume`.
+  `/clear` moves Claude to a new session id, which the plugin records and resumes from then on.
+  It also tags that conversation `planeai:<session id>` in Claude Code, so a reinstalled plugin finds it again.
+- **Lazy start.** Starting or resuming a session spawns nothing; Claude starts on the first prompt or when the `/` menu first opens.
 - **Status.** The plugin reports `busy`, `idle` and `needs_attention` to PlaneAI, which drives the sidebar and notifications.
   A pending permission prompt is `needs_attention`.
 - **Auto-approve.** PlaneAI's auto-approve maps to `bypassPermissions`; otherwise Claude asks in the chat.
 - **Controls.** The header switches model and permission mode (Ask before acting, Accept edits, Plan only, and Bypass for auto-approve sessions) and shows context usage.
+- **Slash commands.** Type `/` for a menu of Claude Code's commands and your skills, listed by Claude itself; Tab completes the highlighted one and Enter runs it.
+  Commands run exactly as in the terminal: `/context` and `/usage` answer in the chat, and `/compact` and `/clear` mark the conversation where they happened.
+  `/model <name>` with a model from the header's list switches the header itself; other names go to Claude Code, which validates them and applies them to the running Claude process only, so the header and the next start keep the header's model.
+  Terminal-only commands such as `/color` are left out once Claude Code has named them, which it does at the start of every turn; the plugin remembers them across sessions.
 - **Open in terminal.** Continues the conversation in Claude Code's own UI in a terminal tab of the same session, with the current mode and model.
   The chat stays read-only until that tab closes or Return to chat is selected.
+  A `/clear` typed in that terminal is not seen by the plugin, so returning to the chat resumes the conversation from before it.
 - **Transcript.** Chat events are stored under the plugin data directory so the chat rebuilds after remounts and restarts.
   Destroying a session deletes them; archiving keeps them.
+  When they are gone, for example after the plugin is removed and installed again, the chat is rebuilt once from Claude Code's own transcript, without turn costs or permission prompts.
 
 ## Install
 
@@ -63,7 +72,7 @@ Install the staged `dist/planeai-plugin-claude-chat` directory into a PlaneAI de
 | `src/plugin.ts` | Routes `provider.session.*` and the UI's `claude.*` calls to sessions. |
 | `src/claude-session.ts` | One PlaneAI session driven by an Agent SDK streaming-input query. |
 | `src/events.ts` | Translates SDK messages into the plugin's chat events. |
-| `src/transcript.ts` | Per-session event log for reattach. |
+| `src/transcript.ts` | Per-session event log for reattach and the Claude session id `/clear` moved to; the plugin-wide terminal-only command names. |
 | `ui/` | Svelte 5 chat UI, built into the single `ui/chat.js` ESM bundle PlaneAI mounts. |
 
 ### Recorded streams
@@ -72,9 +81,10 @@ Install the staged `dist/planeai-plugin-claude-chat` directory into a PlaneAI de
 Record a new one with your own `claude`:
 
 ```bash
-bun scripts/record-stream.ts <fixture-name> "<prompt>"
+bun scripts/record-stream.ts <fixture-name> "<prompt>" ["<next prompt>" ...]
 ```
 
+Each further prompt is sent as its own turn, so slash commands can follow a first turn (`slash-commands.jsonl` records `/context`, `/compact` and `/clear`).
 Review the fixture before committing it.
 
 ## Release

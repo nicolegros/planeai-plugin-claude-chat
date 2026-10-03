@@ -1,10 +1,12 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Chat from "../ui/Chat.svelte";
-import type { ProviderUiContext, SessionMeta, Snapshot, StoredEvent } from "../ui/host";
+import type { CommandOption, ProviderUiContext, SessionMeta, Snapshot, StoredEvent } from "../ui/host";
 
 const META: SessionMeta = {
   model: null,
+  active_model: null,
+  compacting: false,
   permission_mode: "default",
   modes: ["default", "acceptEdits", "plan"],
   models: [{ value: "opus", label: "Opus" }],
@@ -12,13 +14,29 @@ const META: SessionMeta = {
   handed_off: false,
 };
 
-function context(snapshot: Partial<Snapshot> = {}) {
+const COMMANDS: CommandOption[] = [
+  { name: "compact", description: "Free up context by summarizing the conversation so far", argument_hint: "<optional custom summarization instructions>", aliases: [] },
+  { name: "context", description: "Show current context usage", argument_hint: "", aliases: [] },
+  { name: "usage", description: "Show session cost and plan usage", argument_hint: "", aliases: ["cost", "stats"] },
+  { name: "review", description: "Review a pull request", argument_hint: "[<pr>]", aliases: [] },
+];
+
+function context(snapshot: Partial<Snapshot> = {}, commands: CommandOption[] = COMMANDS) {
   let listener: ((event: StoredEvent) => void) | null = null;
   const pages: Snapshot[] = [{ seq: 0, status: "idle", meta: META, events: [], more: false, ...snapshot }];
+  const catalog = { commands };
   const value: ProviderUiContext = {
     session: { id: "s1" },
     host: {
-      call: vi.fn(async (method: string) => (method === "claude.snapshot" ? (pages.length > 1 ? pages.shift() : pages[0]) : {})) as ProviderUiContext["host"]["call"],
+      call: vi.fn(async (method: string, params?: { offset?: number }) => {
+        if (method === "claude.snapshot") return pages.length > 1 ? pages.shift() : pages[0];
+        // Two commands per page, so the menu has to follow `more`.
+        if (method === "claude.commands") {
+          const offset = params?.offset ?? 0;
+          return { commands: catalog.commands.slice(offset, offset + 2), more: offset + 2 < catalog.commands.length };
+        }
+        return {};
+      }) as ProviderUiContext["host"]["call"],
       session: {
         send: vi.fn(async () => {}),
         interrupt: vi.fn(async () => {}),
@@ -33,7 +51,7 @@ function context(snapshot: Partial<Snapshot> = {}) {
       navigation: { openExternal: vi.fn() },
     },
   };
-  return { value, pages, push: (seq: number, payload: StoredEvent["payload"]) => listener?.({ seq, payload }) };
+  return { value, pages, catalog, push: (seq: number, payload: StoredEvent["payload"]) => listener?.({ seq, payload }) };
 }
 
 const settle = async () => {
@@ -53,6 +71,15 @@ function type(element: HTMLInputElement | HTMLTextAreaElement, text: string): vo
   flushSync();
 }
 
+function press(element: HTMLElement, key: string): KeyboardEvent {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+  element.dispatchEvent(event);
+  flushSync();
+  return event;
+}
+
+const options = () => [...document.querySelectorAll("[role=option]")].map((option) => option.querySelector(".name")?.textContent);
+
 describe("Chat", () => {
   let app: ReturnType<typeof mount> | undefined;
   afterEach(() => {
@@ -61,8 +88,8 @@ describe("Chat", () => {
     document.body.replaceChildren();
   });
 
-  async function render(snapshot: Partial<Snapshot> = {}) {
-    const harness = context(snapshot);
+  async function render(snapshot: Partial<Snapshot> = {}, commands: CommandOption[] = COMMANDS) {
+    const harness = context(snapshot, commands);
     app = mount(Chat, { target: document.body, props: { context: harness.value } });
     await settle();
     return harness;
@@ -228,6 +255,142 @@ describe("Chat", () => {
     textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     expect(harness.value.host.session.send).not.toHaveBeenCalled();
     expect(harness.value.host.data.notify).toHaveBeenCalledWith(expect.stringContaining("too long"));
+  });
+
+  it("offers slash commands as the user types one, loading every page once", async () => {
+    const harness = await render();
+    const textarea = document.querySelector("textarea")!;
+    expect(harness.value.host.call).not.toHaveBeenCalledWith("claude.commands", expect.anything());
+    type(textarea, "/");
+    await settle();
+    expect(harness.value.host.call).toHaveBeenCalledWith("claude.commands", { session_id: "s1", offset: 0 });
+    expect(harness.value.host.call).toHaveBeenCalledWith("claude.commands", { session_id: "s1", offset: 2 });
+    expect(options()).toEqual(["/compact", "/context", "/review", "/usage"]);
+    expect(textarea.getAttribute("aria-expanded")).toBe("true");
+
+    type(textarea, "/co");
+    expect(options()).toEqual(["/compact", "/context", "/usage"]);
+    expect(document.querySelector("[role=option][aria-selected=true] .name")?.textContent).toBe("/compact");
+    expect(document.querySelector("[role=option] .hint")?.textContent).toBe("<optional custom summarization instructions>");
+    expect(document.querySelectorAll("[role=option]")[2].textContent).toContain("/cost");
+
+    type(textarea, "/zzz");
+    expect(document.querySelector(".commands")?.textContent).toContain("No matching commands");
+    type(textarea, "/compact now");
+    expect(document.querySelector(".commands")).toBeNull();
+    expect(harness.value.host.call).toHaveBeenCalledTimes(3);
+  });
+
+  it("completes with Tab, runs with Enter and closes with Escape", async () => {
+    const harness = await render({ status: "busy" });
+    const textarea = document.querySelector("textarea")!;
+    type(textarea, "/c");
+    await settle();
+    press(textarea, "ArrowDown");
+    expect(document.querySelector("[role=option][aria-selected=true] .name")?.textContent).toBe("/context");
+    expect(textarea.getAttribute("aria-activedescendant")).toBe(document.querySelector("[role=option][aria-selected=true]")?.id);
+    expect(press(textarea, "Tab").defaultPrevented).toBe(true);
+    expect(textarea.value).toBe("/context ");
+    expect(document.querySelector(".commands")).toBeNull();
+
+    type(textarea, "/us");
+    press(textarea, "Enter");
+    expect(harness.value.host.session.send).toHaveBeenCalledWith("/usage");
+    expect(textarea.value).toBe("");
+
+    type(textarea, "/re");
+    press(textarea, "Escape");
+    expect(document.querySelector(".commands")).toBeNull();
+    expect(harness.value.host.session.interrupt).not.toHaveBeenCalled();
+    press(textarea, "Enter");
+    expect(harness.value.host.session.send).toHaveBeenLastCalledWith("/re");
+  });
+
+  it("completes a command picked with the mouse", async () => {
+    await render();
+    const textarea = document.querySelector("textarea")!;
+    type(textarea, "/rev");
+    await settle();
+    document.querySelector<HTMLElement>("[role=option]")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    flushSync();
+    expect(textarea.value).toBe("/review ");
+  });
+
+  it("reloads the command list when Claude's commands change", async () => {
+    const harness = await render();
+    const textarea = document.querySelector("textarea")!;
+    type(textarea, "/");
+    await settle();
+    harness.catalog.commands = [{ name: "deploy", description: "Ship it", argument_hint: "", aliases: [] }];
+    harness.push(1, { type: "commands_changed" });
+    await settle();
+    expect(options()).toEqual(["/deploy"]);
+  });
+
+  it("explains when commands cannot be listed and retries when the menu opens again", async () => {
+    const harness = await render();
+    const textarea = document.querySelector("textarea")!;
+    vi.mocked(harness.value.host.call).mockRejectedValueOnce(new Error("Claude Code was not found on PATH."));
+    type(textarea, "/");
+    await settle();
+    expect(document.querySelector(".commands")?.textContent).toContain("Claude Code was not found on PATH.");
+    type(textarea, "");
+    type(textarea, "/");
+    await settle();
+    expect(options()).toEqual(["/compact", "/context", "/review", "/usage"]);
+  });
+
+  it("reopens a dismissed menu once the draft changes", async () => {
+    await render();
+    const textarea = document.querySelector("textarea")!;
+    type(textarea, "/");
+    await settle();
+    press(textarea, "Escape");
+    expect(document.querySelector(".commands")).toBeNull();
+    type(textarea, "");
+    type(textarea, "/");
+    expect(document.querySelector(".commands")).not.toBeNull();
+  });
+
+  it("runs the command whose name or alias was typed exactly", async () => {
+    const harness = await render({}, [...COMMANDS, { name: "cost-report", description: "", argument_hint: "", aliases: [] }]);
+    const textarea = document.querySelector("textarea")!;
+    type(textarea, "/cost");
+    await settle();
+    expect(options()[0]).toBe("/usage");
+    press(textarea, "Enter");
+    expect(harness.value.host.session.send).toHaveBeenCalledWith("/usage");
+  });
+
+  it("marks compaction, cleared context and model switches in the conversation", async () => {
+    const harness = await render();
+    harness.push(1, { type: "meta", meta: { compacting: true } });
+    harness.push(2, { type: "status", status: "busy" });
+    await settle();
+    expect(document.querySelector(".working")?.textContent).toContain("Compacting the conversation");
+    harness.push(3, { type: "compacted", trigger: "manual", pre_tokens: 17_576, post_tokens: 1_094 });
+    harness.push(4, { type: "cleared" });
+    harness.push(5, { type: "notice", text: "Model set to Opus" });
+    harness.push(6, { type: "compacted", trigger: "auto", pre_tokens: 160_000 });
+    await settle();
+    const dividers = [...document.querySelectorAll(".divider")].map((divider) => divider.textContent?.trim());
+    expect(dividers).toEqual(["Conversation compacted · 17.6k → 1.1k tokens", "Context cleared · Claude no longer sees the messages above", "Conversation compacted automatically · 160k tokens summarized"]);
+    expect(document.querySelector(".notice")?.textContent).toBe("Model set to Opus");
+  });
+
+  it("shows the picked model, a typed one, or the default Claude resolved", async () => {
+    await render({ meta: { ...META, active_model: "claude-opus-5-5" } });
+    const model = () => document.querySelector<HTMLSelectElement>("select")!;
+    expect(model().selectedOptions[0].textContent).toBe("Default (claude-opus-5-5)");
+    unmount(app!);
+    document.body.replaceChildren();
+    await render({ meta: { ...META, model: "opus", active_model: "claude-opus-5-5" } });
+    expect(model().selectedOptions[0].textContent).toBe("Opus");
+    expect(model().options[0].textContent).toBe("Default");
+    unmount(app!);
+    document.body.replaceChildren();
+    await render({ meta: { ...META, model: "opusplan", active_model: "claude-opus-5-5" } });
+    expect(model().selectedOptions[0].textContent).toBe("opusplan");
   });
 
   it("summarizes each turn with duration, cost and tokens", async () => {

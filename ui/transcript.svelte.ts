@@ -1,4 +1,4 @@
-import type { ChatEvent, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput } from "./host";
+import type { ChatEvent, Compaction, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput } from "./host";
 
 export interface PermissionEntry {
   request_id: string;
@@ -19,9 +19,12 @@ export type Entry =
   | { kind: "permission"; seq: number; permission: PermissionEntry }
   | { kind: "result"; seq: number; is_error: boolean; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { kind: "error"; seq: number; message: string }
-  | { kind: "handoff"; seq: number; in_terminal: boolean };
+  | { kind: "handoff"; seq: number; in_terminal: boolean }
+  | ({ kind: "compacted"; seq: number } & Compaction)
+  | { kind: "cleared"; seq: number }
+  | { kind: "notice"; seq: number; text: string };
 
-const EMPTY_META: SessionMeta = { model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false };
+const EMPTY_META: SessionMeta = { model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false };
 
 /** Folds the ordered event stream into renderable entries; events at or below `seq` are ignored. */
 export class Transcript {
@@ -90,6 +93,19 @@ export class Transcript {
       case "handoff":
         this.live = "";
         this.entries.push({ kind: "handoff", seq, in_terminal: event.in_terminal });
+        return;
+      case "compacted":
+        this.live = "";
+        this.entries.push({ kind: "compacted", seq, trigger: event.trigger, pre_tokens: event.pre_tokens, post_tokens: event.post_tokens });
+        return;
+      case "cleared":
+        this.live = "";
+        this.entries.push({ kind: "cleared", seq });
+        return;
+      case "notice":
+        this.entries.push({ kind: "notice", seq, text: event.text });
+        return;
+      case "commands_changed":
         return;
     }
   }
