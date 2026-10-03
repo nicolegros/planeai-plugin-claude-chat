@@ -17,6 +17,6 @@ export default defineConfig(({ command }) => {
       rollupOptions: { output: { inlineDynamicImports: true } },
     },
     resolve: process.env.VITEST ? { conditions: ["browser"] } : undefined,
-    test: { environment: "jsdom", include: ["tests/**/*.test.ts"] },
+    test: { environment: "jsdom", include: ["tests/**/*.test.ts"], setupFiles: ["tests/setup.ts"] },
   };
 });
