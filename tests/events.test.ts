@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { clip, summarizeInput, toolInput, translate } from "../src/events";
-import { fixture } from "./helpers";
+import { clip, replay, summarizeInput, toolInput, translate } from "../src/events";
+import { fixture, history } from "./helpers";
 
 describe("translate", () => {
   it("turns a recorded Bash turn into a raw transcript", () => {
@@ -37,6 +37,17 @@ describe("translate", () => {
     expect(statuses.flatMap(translate)).toEqual([
       { type: "meta", meta: { compacting: true } },
       { type: "meta", meta: { compacting: false } },
+    ]);
+  });
+
+  it("replays a stored transcript as what the user typed and what Claude did", () => {
+    expect(replay(history("s1"))).toEqual([
+      { type: "user", text: "run the tests" },
+      { type: "tool", id: "toolu_1", name: "Bash", summary: "make test", input: { kind: "bash", command: "make test" } },
+      { type: "tool_result", tool_use_id: "toolu_1", is_error: false, summary: "81 passed" },
+      { type: "user", text: "/compact keep the plan" },
+      { type: "user", text: "typed in an older Claude Code" },
+      { type: "assistant", text: "All 81 tests pass." },
     ]);
   });
 

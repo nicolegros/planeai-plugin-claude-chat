@@ -100,7 +100,9 @@ export class ClaudeChatPlugin {
       case "claude.snapshot": {
         const request = object(params);
         const after = typeof request.after_seq === "number" ? request.after_seq : 0;
-        return this.session(request).snapshot(after);
+        const session = this.session(request);
+        await session.restored;
+        return session.snapshot(after);
       }
       case "claude.commands": {
         const request = object(params);

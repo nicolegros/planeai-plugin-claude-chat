@@ -1,4 +1,4 @@
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 
 /** What the chat needs to render a tool call; anything else falls back to the summary. */
 export type ToolInput =
@@ -174,6 +174,36 @@ function usage(raw: unknown): TokenUsage | undefined {
 
 /** Claude Code reports a missing login as a failed turn with this text. */
 const NOT_LOGGED_IN = /not logged in/i;
+
+/** A slash command as Claude Code stores it: `<command-name>/x</command-name>…<command-args>y</command-args>`. */
+const STORED_COMMAND = /^<command-name>([^<]*)<\/command-name>[\s\S]*?(?:<command-args>([\s\S]*?)<\/command-args>)?\s*$/;
+
+/** What the user typed, from a stored user message; `null` for Claude Code's own entries. */
+function typed(message: SessionMessage): string | null {
+  const content = (message.message as { content?: unknown } | null)?.content;
+  const text = typeof content === "string" ? content : Array.isArray(content) && content.every((block) => block?.type === "text") ? content.map((block) => String(block.text ?? "")).join("\n") : null;
+  if (!text?.trim()) return null;
+  const origin = (message as { origin?: { kind?: string } }).origin?.kind;
+  if (origin === "human") return text;
+  // Transcripts from Claude Code versions before `origin` mark their own entries with tags.
+  if (origin !== undefined) return null;
+  const command = STORED_COMMAND.exec(text);
+  if (command) return [command[1].trim(), command[2]?.trim()].filter(Boolean).join(" ");
+  return text.startsWith("<") || text.startsWith("[Request interrupted") ? null : text;
+}
+
+/** Chat events for a conversation stored by Claude Code, to rebuild a chat whose own history is gone. */
+export function replay(messages: SessionMessage[]): ChatEvent[] {
+  return messages.flatMap((message): ChatEvent[] => {
+    if (message.parent_tool_use_id) return [];
+    if (message.type === "user") {
+      const text = typed(message);
+      if (text !== null) return [{ type: "user", text: clip(text) }];
+    }
+    if (message.type !== "user" && message.type !== "assistant") return [];
+    return translate(message as unknown as SDKMessage);
+  });
+}
 
 /** Translate one SDK message from the main agent into chat events. Subagent traffic is folded away. */
 export function translate(message: SDKMessage): ChatEvent[] {

@@ -16,7 +16,7 @@ function plugin() {
   const instance = new ClaudeChatPlugin(
     new TranscriptStore(root),
     { event: () => {}, status: (_, status) => statuses.push(status) },
-    { createQuery: fake.factory, hasTranscript: async () => false },
+    { createQuery: fake.factory, hasTranscript: async () => false, history: async () => [] },
   );
   return { instance, root, fake, statuses };
 }

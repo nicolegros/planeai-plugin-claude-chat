@@ -1,4 +1,4 @@
-import type { Options, Query, SDKMessage, SDKUserMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { vi } from "vitest";
@@ -89,6 +89,24 @@ export function fakeQueryFactory({ holdModels = false } = {}): { factory: QueryF
     }) as unknown as Query;
   };
   return { factory, queries };
+}
+
+/** A resumed transcript as `getSessionMessages` returns it: what the user typed, Claude's work, and Claude Code's own entries. */
+export function history(sessionId: string): SessionMessage[] {
+  const base = { session_id: sessionId, parent_tool_use_id: null, parent_agent_id: null };
+  return [
+    { ...base, type: "user", uuid: "u1", message: { role: "user", content: "run the tests" }, origin: { kind: "human" } },
+    { ...base, type: "assistant", uuid: "a1", message: { role: "assistant", content: [{ type: "thinking", thinking: "", signature: "s" }] } },
+    { ...base, type: "assistant", uuid: "a2", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "make test" } }] } },
+    { ...base, type: "user", uuid: "u2", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "81 passed", is_error: false }] } },
+    { ...base, type: "user", uuid: "u3", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } },
+    { ...base, type: "user", uuid: "u4", message: { role: "user", content: "<task-notification>\n<task-id>t1</task-id>\n</task-notification>" }, origin: { kind: "task-notification" } },
+    { ...base, type: "user", uuid: "u5", message: { role: "user", content: "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args>keep the plan</command-args>" } },
+    { ...base, type: "user", uuid: "u6", message: { role: "user", content: "<local-command-stdout>Compacted</local-command-stdout>" } },
+    { ...base, type: "user", uuid: "u7", message: { role: "user", content: "typed in an older Claude Code" } },
+    { ...base, type: "assistant", uuid: "a3", parent_tool_use_id: "toolu_task", message: { role: "assistant", content: [{ type: "text", text: "subagent chatter" }] } },
+    { ...base, type: "assistant", uuid: "a4", message: { role: "assistant", content: [{ type: "text", text: "All 81 tests pass." }] } },
+  ] as SessionMessage[];
 }
 
 export const flush = () => new Promise((resolve) => setTimeout(resolve, 0));

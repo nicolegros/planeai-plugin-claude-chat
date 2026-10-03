@@ -20,6 +20,7 @@ const plugin = new ClaudeChatPlugin(
   {
     createQuery: query,
     hasTranscript: async (sessionId, cwd) => (await getSessionMessages(sessionId, { dir: cwd, limit: 1 })).length > 0,
+    history: (sessionId, cwd) => getSessionMessages(sessionId, { dir: cwd }),
   },
 );
 peer = new JsonRpcPeer(process.stdin, process.stdout, async (method, params, signal) => {

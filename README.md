@@ -41,6 +41,7 @@ Confirm your use is covered before relying on subscription login for this plugin
   A `/clear` typed in that terminal is not seen by the plugin, so returning to the chat resumes the conversation from before it.
 - **Transcript.** Chat events are stored under the plugin data directory so the chat rebuilds after remounts and restarts.
   Destroying a session deletes them; archiving keeps them.
+  When they are gone, for example after the plugin is removed and installed again, the chat is rebuilt once from Claude Code's own transcript, without turn costs or permission prompts.
 
 ## Install
 

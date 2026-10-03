@@ -1,10 +1,12 @@
-import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
-import { clip, isEphemeral, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
+import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import { clip, isEphemeral, replay, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
 import { InputQueue } from "./input-queue";
 import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
 
 /** Leaves headroom under the 64 KiB frame for the response envelope. */
 const SNAPSHOT_PAGE_BYTES = 40_000;
+
+const REBUILT: ChatEvent = { type: "notice", text: "Earlier messages were rebuilt from Claude Code's transcript, without turn costs or permission prompts." };
 
 const HANDED_OFF = "This session is continuing in a terminal tab. Close it or select Return to chat first.";
 
@@ -22,6 +24,8 @@ export interface ClaudeRuntime {
   createQuery: QueryFactory;
   /** Whether Claude already has a transcript for this session id, which then must be resumed. */
   hasTranscript(sessionId: string, cwd: string): Promise<boolean>;
+  /** Claude's stored conversation, oldest first. */
+  history(sessionId: string, cwd: string): Promise<SessionMessage[]>;
 }
 
 export interface SessionHost {
@@ -96,6 +100,8 @@ export class ClaudeSession {
   /** Commands Claude marks as bound to its own terminal UI. */
   private terminalOnly: Set<string>;
   private delivering: Promise<unknown> = Promise.resolve();
+  /** Settles once a chat whose own history is gone was rebuilt from Claude's transcript. */
+  readonly restored: Promise<void>;
   /** The models of the running Claude process, once listed. */
   private models: Promise<ModelOption[]> = Promise.resolve([]);
 
@@ -125,6 +131,26 @@ export class ClaudeSession {
     };
     this.conversationId = store.conversation(config.id) ?? config.id;
     this.terminalOnly = new Set(store.terminalCommands());
+    this.restored = this.events.length > 0 ? Promise.resolve() : this.restore();
+    this.delivering = this.restored;
+  }
+
+  /**
+   * Removing the plugin deletes its data, while Claude keeps the conversation and resumes
+   * it; without this the chat would show nothing of it.
+   */
+  private async restore(): Promise<void> {
+    let messages: SessionMessage[];
+    try {
+      messages = await this.runtime.history(this.conversationId, this.config.cwd);
+    } catch (error) {
+      console.error(`failed to read Claude's transcript: ${String(error)}`);
+      return;
+    }
+    const replayed = replay(messages);
+    if (replayed.length === 0 || this.events.length > 0) return;
+    // The UI has not loaded a snapshot yet (claude.snapshot waits for this), so nothing is sent live.
+    for (const payload of [...replayed.slice(-(MAX_SNAPSHOT_EVENTS - 1)), REBUILT]) this.record(payload);
   }
 
   get id(): string {
@@ -529,13 +555,18 @@ export class ClaudeSession {
 
   private emit(payload: ChatEvent): void {
     if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
+    this.host.event(this.config.id, this.record(payload).seq, payload);
+  }
+
+  /** Numbers an event and keeps it in the transcript unless it is ephemeral. */
+  private record(payload: ChatEvent): StoredEvent {
     const event = { seq: ++this.seq, payload };
     if (!isEphemeral(payload)) {
       this.events.push(event);
       if (this.events.length > MAX_SNAPSHOT_EVENTS) this.events.splice(0, this.events.length - MAX_SNAPSHOT_EVENTS);
       this.store.append(this.config.id, event);
     }
-    this.host.event(this.config.id, event.seq, payload);
+    return event;
   }
 
   private setStatus(status: SessionStatus, force = false): void {
