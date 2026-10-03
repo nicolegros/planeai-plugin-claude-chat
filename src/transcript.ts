@@ -1,10 +1,16 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ChatEvent, ModelOption } from "./events";
+import type { ChatEvent, LimitWindow, ModelOption, PlanLimits } from "./events";
 
 export interface StoredEvent {
   seq: number;
   payload: ChatEvent;
+}
+
+function limitWindow(value: unknown): LimitWindow | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { utilization, resets_at } = value as Record<string, unknown>;
+  return typeof utilization === "number" && typeof resets_at === "number" ? { utilization, resets_at } : undefined;
 }
 
 /** Keep reattach snapshots bounded; the full conversation lives in Claude's own transcript. */
@@ -13,7 +19,7 @@ export const MAX_SNAPSHOT_EVENTS = 2_000;
 /**
  * Per-session event log under the plugin data dir, so a remounted or restarted UI
  * can rebuild the chat, plus a `started` marker and the conversation id /clear moved to.
- * Plugin-wide: Claude Code's terminal-only command names and the models it last listed.
+ * Plugin-wide: Claude Code's terminal-only command names, the models it last listed and the plan's usage windows.
  */
 export class TranscriptStore {
   constructor(private readonly root: string) {
@@ -34,6 +40,10 @@ export class TranscriptStore {
 
   private get modelsPath(): string {
     return join(this.root, "models.json");
+  }
+
+  private get limitsPath(): string {
+    return join(this.root, "limits.json");
   }
 
   private conversationPath(sessionId: string): string {
@@ -98,6 +108,22 @@ export class TranscriptStore {
 
   setModels(models: ModelOption[]): void {
     writeFileSync(this.modelsPath, JSON.stringify(models));
+  }
+
+  /** The plan's usage windows Claude Code last reported; they belong to the account, not a session. */
+  limits(): PlanLimits | null {
+    try {
+      const stored = JSON.parse(readFileSync(this.limitsPath, "utf8")) as Record<string, unknown>;
+      const five_hour = limitWindow(stored?.five_hour);
+      const seven_day = limitWindow(stored?.seven_day);
+      return five_hour || seven_day ? { ...(five_hour ? { five_hour } : {}), ...(seven_day ? { seven_day } : {}) } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setLimits(limits: PlanLimits): void {
+    writeFileSync(this.limitsPath, JSON.stringify(limits));
   }
 
   /** The Claude session id currently holding this session's conversation, when it is not the PlaneAI id. */

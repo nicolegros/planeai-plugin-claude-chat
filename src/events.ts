@@ -30,6 +30,50 @@ export interface ModelOption {
   label: string;
 }
 
+/** One plan usage window: the share used, 0 to 100, and when it resets, in epoch ms. */
+export interface LimitWindow {
+  utilization: number;
+  resets_at: number;
+}
+
+/** The claude.ai plan's usage windows; absent for API key, Bedrock and Vertex sessions. */
+export interface PlanLimits {
+  five_hour?: LimitWindow;
+  seven_day?: LimitWindow;
+}
+
+const LIMIT_WINDOWS = ["five_hour", "seven_day"] as const;
+
+function limitWindow(utilization: unknown, resetsAt: unknown): LimitWindow | undefined {
+  if (typeof utilization !== "number" || typeof resetsAt !== "number" || !Number.isFinite(utilization) || !Number.isFinite(resetsAt)) return undefined;
+  return { utilization: Math.min(100, Math.max(0, utilization * 100)), resets_at: resetsAt * 1000 };
+}
+
+/**
+ * The windows a `rate_limit_event` reports. Claude Code sends every window in `unifiedWindows`
+ * (utilization as a fraction, reset in epoch seconds), which the SDK does not type yet; the typed
+ * fields describe only the window that set the status, and are the fallback.
+ */
+export function planLimits(info: unknown): PlanLimits | null {
+  if (!info || typeof info !== "object") return null;
+  const fields = info as Record<string, unknown>;
+  const limits: PlanLimits = {};
+  const unified = fields.unifiedWindows;
+  if (unified && typeof unified === "object") {
+    for (const name of LIMIT_WINDOWS) {
+      const window = (unified as Record<string, unknown>)[name] as Record<string, unknown> | undefined;
+      const parsed = window && typeof window === "object" ? limitWindow(window.utilization, window.resetsAt) : undefined;
+      if (parsed) limits[name] = parsed;
+    }
+  }
+  const type = fields.rateLimitType;
+  if ((type === "five_hour" || type === "seven_day") && !limits[type]) {
+    const parsed = limitWindow(fields.utilization, fields.resetsAt);
+    if (parsed) limits[type] = parsed;
+  }
+  return Object.keys(limits).length > 0 ? limits : null;
+}
+
 export interface ContextUsage {
   total_tokens: number;
   max_tokens: number;
@@ -53,6 +97,8 @@ export interface SessionMeta {
   compacting: boolean;
   /** The session's worktree, so the chat can show paths relative to it. */
   cwd: string | null;
+  /** The plan's usage windows Claude Code last reported, shared by every session. */
+  limits: PlanLimits | null;
 }
 
 export interface Compaction {

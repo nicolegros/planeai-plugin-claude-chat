@@ -408,7 +408,7 @@
   :where(.chat) :global(button) { min-height: calc(32 * var(--chat-unit)); padding: calc(6 * var(--chat-unit)) calc(10 * var(--chat-unit)); }
   /* WebKit frames never show native title tooltips, so controls labelled by an icon or a short name get this one. */
   :where(.chat) :global([data-tip]) { position: relative; }
-  :where(.chat) :global([data-tip]::after) { content: attr(data-tip); position: absolute; bottom: calc(100% + calc(6 * var(--chat-unit))); left: 50%; z-index: 3; transform: translateX(-50%); padding: calc(4 * var(--chat-unit)) calc(8 * var(--chat-unit)); border-radius: calc(6 * var(--chat-unit)); background: var(--planeai-text); color: var(--planeai-main); font-family: var(--chat-font); font-size: var(--chat-size-xs); font-weight: 400; line-height: var(--chat-line); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 120ms; }
+  :where(.chat) :global([data-tip]::after) { content: attr(data-tip); position: absolute; bottom: calc(100% + calc(6 * var(--chat-unit))); left: 50%; z-index: 3; transform: translateX(-50%); padding: calc(4 * var(--chat-unit)) calc(8 * var(--chat-unit)); border-radius: calc(6 * var(--chat-unit)); background: var(--planeai-text); color: var(--planeai-main); font-family: var(--chat-font); font-size: var(--chat-size-xs); font-weight: 400; line-height: var(--chat-line); text-align: left; white-space: pre; pointer-events: none; opacity: 0; transition: opacity 120ms; }
   :where(.chat) :global([data-tip-end]::after) { right: 0; left: auto; transform: none; }
   :where(.chat) :global([data-tip]:hover::after) { opacity: 1; transition-delay: 400ms; }
   :where(.chat) :global([data-tip]:focus-visible::after) { opacity: 1; }

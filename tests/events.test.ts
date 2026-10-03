@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clip, replay, summarizeInput, toolInput, translate } from "../src/events";
+import { clip, planLimits, replay, summarizeInput, toolInput, translate } from "../src/events";
 import { fixture, history } from "./helpers";
 
 describe("translate", () => {
@@ -84,6 +84,15 @@ describe("translate", () => {
     expect(summarizeInput({ file_path: "src/main.ts", content: "…" })).toBe("src/main.ts");
     expect(summarizeInput({ todos: [] })).toBe('{"todos":[]}');
     expect(summarizeInput({ skill: "review", args: "42" })).toBe("review");
+  });
+
+  it("reads every plan window a rate limit event reports", () => {
+    // As recorded from Claude Code: all windows in the untyped `unifiedWindows`, fractions and epoch seconds.
+    const recorded = { status: "allowed", resetsAt: 1791069000, rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.61, resetsAt: 1791069000 }, seven_day: { utilization: 0.43, resetsAt: 1791273600 } } };
+    expect(planLimits(recorded)).toEqual({ five_hour: { utilization: 61, resets_at: 1791069000000 }, seven_day: { utilization: 43, resets_at: 1791273600000 } });
+    expect(planLimits({ status: "allowed", rateLimitType: "seven_day", utilization: 0.5, resetsAt: 10 })).toEqual({ seven_day: { utilization: 50, resets_at: 10_000 } });
+    expect(planLimits({ status: "allowed", rateLimitType: "overage" })).toBeNull();
+    expect(planLimits(null)).toBeNull();
   });
 
   it("clips long text so events stay within the host frame limit", () => {

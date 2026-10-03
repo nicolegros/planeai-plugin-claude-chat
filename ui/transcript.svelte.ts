@@ -24,7 +24,7 @@ export type Entry =
   | { kind: "cleared"; seq: number }
   | { kind: "notice"; seq: number; text: string };
 
-const EMPTY_META: SessionMeta = { model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false, cwd: null };
+const EMPTY_META: SessionMeta = { model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false, cwd: null, limits: null };
 
 /** Folds the ordered event stream into renderable entries; events at or below `seq` are ignored. */
 export class Transcript {

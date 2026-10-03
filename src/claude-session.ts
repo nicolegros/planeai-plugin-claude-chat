@@ -1,7 +1,7 @@
 import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import type { Appearance } from "./appearance";
 import { SlashCommands } from "./commands";
-import { clip, isEphemeral, replay, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
+import { clip, isEphemeral, planLimits, replay, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
 import { InputQueue } from "./input-queue";
 import { page } from "./paging";
 import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
@@ -120,6 +120,7 @@ export class ClaudeSession {
       modes,
       // Claude lists its models once it starts; until then, the ones it listed last.
       models: store.models(),
+      limits: store.limits(),
       context: null,
       handed_off: handedOff,
       compacting: false,
@@ -448,6 +449,7 @@ export class ClaudeSession {
           break;
       }
     }
+    if (message.type === "rate_limit_event") this.onRateLimit(message.rate_limit_info);
     // /clear moves Claude to a new id within the turn; its result already carries it.
     if (message.type === "result") this.follow(message.session_id);
     for (const event of translate(message)) this.emit(event);
@@ -465,6 +467,15 @@ export class ClaudeSession {
     if (!this.store.hasStarted(this.config.id)) this.store.markStarted(this.config.id);
     this.follow(sessionId);
     if (this.slashCommands.setTerminalOnly(terminalOnly)) this.emit({ type: "commands_changed" });
+  }
+
+  /** Each window updates on its own, as an event may describe only one. */
+  private onRateLimit(info: unknown): void {
+    const reported = planLimits(info);
+    if (!reported) return;
+    const limits = { ...this.meta.limits, ...reported };
+    this.store.setLimits(limits);
+    this.updateMeta({ limits });
   }
 
   private follow(sessionId: string): void {

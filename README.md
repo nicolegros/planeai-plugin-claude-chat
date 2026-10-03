@@ -35,6 +35,7 @@ Confirm your use is covered before relying on subscription login for this plugin
 - **Auto-approve.** PlaneAI's auto-approve maps to `bypassPermissions`; otherwise Claude asks in the chat.
 - **Controls.** The message box toggles the permission mode (Ask before acting, Accept edits, Plan only, and Bypass for auto-approve sessions), picks the model, shows context usage, and opens the conversation in a terminal.
   The model list is the one Claude Code last reported, remembered across sessions, so it is complete before a chat's Claude starts.
+  Hovering the context meter also shows the claude.ai plan's 5-hour and weekly usage, as Claude Code last reported it, with when each window resets.
 - **Slash commands.** Type `/` for a menu of Claude Code's commands and your skills, listed by Claude itself; Tab completes the highlighted one and Enter runs it.
   Commands run exactly as in the terminal: `/context` and `/usage` answer in the chat, and `/compact` and `/clear` mark the conversation where they happened.
   `/model <name>` with a model from the model list switches that list itself; other names go to Claude Code, which validates them and applies them to the running Claude process only, so the list and the next start keep the listed model.

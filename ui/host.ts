@@ -1,5 +1,5 @@
 import type { Appearance } from "../src/appearance";
-import type { ChatEvent, CommandOption, Compaction, ContextUsage, ModelOption, PermissionDecision, SessionMeta, SessionStatus, Todo, TokenUsage, ToolInput } from "../src/events";
+import type { ChatEvent, CommandOption, Compaction, ContextUsage, LimitWindow, ModelOption, PermissionDecision, PlanLimits, SessionMeta, SessionStatus, Todo, TokenUsage, ToolInput } from "../src/events";
 import type { StoredEvent } from "../src/transcript";
 
 /** The slice of PlaneAI's plugin UI bridge a provider session UI uses. */
@@ -41,4 +41,4 @@ export interface Snapshot {
   more: boolean;
 }
 
-export type { Appearance, ChatEvent, CommandOption, Compaction, ContextUsage, ModelOption, PermissionDecision, SessionMeta, SessionStatus, StoredEvent, Todo, TokenUsage, ToolInput };
+export type { Appearance, ChatEvent, CommandOption, Compaction, ContextUsage, LimitWindow, ModelOption, PermissionDecision, PlanLimits, SessionMeta, SessionStatus, StoredEvent, Todo, TokenUsage, ToolInput };

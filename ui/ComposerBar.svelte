@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import type { SessionMeta } from "./host";
   import { modelLabel } from "./models";
+  import { usageTip } from "./usage";
 
   let { meta, onMode, onModel, onHandoff, actions }: { meta: SessionMeta; onMode: (mode: string) => void; onModel: (model: string | null) => void; onHandoff: () => void; actions: Snippet } = $props();
 
@@ -18,6 +19,8 @@
   // A model typed with /model may not be in Claude's list; it still shows as selected.
   const unlisted = $derived(meta.model !== null && !meta.models.some((model) => model.value === meta.model));
   const percent = $derived(meta.context ? Math.round(meta.context.percentage) : 0);
+  // Read when the tooltip is about to show, so a window that has reset since is left out.
+  let now = $state(new Date());
 </script>
 
 <div class="settings">
@@ -53,7 +56,8 @@
 <!-- One group, so in a narrow pane it wraps whole and stays on the right. -->
 <div class="status">
 {#if meta.context}
-  <span class="context" data-tip="{Math.round(meta.context.total_tokens / 1000)}k of {Math.round(meta.context.max_tokens / 1000)}k tokens of context used" data-tip-end>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <span class="context" data-tip={usageTip(meta, now)} data-tip-end onpointerenter={() => (now = new Date())}>
     <svg class="ring" viewBox="0 0 16 16" role="meter" aria-label="Context usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
       <circle cx="8" cy="8" r="6" fill="none" stroke="var(--planeai-border-strong)" stroke-width="2" />
       <circle class="fill" class:high={percent >= 80} cx="8" cy="8" r="6" fill="none" stroke-width="2" stroke-linecap="round" stroke-dasharray="{(RING * Math.min(100, percent)) / 100} {RING}" transform="rotate(-90 8 8)" />

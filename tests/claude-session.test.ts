@@ -231,6 +231,18 @@ describe("ClaudeSession", () => {
     expect(fake.queries).toHaveLength(1);
   });
 
+  it("reports the plan's usage windows and remembers them for the next chat", async () => {
+    const chat = session();
+    await chat.send("hello");
+    fake.queries[0].emit({ type: "rate_limit_event", rate_limit_info: { status: "allowed", unifiedWindows: { five_hour: { utilization: 0.2, resetsAt: 100 }, seven_day: { utilization: 0.4, resetsAt: 200 } } }, uuid: "u1", session_id: SESSION_ID } as never);
+    fake.queries[0].emit({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.3, resetsAt: 100 }, uuid: "u2", session_id: SESSION_ID } as never);
+    await flush();
+    const limits = { five_hour: { utilization: 30, resets_at: 100_000 }, seven_day: { utilization: 40, resets_at: 200_000 } };
+    expect(chat.snapshot().meta.limits).toEqual(limits);
+    chat.stop();
+    expect(session().snapshot().meta.limits).toEqual(limits);
+  });
+
   it("hands the conversation to the terminal and refuses input until it comes back", async () => {
     const chat = session();
     await chat.send("hello");

@@ -8,6 +8,7 @@ const META: SessionMeta = {
   active_model: null,
   compacting: false,
   cwd: "/work/repo",
+  limits: null,
   permission_mode: "default",
   modes: ["default", "acceptEdits", "plan"],
   models: [{ value: "opus", label: "Opus" }],
@@ -197,6 +198,14 @@ describe("Chat", () => {
     expect(document.querySelector(".context-label")?.textContent).toBe("25%");
     expect(document.querySelector("[role=meter]")?.getAttribute("aria-valuenow")).toBe("25");
     expect(document.querySelector(".context")?.getAttribute("data-tip")).toBe("50k of 200k tokens of context used");
+
+    const resets = new Date(Date.now() + 60 * 60 * 1000).getTime();
+    harness.push(2, { type: "meta", meta: { limits: { five_hour: { utilization: 61.2, resets_at: resets }, seven_day: { utilization: 44, resets_at: 0 } } } });
+    await settle();
+    const tip = document.querySelector(".context")?.getAttribute("data-tip")?.split("\n");
+    expect(tip?.[0]).toBe("50k of 200k tokens of context used");
+    expect(tip?.[1]).toMatch(/^5-hour limit: 61% used · resets (at|\w{3}) /);
+    expect(tip).toHaveLength(2);
     expect(document.querySelector("[aria-label='Open in terminal']")?.getAttribute("data-tip")).toBe("Continue in Claude Code's terminal");
     const modes = () => [...document.querySelectorAll("[role=radiogroup] [role=radio]")].map((mode) => [mode.textContent?.trim(), mode.getAttribute("aria-checked")]);
     expect(modes()).toEqual([["Ask", "true"], ["Edits", "false"], ["Plan", "false"]]);
@@ -207,7 +216,7 @@ describe("Chat", () => {
     expect(harness.value.host.call).toHaveBeenCalledWith("claude.mode.set", { session_id: "s1", mode: "plan" });
     expect(harness.value.host.call).toHaveBeenCalledWith("claude.model.set", { session_id: "s1", model: "opus" });
 
-    harness.push(1, { type: "meta", meta: { permission_mode: "plan" } });
+    harness.push(3, { type: "meta", meta: { permission_mode: "plan" } });
     await settle();
     expect(modes()).toEqual([["Ask", "false"], ["Edits", "false"], ["Plan", "true"]]);
   });
