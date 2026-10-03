@@ -6,13 +6,12 @@ A session created with the **Claude (chat)** provider is still a normal PlaneAI 
 It has its own worktree, branch, linked task, sidebar status and lifecycle.
 Only its primary tab differs: PlaneAI mounts this plugin's chat UI where the terminal would be.
 
-> **Status: v0, unreleased.**
-> It needs a PlaneAI build with the unstable `planeai.plugin-host.v3` provider contract (ADR-0013).
-> The chat renders markdown, tool calls with diffs, and permission prompts that can be allowed once, for the session, or denied with a reason.
-> Slash commands and skills run as in the terminal, with a `/` menu.
+The chat renders markdown, tool calls with diffs, and permission prompts that can be allowed once, for the session, or denied with a reason.
+Slash commands and skills run as in the terminal, with a `/` menu, and the chat's fonts and size are set in PlaneAI's preferences.
 
 ## Requirements
 
+- A PlaneAI build with plugin providers (host API `planeai.plugin-host.v3`, ADR-0013).
 - Claude Code installed and on PlaneAI's `PATH` (`~/.local/bin`, Homebrew and `extra_path_dirs` are searched).
 - Claude Code logged in: run `claude` once in a terminal.
 
@@ -48,8 +47,11 @@ Confirm your use is covered before relying on subscription login for this plugin
 
 ## Install
 
-Download the archive for your platform from Releases, extract it, then in PlaneAI open **Preferences → Plugins → Install local package** and select the extracted `planeai-plugin-claude-chat` directory.
+Download the archive for your platform from [Releases](https://github.com/nicolegros/planeai-plugin-claude-chat/releases), extract it, then in PlaneAI open **Preferences → Plugins → Install local package** and select the extracted `planeai-plugin-claude-chat` directory.
 Enable it, then pick **Claude (chat)** as the provider when creating a session.
+
+To update, install the new package the same way, over the installed one.
+Do not remove the plugin first: removing it deletes its data, including every chat's history.
 
 ## Develop
 
