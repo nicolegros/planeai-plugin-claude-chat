@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync, chmodSync, mkdirS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ClaudeHeadlessPlugin, findExecutable, HOST_API_VERSION, PLUGIN_ID, PLUGIN_NAME } from "../src/plugin";
+import { ClaudeChatPlugin, findExecutable, HOST_API_VERSION, PLUGIN_ID, PLUGIN_NAME } from "../src/plugin";
 import { TranscriptStore } from "../src/transcript";
 import { fakeQueryFactory } from "./helpers";
 
@@ -10,10 +10,10 @@ const manifest = JSON.parse(readFileSync(join(process.cwd(), "planeai-plugin.jso
 const SESSION_ID = "6f1f3a0e-0000-4000-8000-000000000002";
 
 function plugin() {
-  const root = mkdtempSync(join(tmpdir(), "claude-headless-plugin-"));
+  const root = mkdtempSync(join(tmpdir(), "claude-chat-plugin-"));
   const fake = fakeQueryFactory();
   const statuses: string[] = [];
-  const instance = new ClaudeHeadlessPlugin(
+  const instance = new ClaudeChatPlugin(
     new TranscriptStore(root),
     { event: () => {}, status: (_, status) => statuses.push(status) },
     { createQuery: fake.factory, hasTranscript: async () => false },
@@ -23,7 +23,7 @@ function plugin() {
 
 const start = (session_id = SESSION_ID) => ({ session_id, provider_id: "claude", cwd: "/workspace", env: {}, yolo: false });
 
-describe("ClaudeHeadlessPlugin", () => {
+describe("ClaudeChatPlugin", () => {
   it("handshakes with the identity the manifest declares", async () => {
     const result = await plugin().instance.handle("plugin.handshake", { host_api_version: HOST_API_VERSION });
     expect(result).toMatchObject({ plugin_id: manifest.id, plugin_name: manifest.name, plugin_version: manifest.version, host_api_version: manifest.host_api_version });
@@ -67,7 +67,7 @@ describe("ClaudeHeadlessPlugin", () => {
   });
 
   it("finds claude on the PATH the host provides", () => {
-    const bin = mkdtempSync(join(tmpdir(), "claude-headless-bin-"));
+    const bin = mkdtempSync(join(tmpdir(), "claude-chat-bin-"));
     mkdirSync(join(bin, "empty"));
     writeFileSync(join(bin, "claude"), "#!/bin/sh\n");
     chmodSync(join(bin, "claude"), 0o755);

@@ -16,7 +16,7 @@ describe("ClaudeSession", () => {
   let fake: ReturnType<typeof fakeQueryFactory>;
 
   beforeEach(() => {
-    store = new TranscriptStore(mkdtempSync(join(tmpdir(), "claude-headless-test-")));
+    store = new TranscriptStore(mkdtempSync(join(tmpdir(), "claude-chat-test-")));
     events = [];
     statuses = [];
     fake = fakeQueryFactory();

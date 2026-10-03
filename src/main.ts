@@ -1,6 +1,6 @@
 import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
 import { join } from "node:path";
-import { ClaudeHeadlessPlugin } from "./plugin";
+import { ClaudeChatPlugin } from "./plugin";
 import { JsonRpcPeer } from "./rpc";
 import { TranscriptStore } from "./transcript";
 
@@ -11,7 +11,7 @@ if (!dataDir) {
 }
 
 let peer: JsonRpcPeer;
-const plugin = new ClaudeHeadlessPlugin(
+const plugin = new ClaudeChatPlugin(
   new TranscriptStore(join(dataDir, "sessions")),
   {
     event: (session_id, seq, payload) => peer.notify("host.session.event", { session_id, seq, payload }),
@@ -29,5 +29,5 @@ peer = new JsonRpcPeer(process.stdin, process.stdout, async (method, params, sig
   return result;
 });
 
-console.error("claude-headless starting");
+console.error("claude-chat starting");
 await peer.serve();

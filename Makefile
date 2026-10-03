@@ -1,4 +1,4 @@
-PLUGIN := planeai-plugin-claude-headless
+PLUGIN := planeai-plugin-claude-chat
 DIST := dist/$(PLUGIN)
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)

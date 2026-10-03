@@ -10,7 +10,7 @@ import { findExecutable } from "../src/plugin";
 
 const [name, prompt] = process.argv.slice(2);
 if (!name || !prompt) throw new Error('usage: bun scripts/record-stream.ts <fixture-name> "<prompt>"');
-const cwd = mkdtempSync(join(tmpdir(), "claude-headless-record-"));
+const cwd = mkdtempSync(join(tmpdir(), "claude-chat-record-"));
 const recorded: unknown[] = [];
 
 function sanitize(message: SDKMessage): unknown {

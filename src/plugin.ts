@@ -4,8 +4,8 @@ import { ClaudeSession, type ClaudeRuntime, type SessionHost } from "./claude-se
 import { RpcError } from "./rpc";
 import type { TranscriptStore } from "./transcript";
 
-export const PLUGIN_ID = "claude-headless";
-export const PLUGIN_NAME = "Claude Headless";
+export const PLUGIN_ID = "claude-chat";
+export const PLUGIN_NAME = "Claude Chat";
 export const PROVIDER_ID = "claude";
 export const HOST_API_VERSION = "planeai.plugin-host.v3";
 /** Replaced by scripts/inject-release-version.mjs in release builds. */
@@ -50,7 +50,7 @@ function environment(params: Record<string, unknown>): Record<string, string> {
 }
 
 /** Routes host and UI requests to the sessions this sidecar drives. */
-export class ClaudeHeadlessPlugin {
+export class ClaudeChatPlugin {
   private readonly sessions = new Map<string, ClaudeSession>();
 
   constructor(

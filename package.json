@@ -1,5 +1,5 @@
 {
-  "name": "planeai-plugin-claude-headless",
+  "name": "planeai-plugin-claude-chat",
   "version": "0.0.0",
   "private": true,
   "type": "module",

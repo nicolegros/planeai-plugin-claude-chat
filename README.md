@@ -1,4 +1,4 @@
-# Claude Headless for PlaneAI
+# Claude Chat for PlaneAI
 
 A PlaneAI provider plugin that runs Claude Code headlessly through the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/typescript) and renders the session as a chat instead of a terminal.
 
@@ -37,7 +37,7 @@ Confirm your use is covered before relying on subscription login for this plugin
 
 ## Install
 
-Download the archive for your platform from Releases, extract it, then in PlaneAI open **Preferences → Plugins → Install local package** and select the extracted `planeai-plugin-claude-headless` directory.
+Download the archive for your platform from Releases, extract it, then in PlaneAI open **Preferences → Plugins → Install local package** and select the extracted `planeai-plugin-claude-chat` directory.
 Enable it, then pick **Claude (chat)** as the provider when creating a session.
 
 ## Develop
@@ -47,12 +47,12 @@ Prerequisites: Node 22+, pnpm 10, and Bun 1.4.
 ```bash
 pnpm install
 make test            # tsc, svelte-check, vitest
-make package         # stage dist/planeai-plugin-claude-headless for this platform
+make package         # stage dist/planeai-plugin-claude-chat for this platform
 make verify-package  # handshake check against the staged binary
 make conformance PLANEAI_CLI=/path/to/planeai-cli  # PlaneAI's offline provider contract checks
 ```
 
-Install the staged `dist/planeai-plugin-claude-headless` directory into a PlaneAI dev build to try it.
+Install the staged `dist/planeai-plugin-claude-chat` directory into a PlaneAI dev build to try it.
 
 ### Layout
 

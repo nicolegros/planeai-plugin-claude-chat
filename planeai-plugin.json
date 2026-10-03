@@ -1,14 +1,14 @@
 {
   "schema": "planeai.plugin.v1",
-  "id": "claude-headless",
-  "name": "Claude Headless",
+  "id": "claude-chat",
+  "name": "Claude Chat",
   "version": "0.0.0",
   "host_api_version": "planeai.plugin-host.v3",
   "source_kind": "local",
   "backend_entrypoints": {
-    "macos-arm64": "bin/macos-arm64/planeai-plugin-claude-headless",
-    "linux-x64": "bin/linux-x64/planeai-plugin-claude-headless",
-    "windows-x64": "bin/windows-x64/planeai-plugin-claude-headless.exe"
+    "macos-arm64": "bin/macos-arm64/planeai-plugin-claude-chat",
+    "linux-x64": "bin/linux-x64/planeai-plugin-claude-chat",
+    "windows-x64": "bin/windows-x64/planeai-plugin-claude-chat.exe"
   },
   "capabilities": [
     "providers"
