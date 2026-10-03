@@ -196,7 +196,8 @@ describe("Chat", () => {
     const harness = await render({ meta: { ...META, context: { total_tokens: 50_000, max_tokens: 200_000, percentage: 25 } } });
     expect(document.querySelector(".context-label")?.textContent).toBe("25%");
     expect(document.querySelector("[role=meter]")?.getAttribute("aria-valuenow")).toBe("25");
-    expect(document.querySelector(".context")?.getAttribute("title")).toBe("50k of 200k tokens of context used");
+    expect(document.querySelector(".context")?.getAttribute("data-tip")).toBe("50k of 200k tokens of context used");
+    expect(document.querySelector("[aria-label='Open in terminal']")?.getAttribute("data-tip")).toBe("Continue in Claude Code's terminal");
     const modes = () => [...document.querySelectorAll("[role=radiogroup] [role=radio]")].map((mode) => [mode.textContent?.trim(), mode.getAttribute("aria-checked")]);
     expect(modes()).toEqual([["Ask", "true"], ["Edits", "false"], ["Plan", "false"]]);
     button("Plan only").click();

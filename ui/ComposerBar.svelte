@@ -29,7 +29,7 @@
         role="radio"
         aria-checked={meta.permission_mode === mode}
         aria-label={MODES[mode]?.label ?? mode}
-        title={MODES[mode]?.label ?? mode}
+        data-tip={MODES[mode]?.label ?? mode}
         data-mode={mode}
         onclick={() => onMode(mode)}>{MODES[mode]?.short ?? mode}</button
       >
@@ -53,7 +53,7 @@
 <!-- One group, so in a narrow pane it wraps whole and stays on the right. -->
 <div class="status">
 {#if meta.context}
-  <span class="context" title="{Math.round(meta.context.total_tokens / 1000)}k of {Math.round(meta.context.max_tokens / 1000)}k tokens of context used">
+  <span class="context" data-tip="{Math.round(meta.context.total_tokens / 1000)}k of {Math.round(meta.context.max_tokens / 1000)}k tokens of context used" data-tip-end>
     <svg class="ring" viewBox="0 0 16 16" role="meter" aria-label="Context usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
       <circle cx="8" cy="8" r="6" fill="none" stroke="var(--planeai-border-strong)" stroke-width="2" />
       <circle class="fill" class:high={percent >= 80} cx="8" cy="8" r="6" fill="none" stroke-width="2" stroke-linecap="round" stroke-dasharray="{(RING * Math.min(100, percent)) / 100} {RING}" transform="rotate(-90 8 8)" />
@@ -61,7 +61,7 @@
     <span class="context-label">{percent}%</span>
   </span>
 {/if}
-<button type="button" class="icon-button" onclick={onHandoff} title="Continue this conversation in Claude Code's terminal UI" aria-label="Open in terminal"><Icon name="terminal" /></button>
+<button type="button" class="icon-button" onclick={onHandoff} data-tip="Continue in Claude Code's terminal" data-tip-end aria-label="Open in terminal"><Icon name="terminal" /></button>
 {@render actions()}
 </div>
 
@@ -70,9 +70,9 @@
   .modes button { min-height: calc(22 * var(--chat-unit)); padding: 1px calc(10 * var(--chat-unit)); border: 0; border-radius: calc(6 * var(--chat-unit)); background: transparent; color: var(--planeai-text-muted); font-size: var(--chat-size-xs); }
   .modes button:hover:not(:disabled) { background: transparent; color: var(--planeai-text); }
   .modes [aria-checked="true"], .modes [aria-checked="true"]:hover:not(:disabled) { background: var(--planeai-surface); color: var(--planeai-text); box-shadow: 0 1px calc(2 * var(--chat-unit)) color-mix(in srgb, var(--planeai-text) 14%, transparent); }
-  /* Modes that act without asking stand out once picked. */
-  .modes [aria-checked="true"]:is([data-mode="acceptEdits"], [data-mode="bypassPermissions"]), .modes [aria-checked="true"]:is([data-mode="acceptEdits"], [data-mode="bypassPermissions"]):hover:not(:disabled) { color: var(--planeai-danger); }
-  .modes [aria-checked="true"][data-mode="plan"], .modes [aria-checked="true"][data-mode="plan"]:hover:not(:disabled) { color: var(--planeai-warning); }
+  /* Modes that act without asking are tinted once picked, quietly enough not to compete with the conversation. */
+  .modes [aria-checked="true"]:is([data-mode="acceptEdits"], [data-mode="bypassPermissions"]), .modes [aria-checked="true"]:is([data-mode="acceptEdits"], [data-mode="bypassPermissions"]):hover:not(:disabled) { color: color-mix(in srgb, var(--planeai-danger) 55%, var(--planeai-text-muted)); }
+  .modes [aria-checked="true"][data-mode="plan"], .modes [aria-checked="true"][data-mode="plan"]:hover:not(:disabled) { color: color-mix(in srgb, var(--planeai-warning) 55%, var(--planeai-text-muted)); }
   .model { position: relative; display: inline-flex; flex: none; align-items: center; gap: calc(5 * var(--chat-unit)); min-height: calc(26 * var(--chat-unit)); padding: 0 calc(8 * var(--chat-unit)); border-radius: calc(6 * var(--chat-unit)); color: var(--planeai-text-muted); font-size: var(--chat-size-xs); }
   .model:hover, .model:focus-within { background: var(--planeai-accent-subtle); color: var(--planeai-text); }
   .model:has(select:focus-visible) { outline: 2px solid var(--planeai-accent); outline-offset: 2px; }

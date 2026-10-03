@@ -363,9 +363,9 @@
           <ComposerBar meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff}>
             {#snippet actions()}
               {#if working}
-                <button type="button" class="round" onclick={interrupt} title="Stop (Esc)" aria-label="Stop"><Icon name="stop" size={12} /></button>
+                <button type="button" class="round" onclick={interrupt} data-tip="Stop · Esc" data-tip-end aria-label="Stop"><Icon name="stop" size={12} /></button>
               {/if}
-              <button type="submit" class="round primary" disabled={!draft.trim()} title={working ? "Queue (Enter)" : "Send (Enter)"} aria-label={working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
+              <button type="submit" class="round primary" disabled={!draft.trim()} data-tip={working ? "Queue · Enter" : "Send · Enter"} data-tip-end aria-label={working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
             {/snippet}
           </ComposerBar>
         </div>
@@ -406,6 +406,12 @@
   /* PlaneAI's baseline sizes controls in px too; :where keeps these below every component's own rules. */
   :where(.chat) :global(:is(button, input, select, textarea)) { border-radius: var(--chat-radius); }
   :where(.chat) :global(button) { min-height: calc(32 * var(--chat-unit)); padding: calc(6 * var(--chat-unit)) calc(10 * var(--chat-unit)); }
+  /* WebKit frames never show native title tooltips, so controls labelled by an icon or a short name get this one. */
+  :where(.chat) :global([data-tip]) { position: relative; }
+  :where(.chat) :global([data-tip]::after) { content: attr(data-tip); position: absolute; bottom: calc(100% + calc(6 * var(--chat-unit))); left: 50%; z-index: 3; transform: translateX(-50%); padding: calc(4 * var(--chat-unit)) calc(8 * var(--chat-unit)); border-radius: calc(6 * var(--chat-unit)); background: var(--planeai-text); color: var(--planeai-main); font-family: var(--chat-font); font-size: var(--chat-size-xs); font-weight: 400; line-height: var(--chat-line); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 120ms; }
+  :where(.chat) :global([data-tip-end]::after) { right: 0; left: auto; transform: none; }
+  :where(.chat) :global([data-tip]:hover::after) { opacity: 1; transition-delay: 400ms; }
+  :where(.chat) :global([data-tip]:focus-visible::after) { opacity: 1; }
   :where(.chat) :global(:is(input, select)) { padding: calc(7 * var(--chat-unit)) calc(9 * var(--chat-unit)); }
   .log { flex: 1; overflow-y: auto; }
   .empty { margin: 30vh var(--chat-space-5) 0; text-align: center; color: var(--planeai-text-subtle); }
@@ -438,7 +444,8 @@
   /* In a narrow pane at a large size the right-hand controls wrap rather than cut the model name. */
   .bar { display: flex; flex-wrap: wrap; row-gap: var(--chat-space-1); align-items: center; gap: var(--chat-space-1); min-width: 0; padding: var(--chat-space-1) var(--chat-space-2) var(--chat-space-2); }
   .round { display: grid; flex: none; place-items: center; width: calc(28 * var(--chat-unit)); height: calc(28 * var(--chat-unit)); min-height: 0; padding: 0; border-radius: 50%; }
-  .round.primary:disabled { opacity: 0.3; }
+  /* Dimmed by color rather than opacity, which would fade its tooltip too. */
+  .round.primary:disabled { opacity: 1; border-color: transparent; background: color-mix(in srgb, var(--planeai-accent) 30%, var(--planeai-surface)); }
   .handed-off { display: flex; align-items: center; gap: var(--chat-space-3); padding: var(--chat-space-3) var(--chat-space-4); }
   .handed-off p { flex: 1; color: var(--planeai-text-muted); }
   button.primary { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
