@@ -150,9 +150,12 @@ describe("Chat", () => {
     expect(document.querySelector(".tool")?.getAttribute("data-state")).toBe("running");
     expect(document.querySelector(".tool .sentence")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Editing a.ts in src");
     expect(document.querySelector(".tool .meta")?.textContent?.replace(/\s+/g, " ").trim()).toBe("+1 −1");
+    expect(document.querySelector(".diff-preview .remove")?.textContent).toContain("const a = 1;");
+    expect(document.querySelector(".diff-preview .add")?.textContent).toContain("const a = 2;");
     expect(document.querySelector(".diff")).toBeNull();
     document.querySelector<HTMLButtonElement>(".tool button")!.click();
     flushSync();
+    expect(document.querySelector(".diff-preview")).toBeNull();
     expect(document.querySelector(".diff .remove")?.textContent).toContain("const a = 1;");
     expect(document.querySelector(".diff .add")?.textContent).toContain("const a = 2;");
 
@@ -466,6 +469,31 @@ describe("Chat", () => {
     expect(work.querySelector("summary")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Worked for 1m 4s · 1 skill, 1 command");
     expect(work.querySelector(".tool .sentence")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Used the skill review · 42");
     expect(document.querySelector(".turn .body > .message")?.textContent?.trim()).toBe("Looks good.");
+  });
+
+  it("previews a command's last output lines and an agent's answer", async () => {
+    const harness = await render();
+    harness.push(1, { type: "tool", id: "t1", name: "Bash", summary: "npm test", input: { kind: "bash", command: "npm test" } });
+    harness.push(2, { type: "tool_result", tool_use_id: "t1", is_error: false, summary: "a\nb\nc\nd\ne" });
+    harness.push(3, { type: "tool", id: "t2", name: "Agent", summary: "Find callers" });
+    harness.push(4, { type: "tool_result", tool_use_id: "t2", is_error: false, summary: "Two callers." });
+    await settle();
+    expect(document.querySelector(".output-tail pre")?.textContent).toBe("c\nd\ne");
+    button("⋯ 2 earlier lines").click();
+    flushSync();
+    expect(document.querySelector(".output-tail pre")?.textContent).toBe("a\nb\nc\nd\ne");
+    expect(document.querySelector(".answer")?.textContent).toBe("Two callers.");
+  });
+
+  it("caps a long diff preview until it is shown in full", async () => {
+    const harness = await render();
+    const content = Array.from({ length: 30 }, (_, line) => `line ${line}`).join("\n");
+    harness.push(1, { type: "tool", id: "t1", name: "Write", summary: "a.md", input: { kind: "write", file_path: "a.md", content } });
+    await settle();
+    expect(document.querySelectorAll(".diff-preview .line")).toHaveLength(12);
+    button("Show all 30 lines").click();
+    flushSync();
+    expect(document.querySelectorAll(".diff-preview .line")).toHaveLength(30);
   });
 
   it("shows the plan as a checklist without expanding it", async () => {

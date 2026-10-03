@@ -1,6 +1,9 @@
 <script lang="ts">
   import Checklist from "./Checklist.svelte";
+  import DiffPreview from "./DiffPreview.svelte";
   import Icon from "./Icon.svelte";
+  import OutputTail from "./OutputTail.svelte";
+  import { previewOf } from "./preview";
   import Spinner from "./Spinner.svelte";
   import ToolDetail from "./ToolDetail.svelte";
   import { viewTool, type ToolEntry } from "./tools";
@@ -43,6 +46,15 @@
       {/if}
       {#if open[tool.id]}
         <div class="nested" id={detailId}><ToolDetail {tool} /></div>
+      {:else}
+        {@const preview = previewOf(tool)}
+        {#if preview?.kind === "diff"}
+          <div class="preview"><DiffPreview edits={preview.edits} /></div>
+        {:else if preview?.kind === "output"}
+          <div class="preview"><OutputTail output={preview.output} failed={preview.failed} /></div>
+        {:else if preview?.kind === "answer"}
+          <p class="preview answer">{preview.text}</p>
+        {/if}
       {/if}
     </li>
   {/each}
@@ -65,5 +77,8 @@
   .chevron { flex: none; color: var(--planeai-text-subtle); opacity: 0; transition: transform 120ms, opacity 120ms; }
   .step:hover .chevron, .step:focus-visible .chevron, [aria-expanded="true"] .chevron { opacity: 1; }
   [aria-expanded="true"] .chevron { transform: rotate(90deg); }
+  /* Lines up with the sentence, past the icon. */
+  .preview { margin: 2px 0 8px 24px; }
+  .answer { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; color: var(--planeai-text-muted); font-size: var(--chat-size-sm); white-space: pre-line; }
   .nested { margin: 2px 0 8px 7px; padding-left: 16px; border-left: 1px solid var(--planeai-border-strong); }
 </style>
