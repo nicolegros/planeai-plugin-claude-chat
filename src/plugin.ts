@@ -78,11 +78,11 @@ export class ClaudeChatPlugin {
         return await this.open(object(params), method === "provider.session.start", signal);
       case "provider.session.send": {
         const request = object(params);
-        await this.session(request).send(string(request, "text"), signal);
+        await (await this.session(request)).send(string(request, "text"), signal);
         return { accepted: true };
       }
       case "provider.session.interrupt":
-        this.session(object(params)).interrupt();
+        (await this.session(object(params))).interrupt();
         return {};
       case "provider.session.stop": {
         const request = object(params);
@@ -93,22 +93,20 @@ export class ClaudeChatPlugin {
         return { stopped: true };
       }
       case "provider.session.handoff":
-        return { argv: await this.session(object(params)).handoff() };
+        return { argv: await (await this.session(object(params))).handoff() };
       case "provider.session.handback":
-        this.session(object(params)).handback();
+        (await this.session(object(params))).handback();
         return {};
       case "claude.snapshot": {
         const request = object(params);
         const after = typeof request.after_seq === "number" ? request.after_seq : 0;
-        const session = this.session(request);
-        await session.restored;
-        return session.snapshot(after);
+        return (await this.session(request)).snapshot(after);
       }
       case "claude.commands": {
         const request = object(params);
         const offset = request.offset ?? 0;
         if (!Number.isInteger(offset) || (offset as number) < 0) throw new RpcError(INVALID_PARAMS, "offset must be a nonnegative integer");
-        return await this.session(request).commands(offset as number);
+        return await (await this.session(request)).commands(offset as number);
       }
       case "claude.permission.respond": {
         const request = object(params);
@@ -117,19 +115,19 @@ export class ClaudeChatPlugin {
           throw new RpcError(INVALID_PARAMS, "decision must be allow, allow_session or deny");
         }
         const reason = typeof request.reason === "string" ? request.reason : undefined;
-        this.session(request).respondToPermission(string(request, "request_id"), decision, reason);
+        (await this.session(request)).respondToPermission(string(request, "request_id"), decision, reason);
         return {};
       }
       case "claude.mode.set": {
         const request = object(params);
-        this.session(request).setPermissionMode(string(request, "mode"));
+        (await this.session(request)).setPermissionMode(string(request, "mode"));
         return {};
       }
       case "claude.model.set": {
         const request = object(params);
         const model = request.model;
         if (model !== null && (typeof model !== "string" || !model.trim())) throw new RpcError(INVALID_PARAMS, "model must be a nonempty string or null");
-        this.session(request).setModel(model);
+        (await this.session(request)).setModel(model);
         return {};
       }
       default:
@@ -173,10 +171,12 @@ export class ClaudeChatPlugin {
     return {};
   }
 
-  private session(params: Record<string, unknown>): ClaudeSession {
+  /** A running session, once any rebuild of its chat finished, so nothing lands before the rebuilt messages. */
+  private async session(params: Record<string, unknown>): Promise<ClaudeSession> {
     const id = string(params, "session_id");
     const session = this.sessions.get(id);
     if (!session) throw new RpcError(INVALID_PARAMS, `session ${id} is not running in this plugin`);
+    await session.restored;
     return session;
   }
 }

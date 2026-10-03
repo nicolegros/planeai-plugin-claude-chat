@@ -104,6 +104,8 @@ export function history(sessionId: string): SessionMessage[] {
     { ...base, type: "user", uuid: "u5", message: { role: "user", content: "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args>keep the plan</command-args>" } },
     { ...base, type: "user", uuid: "u6", message: { role: "user", content: "<local-command-stdout>Compacted</local-command-stdout>" } },
     { ...base, type: "user", uuid: "u7", message: { role: "user", content: "typed in an older Claude Code" } },
+    { ...base, type: "user", uuid: "u8", is_meta: true, isCompactSummary: true, message: { role: "user", content: "This session is being continued from a previous conversation that ran out of context." } },
+    { ...base, type: "user", uuid: "u9", is_meta: true, message: { role: "user", content: [{ type: "text", text: "Base directory for this skill: /skills/review" }] } },
     { ...base, type: "assistant", uuid: "a3", parent_tool_use_id: "toolu_task", message: { role: "assistant", content: [{ type: "text", text: "subagent chatter" }] } },
     { ...base, type: "assistant", uuid: "a4", message: { role: "assistant", content: [{ type: "text", text: "All 81 tests pass." }] } },
   ] as SessionMessage[];

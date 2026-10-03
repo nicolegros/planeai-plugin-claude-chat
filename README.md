@@ -27,6 +27,7 @@ Confirm your use is covered before relying on subscription login for this plugin
 - **Same Claude Code as the terminal.** User, project and local settings load (`CLAUDE.md`, skills, MCP servers, hooks), with the `claude_code` system prompt preset.
 - **Same session id.** The Claude session id starts as the PlaneAI session id, so PlaneAI restarts resume the conversation with `resume`.
   `/clear` moves Claude to a new session id, which the plugin records and resumes from then on.
+  It also tags that conversation `planeai:<session id>` in Claude Code, so a reinstalled plugin finds it again.
 - **Lazy start.** Starting or resuming a session spawns nothing; Claude starts on the first prompt or when the `/` menu first opens.
 - **Status.** The plugin reports `busy`, `idle` and `needs_attention` to PlaneAI, which drives the sidebar and notifications.
   A pending permission prompt is `needs_attention`.

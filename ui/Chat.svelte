@@ -6,7 +6,7 @@
   import Markdown from "./Markdown.svelte";
   import PermissionCard from "./PermissionCard.svelte";
   import ToolCard from "./ToolCard.svelte";
-  import type { CommandOption, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
+  import type { CommandOption, Compaction, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
   import { Transcript } from "./transcript.svelte";
 
   let { context }: { context: ProviderUiContext } = $props();
@@ -27,11 +27,12 @@
   const working = $derived(status === "busy" || status === "needs_attention");
   const sessionId = $derived(context.session.id);
 
-  const MENU_ID = "slash-commands";
+  const uid = $props.id();
+  const MENU_ID = `${uid}-commands`;
   const commands = new CommandCatalog(async () => {
     const all: CommandOption[] = [];
     for (;;) {
-      const page = await context.host.call<{ commands: CommandOption[]; more: boolean }>("claude.commands", { session_id: sessionId, ...(all.length ? { offset: all.length } : {}) });
+      const page = await context.host.call<{ commands: CommandOption[]; more: boolean }>("claude.commands", { session_id: sessionId, offset: all.length });
       all.push(...page.commands);
       if (!page.more || page.commands.length === 0) return all;
     }
@@ -236,7 +237,7 @@
     return `${short(input)} in · ${short(usage.output_tokens)} out`;
   }
 
-  function compacted(entry: { trigger: "manual" | "auto"; pre_tokens: number; post_tokens?: number }): string {
+  function compacted(entry: Compaction): string {
     const what = entry.trigger === "auto" ? "Conversation compacted automatically" : "Conversation compacted";
     const detail = entry.post_tokens === undefined ? `${short(entry.pre_tokens)} tokens summarized` : `${short(entry.pre_tokens)} → ${short(entry.post_tokens)} tokens`;
     return `${what} · ${detail}`;
@@ -309,7 +310,7 @@
       aria-autocomplete="list"
       aria-haspopup="listbox"
       aria-expanded={menuOpen}
-      aria-controls={MENU_ID}
+      aria-controls={menuOpen && matches.length > 0 ? MENU_ID : undefined}
       aria-activedescendant={menuOpen && matches.length > 0 ? `${MENU_ID}-${activeIndex}` : undefined}
     ></textarea>
     {#if working}

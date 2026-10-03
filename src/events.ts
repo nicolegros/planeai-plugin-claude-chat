@@ -45,6 +45,12 @@ export interface SessionMeta {
   compacting: boolean;
 }
 
+export interface Compaction {
+  trigger: "manual" | "auto";
+  pre_tokens: number;
+  post_tokens?: number;
+}
+
 /** A slash command as the chat's menu lists it. */
 export interface CommandOption {
   name: string;
@@ -69,7 +75,7 @@ export type ChatEvent =
   | { type: "result"; is_error: boolean; subtype: string; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { type: "error"; message: string }
   | { type: "handoff"; in_terminal: boolean }
-  | { type: "compacted"; trigger: "manual" | "auto"; pre_tokens: number; post_tokens?: number }
+  | ({ type: "compacted" } & Compaction)
   /** /clear started a new conversation; Claude no longer sees what came before. */
   | { type: "cleared" }
   | { type: "notice"; text: string }
@@ -178,12 +184,21 @@ const NOT_LOGGED_IN = /not logged in/i;
 /** A slash command as Claude Code stores it: `<command-name>/x</command-name>…<command-args>y</command-args>`. */
 const STORED_COMMAND = /^<command-name>([^<]*)<\/command-name>[\s\S]*?(?:<command-args>([\s\S]*?)<\/command-args>)?\s*$/;
 
+/** The text of a message made only of text, or `null`. */
+function textOf(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content) || !content.every((block) => block?.type === "text")) return null;
+  return content.map((block) => String(block.text ?? "")).join("\n");
+}
+
 /** What the user typed, from a stored user message; `null` for Claude Code's own entries. */
 function typed(message: SessionMessage): string | null {
-  const content = (message.message as { content?: unknown } | null)?.content;
-  const text = typeof content === "string" ? content : Array.isArray(content) && content.every((block) => block?.type === "text") ? content.map((block) => String(block.text ?? "")).join("\n") : null;
+  const text = textOf((message.message as { content?: unknown } | null)?.content);
   if (!text?.trim()) return null;
-  const origin = (message as { origin?: { kind?: string } }).origin?.kind;
+  const stored = message as { origin?: { kind?: string }; is_meta?: boolean; isMeta?: boolean; isCompactSummary?: boolean };
+  // Compaction summaries, skill bodies and caveats Claude Code injected as user turns.
+  if (stored.is_meta || stored.isMeta || stored.isCompactSummary) return null;
+  const origin = stored.origin?.kind;
   if (origin === "human") return text;
   // Transcripts from Claude Code versions before `origin` mark their own entries with tags.
   if (origin !== undefined) return null;

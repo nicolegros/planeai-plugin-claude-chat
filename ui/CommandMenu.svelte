@@ -14,40 +14,38 @@
   let list: HTMLElement | undefined = $state();
 
   $effect(() => {
-    list?.querySelector(`#${id}-${active}`)?.scrollIntoView?.({ block: "nearest" });
+    list?.querySelector(`[id="${id}-${active}"]`)?.scrollIntoView?.({ block: "nearest" });
   });
 </script>
 
-<div class="commands" {id} role="listbox" aria-label="Slash commands" bind:this={list}>
-  {#if error}
-    <p class="state">{error}</p>
-  {:else if loading}
-    <p class="state">Loading commands…</p>
-  {:else if matches.length === 0}
-    <p class="state">No matching commands</p>
+<div class="commands" bind:this={list}>
+  {#if error || loading || matches.length === 0}
+    <p class="state" role="status">{error ?? (loading ? "Loading commands…" : "No matching commands")}</p>
   {:else}
-    {#each matches as command, index (command.name)}
-      <div
-        class="option"
-        id="{id}-{index}"
-        role="option"
-        tabindex="-1"
-        aria-selected={index === active}
-        onmousedown={(event) => {
-          // Keep focus, and the caret, in the composer.
-          event.preventDefault();
-          onPick(command);
-        }}
-        onmousemove={() => index !== active && onHover(index)}
-      >
-        <span class="line">
-          <span class="name">/{command.name}</span>
-          {#if command.argument_hint}<span class="hint">{command.argument_hint}</span>{/if}
-          {#if command.aliases.length > 0}<span class="aliases">{command.aliases.map((alias) => `/${alias}`).join(", ")}</span>{/if}
-        </span>
-        {#if command.description}<span class="description">{command.description}</span>{/if}
-      </div>
-    {/each}
+    <div {id} role="listbox" aria-label="Slash commands">
+      {#each matches as command, index (command.name)}
+        <div
+          class="option"
+          id="{id}-{index}"
+          role="option"
+          tabindex="-1"
+          aria-selected={index === active}
+          onmousedown={(event) => {
+            // Keep focus, and the caret, in the composer.
+            event.preventDefault();
+            onPick(command);
+          }}
+          onmousemove={() => index !== active && onHover(index)}
+        >
+          <span class="line">
+            <span class="name">/{command.name}</span>
+            {#if command.argument_hint}<span class="hint">{command.argument_hint}</span>{/if}
+            {#if command.aliases.length > 0}<span class="aliases">{command.aliases.map((alias) => `/${alias}`).join(", ")}</span>{/if}
+          </span>
+          {#if command.description}<span class="description">{command.description}</span>{/if}
+        </div>
+      {/each}
+    </div>
   {/if}
 </div>
 

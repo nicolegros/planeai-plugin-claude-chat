@@ -263,7 +263,7 @@ describe("Chat", () => {
     expect(harness.value.host.call).not.toHaveBeenCalledWith("claude.commands", expect.anything());
     type(textarea, "/");
     await settle();
-    expect(harness.value.host.call).toHaveBeenCalledWith("claude.commands", { session_id: "s1" });
+    expect(harness.value.host.call).toHaveBeenCalledWith("claude.commands", { session_id: "s1", offset: 0 });
     expect(harness.value.host.call).toHaveBeenCalledWith("claude.commands", { session_id: "s1", offset: 2 });
     expect(options()).toEqual(["/compact", "/context", "/review", "/usage"]);
     expect(textarea.getAttribute("aria-expanded")).toBe("true");

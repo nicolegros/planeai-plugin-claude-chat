@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClaudeSession } from "../src/claude-session";
+import { ClaudeSession, type ClaudeRuntime } from "../src/claude-session";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ChatEvent, SessionStatus } from "../src/events";
 import { TranscriptStore } from "../src/transcript";
@@ -32,12 +32,14 @@ describe("ClaudeSession", () => {
     if (payload.type !== "status") events.push({ seq, payload });
   };
 
-  function session(overrides: { yolo?: boolean; claudeExecutable?: string | null; hasTranscript?: boolean; history?: SessionMessage[] } = {}): ClaudeSession {
+  function session(
+    overrides: { yolo?: boolean; claudeExecutable?: string | null; hasTranscript?: boolean; history?: SessionMessage[]; link?: ClaudeRuntime["link"]; linked?: string } = {},
+  ): ClaudeSession {
     return new ClaudeSession(
       { id: SESSION_ID, cwd: "/workspace", env: { PLANEAI_SESSION_ID: SESSION_ID }, yolo: overrides.yolo ?? false, claudeExecutable: overrides.claudeExecutable === undefined ? "/usr/local/bin/claude" : overrides.claudeExecutable },
       store,
       { event: record, status: (_, status) => statuses.push(status) },
-      { createQuery: fake.factory, hasTranscript: async () => overrides.hasTranscript ?? false, history: async () => overrides.history ?? [] },
+      { createQuery: fake.factory, hasTranscript: async () => overrides.hasTranscript ?? false, history: async () => overrides.history ?? [], link: overrides.link ?? (async () => {}), linked: async () => overrides.linked ?? null },
     );
   }
 
@@ -143,7 +145,7 @@ describe("ClaudeSession", () => {
       { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: "/usr/local/bin/claude" },
       store,
       { event: record, status: (_, status) => statuses.push(status) },
-      { createQuery: fake.factory, hasTranscript: () => new Promise((resolve) => (finishCheck = resolve)), history: async () => [] },
+      { createQuery: fake.factory, hasTranscript: () => new Promise((resolve) => (finishCheck = resolve)), history: async () => [], link: async () => {}, linked: async () => null },
     );
     const sending = chat.send("hello");
     await flush();
@@ -272,7 +274,7 @@ describe("ClaudeSession", () => {
       { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: "/usr/local/bin/claude" },
       store,
       { event: record, status: (_, status) => statuses.push(status) },
-      { createQuery: fake.factory, hasTranscript: async () => { throw new Error("transcript unreadable"); }, history: async () => [] },
+      { createQuery: fake.factory, hasTranscript: async () => { throw new Error("transcript unreadable"); }, history: async () => [], link: async () => {}, linked: async () => null },
     );
     await expect(chat.send("hello")).rejects.toThrow("transcript unreadable");
     expect(events.at(-1)!.payload).toEqual({ type: "error", message: "transcript unreadable" });
@@ -305,6 +307,37 @@ describe("ClaudeSession", () => {
     expect(fake.queries[1].options).toMatchObject({ resume: "fixture-session-2" });
     await flush();
     expect(await restarted.handoff()).toEqual(["/usr/local/bin/claude", "--resume", "fixture-session-2", "--permission-mode", "default"]);
+  });
+
+  it("links the conversation /clear moved to in Claude's store, so a wiped plugin still finds it", async () => {
+    const link = vi.fn(async () => {});
+    const chat = session({ link });
+    await chat.send("/clear");
+    fake.queries[0].emit(...fixture("slash-commands", SESSION_ID));
+    await flush();
+    expect(link).toHaveBeenCalledWith("fixture-session-2", SESSION_ID, "/workspace");
+    chat.stop();
+
+    store = new TranscriptStore(mkdtempSync(join(tmpdir(), "claude-chat-wiped-")));
+    const reinstalled = session({ linked: "fixture-session-2", history: history("fixture-session-2"), hasTranscript: true });
+    await reinstalled.restored;
+    await reinstalled.send("hello");
+    expect(fake.queries[1].options).toMatchObject({ resume: "fixture-session-2" });
+  });
+
+  it("leaves the status to a turn that ended while a /model waited for the model list", async () => {
+    fake = fakeQueryFactory({ holdModels: true });
+    const chat = session();
+    await chat.send("hello");
+    const switching = chat.send("/model opus");
+    await flush();
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit(result);
+    await flush();
+    expect(statuses.at(-1)).toBe("idle");
+    fake.queries[0].releaseModels();
+    await switching;
+    expect(statuses.at(-1)).toBe("idle");
   });
 
   it("shows messages kept through compaction once, not again when Claude replays them", async () => {
@@ -523,7 +556,7 @@ describe("ClaudeSession", () => {
       { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: "/usr/local/bin/claude" },
       store,
       { event: record, status: (_, status) => statuses.push(status) },
-      { createQuery: fake.factory, hasTranscript: async () => true, history: () => new Promise((resolve) => (release = resolve)) },
+      { createQuery: fake.factory, hasTranscript: async () => true, history: () => new Promise((resolve) => (release = resolve)), link: async () => {}, linked: async () => null },
     );
     const sending = chat.send("next");
     await flush();
@@ -532,6 +565,23 @@ describe("ClaudeSession", () => {
     const payloads = chat.snapshot().events.map(({ payload }) => payload);
     expect(payloads.at(-1)).toEqual({ type: "user", text: "next" });
     expect(payloads[0]).toEqual({ type: "user", text: "run the tests" });
+  });
+
+  it("writes nothing from a rebuild that finishes after the session stopped", async () => {
+    let release: (messages: SessionMessage[]) => void = () => {};
+    const chat = new ClaudeSession(
+      { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: null },
+      store,
+      { event: record, status: () => {} },
+      { createQuery: fake.factory, hasTranscript: async () => true, history: () => new Promise((resolve) => (release = resolve)), link: async () => {}, linked: async () => "after-clear" },
+    );
+    await flush();
+    chat.stop();
+    store.remove(SESSION_ID);
+    release(history("after-clear"));
+    await chat.restored;
+    expect(store.load(SESSION_ID)).toEqual([]);
+    expect(store.conversation(SESSION_ID)).toBeNull();
   });
 
   it("does not rebuild a chat that has its own history, or from a transcript it cannot read", async () => {
@@ -546,7 +596,7 @@ describe("ClaudeSession", () => {
       { id: "other", cwd: "/workspace", env: {}, yolo: false, claudeExecutable: null },
       store,
       { event: record, status: () => {} },
-      { createQuery: fake.factory, hasTranscript: async () => false, history: async () => { throw new Error("corrupt"); } },
+      { createQuery: fake.factory, hasTranscript: async () => false, history: async () => { throw new Error("corrupt"); }, link: async () => {}, linked: async () => null },
     );
     await unreadable.restored;
     expect(unreadable.snapshot().events).toEqual([]);

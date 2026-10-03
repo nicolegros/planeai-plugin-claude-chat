@@ -1,10 +1,9 @@
 import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import { SlashCommands } from "./commands";
 import { clip, isEphemeral, replay, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
 import { InputQueue } from "./input-queue";
+import { page } from "./paging";
 import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
-
-/** Leaves headroom under the 64 KiB frame for the response envelope. */
-const SNAPSHOT_PAGE_BYTES = 40_000;
 
 const REBUILT: ChatEvent = { type: "notice", text: "Earlier messages were rebuilt from Claude Code's transcript, without turn costs or permission prompts." };
 
@@ -26,6 +25,10 @@ export interface ClaudeRuntime {
   hasTranscript(sessionId: string, cwd: string): Promise<boolean>;
   /** Claude's stored conversation, oldest first. */
   history(sessionId: string, cwd: string): Promise<SessionMessage[]>;
+  /** Records in Claude's own store that the conversation /clear moved to belongs to this PlaneAI session. */
+  link(conversationId: string, sessionId: string, cwd: string): Promise<void>;
+  /** The newest conversation linked to this PlaneAI session, if any. */
+  linked(sessionId: string, cwd: string): Promise<string | null>;
 }
 
 export interface SessionHost {
@@ -64,16 +67,6 @@ function firstAfter(events: StoredEvent[], seq: number): number {
   return low;
 }
 
-/** One row per name: when Claude Code's own command shares a name with another, /name runs its own. */
-function runnable(commands: SlashCommand[]): SlashCommand[] {
-  const byName = new Map<string, SlashCommand>();
-  for (const command of commands) {
-    const seen = byName.get(command.name);
-    if (!seen || (command.builtin && !seen.builtin)) byName.set(command.name, command);
-  }
-  return [...byName.values()];
-}
-
 /**
  * One PlaneAI session driven through the Agent SDK. The Claude session id starts as
  * the PlaneAI session id and follows Claude when /clear moves it. Claude starts
@@ -95,10 +88,10 @@ export class ClaudeSession {
   private conversationId: string;
   /** Messages compaction kept, which Claude replays after its boundary. */
   private preserved = new Set<string>();
-  private commandList: SlashCommand[] | null = null;
+  private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
-  /** Commands Claude marks as bound to its own terminal UI. */
-  private terminalOnly: Set<string>;
+  /** Counts status changes, so a send can tell whether anything moved it while it waited. */
+  private statusChanges = 0;
   private delivering: Promise<unknown> = Promise.resolve();
   /** Settles once a chat whose own history is gone was rebuilt from Claude's transcript. */
   readonly restored: Promise<void>;
@@ -130,7 +123,7 @@ export class ClaudeSession {
       compacting: false,
     };
     this.conversationId = store.conversation(config.id) ?? config.id;
-    this.terminalOnly = new Set(store.terminalCommands());
+    this.slashCommands = new SlashCommands(store);
     this.restored = this.events.length > 0 ? Promise.resolve() : this.restore();
     this.delivering = this.restored;
   }
@@ -140,17 +133,28 @@ export class ClaudeSession {
    * it; without this the chat would show nothing of it.
    */
   private async restore(): Promise<void> {
+    let linked: string | null;
     let messages: SessionMessage[];
     try {
-      messages = await this.runtime.history(this.conversationId, this.config.cwd);
+      // The plugin's record of where /clear moved the conversation went with its data.
+      linked = this.conversationId === this.config.id ? await this.runtime.linked(this.config.id, this.config.cwd) : null;
+      messages = await this.runtime.history(linked ?? this.conversationId, this.config.cwd);
     } catch (error) {
       console.error(`failed to read Claude's transcript: ${String(error)}`);
       return;
     }
+    // A stopped session may have been destroyed meanwhile; writing now would leave its files behind.
+    if (this.stopped) return;
+    if (linked) {
+      this.conversationId = linked;
+      this.store.setConversation(this.config.id, linked);
+    }
     const replayed = replay(messages);
-    if (replayed.length === 0 || this.events.length > 0) return;
-    // The UI has not loaded a snapshot yet (claude.snapshot waits for this), so nothing is sent live.
-    for (const payload of [...replayed.slice(-(MAX_SNAPSHOT_EVENTS - 1)), REBUILT]) this.record(payload);
+    if (replayed.length === 0) return;
+    // Every request waits for this, so the UI has not loaded a snapshot and nothing is sent live.
+    const rebuilt = [...replayed.slice(-(MAX_SNAPSHOT_EVENTS - 1)), REBUILT].map((payload) => ({ seq: ++this.seq, payload }));
+    this.events.push(...rebuilt);
+    this.store.appendAll(this.config.id, rebuilt);
   }
 
   get id(): string {
@@ -159,22 +163,11 @@ export class ClaudeSession {
 
   /** One page of the transcript after `afterSeq`, sized to fit a single host frame. */
   snapshot(afterSeq = 0): { seq: number; status: SessionStatus; meta: SessionMeta; events: StoredEvent[]; more: boolean } {
-    const start = firstAfter(this.events, afterSeq);
-    const events: StoredEvent[] = [];
-    let bytes = 0;
-    let index = start;
-    for (; index < this.events.length; index++) {
-      let event = this.events[index];
-      let size = Buffer.byteLength(JSON.stringify(event));
-      if (size > SNAPSHOT_PAGE_BYTES) {
-        event = { seq: event.seq, payload: { type: "error", message: `A ${event.payload.type} entry was too large to show.` } };
-        size = Buffer.byteLength(JSON.stringify(event));
-      }
-      if (events.length > 0 && bytes + size > SNAPSHOT_PAGE_BYTES) break;
-      events.push(event);
-      bytes += size;
-    }
-    return { seq: this.seq, status: this.status, meta: this.meta, events, more: index < this.events.length };
+    const { items: events, more } = page(this.events, firstAfter(this.events, afterSeq), (event): StoredEvent => ({
+      seq: event.seq,
+      payload: { type: "error", message: `A ${event.payload.type} entry was too large to show.` },
+    }));
+    return { seq: this.seq, status: this.status, meta: this.meta, events, more };
   }
 
   announce(): void {
@@ -201,6 +194,11 @@ export class ClaudeSession {
     this.emit({ type: "user", text: clip(text) });
     const before = this.status;
     this.setStatus("busy");
+    const ours = this.statusChanges;
+    // Puts back the status from before this send, unless a turn changed it meanwhile.
+    const settle = () => {
+      if (this.statusChanges === ours) this.setStatus(before);
+    };
     let input: InputQueue<SDKUserMessage>;
     try {
       input = await this.ensureQuery();
@@ -211,16 +209,11 @@ export class ClaudeSession {
       }
       throw error;
     }
-    if (signal?.aborted) {
-      this.emit({ type: "error", message: "This message was not sent because PlaneAI stopped waiting for it. Send it again." });
-      this.setStatus("idle");
-      throw new Error("request cancelled");
-    }
     const model = MODEL_COMMAND.exec(text.trim())?.[1];
     const known = model !== undefined && (model === "default" || (await this.listedModels()).some((option) => option.value === model));
     if (signal?.aborted) {
       this.emit({ type: "error", message: "This message was not sent because PlaneAI stopped waiting for it. Send it again." });
-      this.setStatus(before);
+      settle();
       throw new Error("request cancelled");
     }
     // Stopping, a handoff or Claude exiting while the models loaded leaves nothing to deliver to.
@@ -230,7 +223,7 @@ export class ClaudeSession {
     }
     if (model && known) {
       this.switchModel(model);
-      this.setStatus(before);
+      settle();
       return;
     }
     input.push({
@@ -284,25 +277,12 @@ export class ClaudeSession {
    * host frame. Listing them starts Claude without running a turn.
    */
   async commands(offset = 0): Promise<{ commands: CommandOption[]; more: boolean }> {
-    if (!this.commandList) {
+    if (!this.slashCommands.loaded) {
       const loaded = await this.loadCommands();
       // A commands_changed push that landed meanwhile is newer.
-      this.commandList ??= loaded;
+      if (!this.slashCommands.loaded) this.slashCommands.replace(loaded);
     }
-    // `__`-prefixed commands are Claude Code internals, such as server-launched workflows.
-    const listed = runnable(this.commandList).filter((command) => !this.terminalOnly.has(command.name) && !command.name.startsWith("__"));
-    const commands: CommandOption[] = [];
-    let bytes = 0;
-    let index = offset;
-    for (; index < listed.length; index++) {
-      const { name, description, argumentHint, aliases } = listed[index];
-      const option = { name, description: clip(description, 240), argument_hint: clip(argumentHint, 120), aliases: aliases ?? [] };
-      const size = Buffer.byteLength(JSON.stringify(option));
-      if (commands.length > 0 && bytes + size > SNAPSHOT_PAGE_BYTES) break;
-      commands.push(option);
-      bytes += size;
-    }
-    return { commands, more: index < listed.length };
+    return this.slashCommands.page(offset);
   }
 
   private loadCommands(): Promise<SlashCommand[]> {
@@ -328,13 +308,9 @@ export class ClaudeSession {
   }
 
   private switchModel(model: string): void {
-    if (model === "default") {
-      this.setModel(null);
-      this.emit({ type: "notice", text: "Model reset to the default" });
-    } else {
-      this.setModel(model);
-      this.emit({ type: "notice", text: `Model set to ${this.meta.models.find((option) => option.value === model)?.label ?? model}` });
-    }
+    const next = model === "default" ? null : model;
+    this.setModel(next);
+    this.emit({ type: "notice", text: next ? `Model set to ${this.meta.models.find((option) => option.value === next)?.label ?? next}` : "Model reset to the default" });
   }
 
   /**
@@ -443,7 +419,6 @@ export class ClaudeSession {
         this.input?.close();
         this.input = null;
         this.denyPending("Claude stopped");
-        if (this.meta.compacting) this.updateMeta({ compacting: false });
         if (!this.stopped) this.setStatus("idle");
       }
     }
@@ -454,13 +429,13 @@ export class ClaudeSession {
     if (message.type === "system") {
       switch (message.subtype) {
         case "init":
-          this.started(message.session_id, message.terminal_slash_commands ?? []);
+          this.onInit(message.session_id, message.terminal_slash_commands ?? []);
           break;
         case "compact_boundary":
           this.preserved = new Set(message.compact_metadata.preserved_messages?.uuids ?? []);
           break;
         case "commands_changed":
-          this.commandList = message.commands;
+          this.slashCommands.replace(message.commands);
           this.emit({ type: "commands_changed" });
           break;
       }
@@ -469,7 +444,6 @@ export class ClaudeSession {
     if (message.type === "result") this.follow(message.session_id);
     for (const event of translate(message)) this.emit(event);
     if (message.type === "result") {
-      if (this.meta.compacting) this.updateMeta({ compacting: false });
       this.setStatus(this.pending.size > 0 ? "needs_attention" : "idle");
       void this.loadContextUsage(query);
     } else if (this.status === "idle" && (message.type === "assistant" || message.type === "stream_event")) {
@@ -478,21 +452,19 @@ export class ClaudeSession {
     }
   }
 
-  /** Claude announces each turn's session id; after /clear it is a new one. */
-  private started(sessionId: string, terminalOnly: string[]): void {
+  /** Each turn's init: marks the session started, follows /clear's new id, refreshes terminal-only commands. */
+  private onInit(sessionId: string, terminalOnly: string[]): void {
     if (!this.store.hasStarted(this.config.id)) this.store.markStarted(this.config.id);
     this.follow(sessionId);
-    const changed = terminalOnly.length !== this.terminalOnly.size || terminalOnly.some((name) => !this.terminalOnly.has(name));
-    if (!changed) return;
-    this.terminalOnly = new Set(terminalOnly);
-    this.store.setTerminalCommands(terminalOnly);
-    if (this.commandList) this.emit({ type: "commands_changed" });
+    if (this.slashCommands.setTerminalOnly(terminalOnly)) this.emit({ type: "commands_changed" });
   }
 
   private follow(sessionId: string): void {
     if (sessionId === this.conversationId) return;
     this.conversationId = sessionId;
     this.store.setConversation(this.config.id, sessionId);
+    if (sessionId === this.config.id) return;
+    this.runtime.link(sessionId, this.config.id, this.config.cwd).catch((error: unknown) => console.error(`failed to link conversation ${sessionId}: ${String(error)}`));
   }
 
   private async loadModels(query: Query): Promise<ModelOption[]> {
@@ -555,22 +527,20 @@ export class ClaudeSession {
 
   private emit(payload: ChatEvent): void {
     if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
-    this.host.event(this.config.id, this.record(payload).seq, payload);
-  }
-
-  /** Numbers an event and keeps it in the transcript unless it is ephemeral. */
-  private record(payload: ChatEvent): StoredEvent {
     const event = { seq: ++this.seq, payload };
     if (!isEphemeral(payload)) {
       this.events.push(event);
       if (this.events.length > MAX_SNAPSHOT_EVENTS) this.events.splice(0, this.events.length - MAX_SNAPSHOT_EVENTS);
       this.store.append(this.config.id, event);
     }
-    return event;
+    this.host.event(this.config.id, event.seq, payload);
   }
 
   private setStatus(status: SessionStatus, force = false): void {
+    // Compaction ends with its turn, even one that failed or was interrupted.
+    if (status !== "busy" && this.meta.compacting) this.updateMeta({ compacting: false });
     if (this.status === status && !force) return;
+    this.statusChanges++;
     this.status = status;
     this.host.status(this.config.id, status);
     // The chat follows the same status the host shows, instead of inferring its own.

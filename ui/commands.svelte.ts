@@ -27,7 +27,6 @@ export class CommandCatalog {
       const list = await this.load();
       if (generation !== this.generation) return;
       this.list = list;
-      this.error = null;
     } catch (error) {
       if (generation !== this.generation) return;
       this.error = error instanceof Error ? error.message : String(error);

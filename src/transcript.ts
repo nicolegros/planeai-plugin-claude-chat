@@ -12,8 +12,8 @@ export const MAX_SNAPSHOT_EVENTS = 2_000;
 
 /**
  * Per-session event log under the plugin data dir, so a remounted or restarted UI
- * can rebuild the chat, plus the plugin-wide list of terminal-only commands. A `started` marker records that Claude has a transcript to resume,
- * and a `conversation` file the Claude session id /clear moved the session to.
+ * can rebuild the chat, plus a `started` marker and the conversation id /clear moved to.
+ * Plugin-wide: Claude Code's terminal-only command names.
  */
 export class TranscriptStore {
   constructor(private readonly root: string) {
@@ -26,6 +26,10 @@ export class TranscriptStore {
 
   private startedPath(sessionId: string): string {
     return join(this.root, `${sessionId}.started`);
+  }
+
+  private get terminalCommandsPath(): string {
+    return join(this.root, "terminal-commands.json");
   }
 
   private conversationPath(sessionId: string): string {
@@ -48,7 +52,11 @@ export class TranscriptStore {
   }
 
   append(sessionId: string, event: StoredEvent): void {
-    appendFileSync(this.eventsPath(sessionId), `${JSON.stringify(event)}\n`);
+    this.appendAll(sessionId, [event]);
+  }
+
+  appendAll(sessionId: string, events: StoredEvent[]): void {
+    appendFileSync(this.eventsPath(sessionId), events.map((event) => `${JSON.stringify(event)}\n`).join(""));
   }
 
   hasStarted(sessionId: string): boolean {
@@ -61,9 +69,8 @@ export class TranscriptStore {
 
   /** Commands Claude Code last named as terminal-only; shared by all sessions, as they depend on the CLI. */
   terminalCommands(): string[] {
-    const path = join(this.root, "terminal-commands.json");
     try {
-      const names: unknown = JSON.parse(readFileSync(path, "utf8"));
+      const names: unknown = JSON.parse(readFileSync(this.terminalCommandsPath, "utf8"));
       return Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : [];
     } catch {
       return [];
@@ -71,7 +78,7 @@ export class TranscriptStore {
   }
 
   setTerminalCommands(names: string[]): void {
-    writeFileSync(join(this.root, "terminal-commands.json"), JSON.stringify(names));
+    writeFileSync(this.terminalCommandsPath, JSON.stringify(names));
   }
 
   /** The Claude session id currently holding this session's conversation, when it is not the PlaneAI id. */
