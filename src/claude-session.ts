@@ -1,12 +1,20 @@
-import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { clip, isEphemeral, summarizeInput, toolInput, translate, type ChatEvent, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
+import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import { clip, isEphemeral, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
 import { InputQueue } from "./input-queue";
 import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
 
 /** Leaves headroom under the 64 KiB frame for the response envelope. */
 const SNAPSHOT_PAGE_BYTES = 40_000;
 
+const HANDED_OFF = "This session is continuing in a terminal tab. Close it or select Return to chat first.";
+
 const BASE_MODES: PermissionMode[] = ["default", "acceptEdits", "plan"];
+
+/** How long a `/model` waits for Claude's model list before handing the text to Claude Code. */
+const MODELS_WAIT_MS = 10_000;
+
+/** `/model <name>` is the header's model switch, typed. */
+const MODEL_COMMAND = /^\/model\s+(\S+)$/;
 
 export type QueryFactory = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => Query;
 
@@ -52,10 +60,21 @@ function firstAfter(events: StoredEvent[], seq: number): number {
   return low;
 }
 
+/** One row per name: when Claude Code's own command shares a name with another, /name runs its own. */
+function runnable(commands: SlashCommand[]): SlashCommand[] {
+  const byName = new Map<string, SlashCommand>();
+  for (const command of commands) {
+    const seen = byName.get(command.name);
+    if (!seen || (command.builtin && !seen.builtin)) byName.set(command.name, command);
+  }
+  return [...byName.values()];
+}
+
 /**
- * One PlaneAI session driven through the Agent SDK. The Claude session id is the
- * PlaneAI session id, so resuming needs no mapping. Claude starts lazily on the
- * first prompt; starting or resuming an idle session spawns nothing.
+ * One PlaneAI session driven through the Agent SDK. The Claude session id starts as
+ * the PlaneAI session id and follows Claude when /clear moves it. Claude starts
+ * lazily on the first prompt or command listing; starting or resuming an idle
+ * session spawns nothing.
  */
 export class ClaudeSession {
   private query: Query | null = null;
@@ -68,6 +87,17 @@ export class ClaudeSession {
   private nextPermission = 0;
   private stopped = false;
   private meta: SessionMeta;
+  /** Starts as the PlaneAI session id; /clear moves Claude to a new one. */
+  private conversationId: string;
+  /** Messages compaction kept, which Claude replays after its boundary. */
+  private preserved = new Set<string>();
+  private commandList: SlashCommand[] | null = null;
+  private loadingCommands: Promise<SlashCommand[]> | null = null;
+  /** Commands Claude marks as bound to its own terminal UI. */
+  private terminalOnly: Set<string>;
+  private delivering: Promise<unknown> = Promise.resolve();
+  /** The models of the running Claude process, once listed. */
+  private models: Promise<ModelOption[]> = Promise.resolve([]);
 
   constructor(
     private readonly config: SessionConfig,
@@ -83,7 +113,18 @@ export class ClaudeSession {
     // A terminal may still be driving the session after a sidecar restart.
     const lastHandoff = this.events.findLast((event) => event.payload.type === "handoff")?.payload;
     const handedOff = lastHandoff?.type === "handoff" && lastHandoff.in_terminal;
-    this.meta = { model: null, permission_mode: config.yolo ? "bypassPermissions" : "default", modes, models: [], context: null, handed_off: handedOff };
+    this.meta = {
+      model: null,
+      active_model: null,
+      permission_mode: config.yolo ? "bypassPermissions" : "default",
+      modes,
+      models: [],
+      context: null,
+      handed_off: handedOff,
+      compacting: false,
+    };
+    this.conversationId = store.conversation(config.id) ?? config.id;
+    this.terminalOnly = new Set(store.terminalCommands());
   }
 
   get id(): string {
@@ -114,15 +155,25 @@ export class ClaudeSession {
     this.setStatus(this.status, true);
   }
 
-  /** `signal` is the request's: a prompt whose request was cancelled is never delivered. */
-  async send(text: string, signal?: AbortSignal): Promise<void> {
+  /**
+   * `signal` is the request's: a prompt whose request was cancelled is never delivered.
+   * Sends are delivered in order, so a `/model` waiting for Claude's model list is never overtaken.
+   */
+  send(text: string, signal?: AbortSignal): Promise<void> {
+    const delivery = this.delivering.then(() => this.deliver(text, signal));
+    this.delivering = delivery.catch(() => {});
+    return delivery;
+  }
+
+  private async deliver(text: string, signal?: AbortSignal): Promise<void> {
     if (this.stopped) throw new Error("session is stopped");
-    if (this.meta.handed_off) throw new Error("This session is continuing in a terminal tab. Close it or select Return to chat first.");
+    if (this.meta.handed_off) throw new Error(HANDED_OFF);
     if (!this.config.claudeExecutable) {
       this.emit({ type: "error", message: "Claude Code was not found on PATH. Install it, then run `claude` once in a terminal to log in." });
       throw new Error("claude executable not found on PATH");
     }
     this.emit({ type: "user", text: clip(text) });
+    const before = this.status;
     this.setStatus("busy");
     let input: InputQueue<SDKUserMessage>;
     try {
@@ -138,6 +189,23 @@ export class ClaudeSession {
       this.emit({ type: "error", message: "This message was not sent because PlaneAI stopped waiting for it. Send it again." });
       this.setStatus("idle");
       throw new Error("request cancelled");
+    }
+    const model = MODEL_COMMAND.exec(text.trim())?.[1];
+    const known = model !== undefined && (model === "default" || (await this.listedModels()).some((option) => option.value === model));
+    if (signal?.aborted) {
+      this.emit({ type: "error", message: "This message was not sent because PlaneAI stopped waiting for it. Send it again." });
+      this.setStatus(before);
+      throw new Error("request cancelled");
+    }
+    // Stopping, a handoff or Claude exiting while the models loaded leaves nothing to deliver to.
+    if (this.input !== input) {
+      if (!this.stopped) this.emit({ type: "error", message: "This message was not sent because the chat stopped driving this session. Send it again." });
+      throw new Error("The chat no longer drives this session.");
+    }
+    if (model && known) {
+      this.switchModel(model);
+      this.setStatus(before);
+      return;
     }
     input.push({
       type: "user",
@@ -177,8 +245,70 @@ export class ClaudeSession {
 
   /** `null` returns to the user's configured default model. */
   setModel(model: string | null): void {
-    this.updateMeta({ model });
-    this.control(this.query?.setModel(model ?? undefined), "switch model");
+    const previous = this.meta.model;
+    // Which model Claude resolves is known again at the next turn.
+    this.updateMeta({ model, active_model: null });
+    this.control(this.query?.setModel(model ?? undefined), "switch model", () => {
+      if (this.meta.model === model) this.updateMeta({ model: previous });
+    });
+  }
+
+  /**
+   * One page of the slash commands Claude offers, from `offset`, sized to fit a single
+   * host frame. Listing them starts Claude without running a turn.
+   */
+  async commands(offset = 0): Promise<{ commands: CommandOption[]; more: boolean }> {
+    if (!this.commandList) {
+      const loaded = await this.loadCommands();
+      // A commands_changed push that landed meanwhile is newer.
+      this.commandList ??= loaded;
+    }
+    // `__`-prefixed commands are Claude Code internals, such as server-launched workflows.
+    const listed = runnable(this.commandList).filter((command) => !this.terminalOnly.has(command.name) && !command.name.startsWith("__"));
+    const commands: CommandOption[] = [];
+    let bytes = 0;
+    let index = offset;
+    for (; index < listed.length; index++) {
+      const { name, description, argumentHint, aliases } = listed[index];
+      const option = { name, description: clip(description, 240), argument_hint: clip(argumentHint, 120), aliases: aliases ?? [] };
+      const size = Buffer.byteLength(JSON.stringify(option));
+      if (commands.length > 0 && bytes + size > SNAPSHOT_PAGE_BYTES) break;
+      commands.push(option);
+      bytes += size;
+    }
+    return { commands, more: index < listed.length };
+  }
+
+  private loadCommands(): Promise<SlashCommand[]> {
+    this.loadingCommands ??= (async () => {
+      if (this.meta.handed_off) throw new Error(HANDED_OFF);
+      if (!this.config.claudeExecutable) throw new Error("Claude Code was not found on PATH.");
+      await this.ensureQuery();
+      if (!this.query) throw new Error("Claude stopped before listing its commands.");
+      return await this.query.supportedCommands();
+    })().finally(() => (this.loadingCommands = null));
+    return this.loadingCommands;
+  }
+
+  /** A Claude that never finishes starting must not hold up every later send. */
+  private async listedModels(): Promise<ModelOption[]> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<ModelOption[]>((resolve) => (timer = setTimeout(() => resolve([]), MODELS_WAIT_MS)));
+    try {
+      return await Promise.race([this.models, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private switchModel(model: string): void {
+    if (model === "default") {
+      this.setModel(null);
+      this.emit({ type: "notice", text: "Model reset to the default" });
+    } else {
+      this.setModel(model);
+      this.emit({ type: "notice", text: `Model set to ${this.meta.models.find((option) => option.value === model)?.label ?? model}` });
+    }
   }
 
   /**
@@ -197,7 +327,7 @@ export class ClaudeSession {
     const mode = this.meta.permission_mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : ["--permission-mode", this.meta.permission_mode];
     return [
       this.config.claudeExecutable,
-      ...((await this.shouldResume()) ? ["--resume", this.config.id] : ["--session-id", this.config.id]),
+      ...((await this.shouldResume()) ? ["--resume", this.conversationId] : ["--session-id", this.config.id]),
       ...mode,
       ...(this.meta.model ? ["--model", this.meta.model] : []),
     ];
@@ -225,8 +355,11 @@ export class ClaudeSession {
   }
 
   /** Runs an SDK control request without blocking the RPC that asked for it. */
-  private control(request: Promise<unknown> | undefined, action: string): void {
-    request?.catch((error: unknown) => this.emit({ type: "error", message: `Could not ${action}: ${errorMessage(error)}` }));
+  private control(request: Promise<unknown> | undefined, action: string, undo?: () => void): void {
+    request?.catch((error: unknown) => {
+      undo?.();
+      this.emit({ type: "error", message: `Could not ${action}: ${errorMessage(error)}` });
+    });
   }
 
   /**
@@ -234,7 +367,7 @@ export class ClaudeSession {
    * still owns the id then: starting fresh would fail as "already in use".
    */
   private async shouldResume(): Promise<boolean> {
-    return this.store.hasStarted(this.config.id) || (await this.runtime.hasTranscript(this.config.id, this.config.cwd));
+    return this.store.hasStarted(this.config.id) || (await this.runtime.hasTranscript(this.conversationId, this.config.cwd));
   }
 
   private ensureQuery(): Promise<InputQueue<SDKUserMessage>> {
@@ -261,13 +394,14 @@ export class ClaudeSession {
         allowDangerouslySkipPermissions: this.config.yolo,
         ...(this.meta.model ? { model: this.meta.model } : {}),
         canUseTool: this.canUseTool,
-        ...(resume ? { resume: this.config.id } : { sessionId: this.config.id }),
+        ...(resume ? { resume: this.conversationId } : { sessionId: this.config.id }),
         stderr: (data) => process.stderr.write(data),
       },
     });
     this.input = input;
     this.query = query;
     void this.consume(query);
+    this.models = this.loadModels(query);
     return input;
   }
 
@@ -283,18 +417,33 @@ export class ClaudeSession {
         this.input?.close();
         this.input = null;
         this.denyPending("Claude stopped");
+        if (this.meta.compacting) this.updateMeta({ compacting: false });
         if (!this.stopped) this.setStatus("idle");
       }
     }
   }
 
   private handle(query: Query, message: SDKMessage): void {
-    if (message.type === "system" && message.subtype === "init") {
-      if (!this.store.hasStarted(this.config.id)) this.store.markStarted(this.config.id);
-      void this.loadModels(query);
+    if ((message.type === "assistant" || message.type === "user") && message.uuid && this.preserved.delete(message.uuid)) return;
+    if (message.type === "system") {
+      switch (message.subtype) {
+        case "init":
+          this.started(message.session_id, message.terminal_slash_commands ?? []);
+          break;
+        case "compact_boundary":
+          this.preserved = new Set(message.compact_metadata.preserved_messages?.uuids ?? []);
+          break;
+        case "commands_changed":
+          this.commandList = message.commands;
+          this.emit({ type: "commands_changed" });
+          break;
+      }
     }
+    // /clear moves Claude to a new id within the turn; its result already carries it.
+    if (message.type === "result") this.follow(message.session_id);
     for (const event of translate(message)) this.emit(event);
     if (message.type === "result") {
+      if (this.meta.compacting) this.updateMeta({ compacting: false });
       this.setStatus(this.pending.size > 0 ? "needs_attention" : "idle");
       void this.loadContextUsage(query);
     } else if (this.status === "idle" && (message.type === "assistant" || message.type === "stream_event")) {
@@ -303,12 +452,33 @@ export class ClaudeSession {
     }
   }
 
-  private async loadModels(query: Query): Promise<void> {
+  /** Claude announces each turn's session id; after /clear it is a new one. */
+  private started(sessionId: string, terminalOnly: string[]): void {
+    if (!this.store.hasStarted(this.config.id)) this.store.markStarted(this.config.id);
+    this.follow(sessionId);
+    const changed = terminalOnly.length !== this.terminalOnly.size || terminalOnly.some((name) => !this.terminalOnly.has(name));
+    if (!changed) return;
+    this.terminalOnly = new Set(terminalOnly);
+    this.store.setTerminalCommands(terminalOnly);
+    if (this.commandList) this.emit({ type: "commands_changed" });
+  }
+
+  private follow(sessionId: string): void {
+    if (sessionId === this.conversationId) return;
+    this.conversationId = sessionId;
+    this.store.setConversation(this.config.id, sessionId);
+  }
+
+  private async loadModels(query: Query): Promise<ModelOption[]> {
     try {
       const models = await query.supportedModels();
-      this.updateMeta({ models: models.map((model) => ({ value: model.value, label: model.displayName })) });
+      // The header offers Claude Code's default itself.
+      const choices = models.filter((model) => model.value !== "default").map((model) => ({ value: model.value, label: model.displayName }));
+      this.updateMeta({ models: choices });
+      return choices;
     } catch (error) {
       console.error(`failed to list models: ${String(error)}`);
+      return [];
     }
   }
 

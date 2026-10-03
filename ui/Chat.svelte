@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
+  import CommandMenu from "./CommandMenu.svelte";
+  import { CommandCatalog, matchCommands } from "./commands.svelte";
   import Header from "./Header.svelte";
   import Markdown from "./Markdown.svelte";
   import PermissionCard from "./PermissionCard.svelte";
   import ToolCard from "./ToolCard.svelte";
-  import type { PermissionDecision, ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
+  import type { CommandOption, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
   import { Transcript } from "./transcript.svelte";
 
   let { context }: { context: ProviderUiContext } = $props();
@@ -25,6 +27,29 @@
   const working = $derived(status === "busy" || status === "needs_attention");
   const sessionId = $derived(context.session.id);
 
+  const MENU_ID = "slash-commands";
+  const commands = new CommandCatalog(async () => {
+    const all: CommandOption[] = [];
+    for (;;) {
+      const page = await context.host.call<{ commands: CommandOption[]; more: boolean }>("claude.commands", { session_id: sessionId, ...(all.length ? { offset: all.length } : {}) });
+      all.push(...page.commands);
+      if (!page.more || page.commands.length === 0) return all;
+    }
+  });
+  /** Highlighted menu entry. */
+  let active = $state(0);
+  /** The draft the menu was dismissed for with Escape; it reopens once the draft changes. */
+  let dismissed = $state<string | null>(null);
+  // Only a lone `/word` opens the menu; once arguments start, it is out of the way.
+  const commandQuery = $derived(/^\/(\S*)$/.exec(draft)?.[1] ?? null);
+  const menuOpen = $derived(commandQuery !== null && dismissed !== draft);
+  const matches = $derived(menuOpen && commands.list ? matchCommands(commands.list, commandQuery ?? "") : []);
+  const activeIndex = $derived(Math.min(active, Math.max(0, matches.length - 1)));
+
+  $effect(() => {
+    if (menuOpen) untrack(() => commands.ensure());
+  });
+
   $effect(() => {
     const live = transcript.live;
     if (!live) {
@@ -36,6 +61,7 @@
   });
 
   function apply(event: StoredEvent): void {
+    if (event.payload.type === "commands_changed") commands.invalidate();
     transcript.apply(event);
     void scrollToBottom();
   }
@@ -103,8 +129,54 @@
     composer.style.height = `${Math.min(composer.scrollHeight, 240)}px`;
   }
 
+  function onInput(): void {
+    active = 0;
+    dismissed = null;
+    void resizeComposer();
+  }
+
+  /** Puts `/name ` in the composer so arguments can follow. */
+  function complete(command: CommandOption): void {
+    draft = `/${command.name} `;
+    composer?.focus();
+    void resizeComposer();
+  }
+
+  /** Handles menu keys; returns whether the key was the menu's. */
+  function onMenuKey(event: KeyboardEvent): boolean {
+    if (!menuOpen) return false;
+    if (event.key === "Escape") {
+      dismissed = draft;
+      return true;
+    }
+    const command = matches[activeIndex];
+    if (!command) return false;
+    switch (event.key) {
+      case "ArrowDown":
+        active = (activeIndex + 1) % matches.length;
+        return true;
+      case "ArrowUp":
+        active = (activeIndex - 1 + matches.length) % matches.length;
+        return true;
+      case "Tab":
+        if (event.shiftKey) return false;
+        complete(command);
+        return true;
+      case "Enter":
+        if (event.shiftKey || event.isComposing) return false;
+        // Like Claude Code's terminal UI: Enter runs the highlighted command, Tab completes it.
+        draft = `/${command.name}`;
+        send();
+        return true;
+      default:
+        return false;
+    }
+  }
+
   function onKeydown(event: KeyboardEvent): void {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    if (onMenuKey(event)) {
+      event.preventDefault();
+    } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       send();
     } else if (event.key === "Escape" && working) {
@@ -155,10 +227,19 @@
       .join(" · ");
   }
 
+  function short(count: number): string {
+    return count >= 1000 ? `${(count / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(count);
+  }
+
   function tokens(usage: TokenUsage): string {
     const input = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-    const short = (count: number) => (count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count));
     return `${short(input)} in · ${short(usage.output_tokens)} out`;
+  }
+
+  function compacted(entry: { trigger: "manual" | "auto"; pre_tokens: number; post_tokens?: number }): string {
+    const what = entry.trigger === "auto" ? "Conversation compacted automatically" : "Conversation compacted";
+    const detail = entry.post_tokens === undefined ? `${short(entry.pre_tokens)} tokens summarized` : `${short(entry.pre_tokens)} → ${short(entry.post_tokens)} tokens`;
+    return `${what} · ${detail}`;
   }
 </script>
 
@@ -166,7 +247,7 @@
   <Header meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff} />
   <div class="log" bind:this={log} onscroll={onScroll} role="log" aria-label="Conversation" aria-busy={!!transcript.live}>
     {#if transcript.entries.length === 0 && !transcript.live}
-      <p class="empty">Send a message to start Claude in this worktree.</p>
+      <p class="empty">Send a message to start Claude in this worktree, or type / for commands.</p>
     {/if}
     {#each transcript.entries as entry (entry.seq)}
       {#if entry.kind === "user"}
@@ -183,12 +264,18 @@
         <p class="error">{entry.message}</p>
       {:else if entry.kind === "handoff"}
         <p class="divider">{entry.in_terminal ? "Continued in the terminal" : "Back in the chat. Turns taken in the terminal are in Claude's history but not shown here."}</p>
+      {:else if entry.kind === "compacted"}
+        <p class="divider">{compacted(entry)}</p>
+      {:else if entry.kind === "cleared"}
+        <p class="divider">Context cleared · Claude no longer sees the messages above</p>
+      {:else if entry.kind === "notice"}
+        <p class="notice">{entry.text}</p>
       {/if}
     {/each}
     {#if transcript.live}
       <div class="message assistant"><Markdown text={liveMarkdown || transcript.live} onLink={openExternal} /></div>
     {:else if working}
-      <p class="working" aria-hidden="true">{status === "needs_attention" ? "Waiting for your answer" : "Claude is working"}<span class="ellipsis"></span></p>
+      <p class="working" aria-hidden="true">{status === "needs_attention" ? "Waiting for your answer" : transcript.meta.compacting ? "Compacting the conversation" : "Claude is working"}<span class="ellipsis"></span></p>
     {/if}
   </div>
   <p class="visually-hidden" role="status">{status === "needs_attention" ? "Claude is waiting for your answer" : working ? "Claude is working" : ""}</p>
@@ -199,14 +286,31 @@
     </div>
   {:else}
   <form class="composer" onsubmit={(event) => { event.preventDefault(); send(); }}>
+    {#if menuOpen}
+      <CommandMenu
+        id={MENU_ID}
+        {matches}
+        active={activeIndex}
+        loading={commands.list === null && commands.error === null}
+        error={commands.error}
+        onPick={complete}
+        onHover={(index) => (active = index)}
+      />
+    {/if}
     <textarea
       bind:this={composer}
       bind:value={draft}
-      oninput={resizeComposer}
+      oninput={onInput}
       onkeydown={onKeydown}
       rows="1"
       placeholder={working ? "Queue a follow-up · Esc to stop" : "Message Claude · Enter to send, Shift+Enter for a new line"}
       aria-label="Message Claude"
+      role="combobox"
+      aria-autocomplete="list"
+      aria-haspopup="listbox"
+      aria-expanded={menuOpen}
+      aria-controls={MENU_ID}
+      aria-activedescendant={menuOpen && matches.length > 0 ? `${MENU_ID}-${activeIndex}` : undefined}
     ></textarea>
     {#if working}
       <button type="button" onclick={interrupt}>Stop</button>
@@ -232,7 +336,8 @@
   .handed-off p { flex: 1; color: var(--planeai-text-muted); }
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .ellipsis::after { content: "…"; animation: blink 1.4s steps(4, end) infinite; }
-  .composer { display: flex; gap: var(--planeai-space-2); align-items: flex-end; padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); }
+  .notice { color: var(--planeai-text-subtle); font-size: 11.5px; }
+  .composer { position: relative; display: flex; gap: var(--planeai-space-2); align-items: flex-end; padding: var(--planeai-space-3) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); }
   textarea { flex: 1; resize: none; min-height: 34px; max-height: 240px; line-height: 18px; }
   button.primary { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
   @keyframes blink { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }

@@ -102,6 +102,12 @@ export class ClaudeChatPlugin {
         const after = typeof request.after_seq === "number" ? request.after_seq : 0;
         return this.session(request).snapshot(after);
       }
+      case "claude.commands": {
+        const request = object(params);
+        const offset = request.offset ?? 0;
+        if (!Number.isInteger(offset) || (offset as number) < 0) throw new RpcError(INVALID_PARAMS, "offset must be a nonnegative integer");
+        return await this.session(request).commands(offset as number);
+      }
       case "claude.permission.respond": {
         const request = object(params);
         const decision = request.decision;

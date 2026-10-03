@@ -66,6 +66,19 @@ describe("ClaudeChatPlugin", () => {
     expect(fake.queries.flatMap((query) => query.sent)).toHaveLength(0);
   });
 
+  it("lists a session's slash commands for the chat's menu", async () => {
+    const { instance, fake } = plugin();
+    const bin = mkdtempSync(join(tmpdir(), "claude-chat-bin-"));
+    writeFileSync(join(bin, "claude"), "#!/bin/sh\n");
+    chmodSync(join(bin, "claude"), 0o755);
+    await instance.handle("provider.session.start", { ...start(), env: { PATH: bin } });
+    const listing = instance.handle("claude.commands", { session_id: SESSION_ID });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fake.queries[0].resolveCommands([{ name: "compact", description: "Free up context", argumentHint: "" }]);
+    await expect(listing).resolves.toEqual({ commands: [{ name: "compact", description: "Free up context", argument_hint: "", aliases: [] }], more: false });
+    await expect(instance.handle("claude.commands", { session_id: SESSION_ID, offset: -1 })).rejects.toThrow("offset");
+  });
+
   it("finds claude on the PATH the host provides", () => {
     const bin = mkdtempSync(join(tmpdir(), "claude-chat-bin-"));
     mkdirSync(join(bin, "empty"));

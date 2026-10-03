@@ -30,7 +30,10 @@ export interface ContextUsage {
 
 /** Live session state shown around the transcript rather than in it. */
 export interface SessionMeta {
+  /** The model the user picked; `null` is Claude Code's default. */
   model: string | null;
+  /** The model id Claude resolved for the current turn. */
+  active_model: string | null;
   permission_mode: string;
   /** Permission modes this session may switch to. */
   modes: string[];
@@ -38,11 +41,22 @@ export interface SessionMeta {
   handed_off: boolean;
   models: ModelOption[];
   context: ContextUsage | null;
+  /** Claude is summarizing the conversation, from /compact or automatically. */
+  compacting: boolean;
+}
+
+/** A slash command as the chat's menu lists it. */
+export interface CommandOption {
+  name: string;
+  description: string;
+  argument_hint: string;
+  aliases: string[];
 }
 
 /**
  * Plugin-owned event vocabulary sent to the chat UI as opaque `host.session.event`
- * payloads. `delta` and `meta` are ephemeral; everything else is part of the transcript.
+ * payloads. `delta`, `meta`, `status` and `commands_changed` are ephemeral; everything
+ * else is part of the transcript.
  */
 export type ChatEvent =
   | { type: "user"; text: string }
@@ -55,11 +69,16 @@ export type ChatEvent =
   | { type: "result"; is_error: boolean; subtype: string; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { type: "error"; message: string }
   | { type: "handoff"; in_terminal: boolean }
+  | { type: "compacted"; trigger: "manual" | "auto"; pre_tokens: number; post_tokens?: number }
+  /** /clear started a new conversation; Claude no longer sees what came before. */
+  | { type: "cleared" }
+  | { type: "notice"; text: string }
   | { type: "status"; status: SessionStatus }
-  | { type: "meta"; meta: Partial<SessionMeta> };
+  | { type: "meta"; meta: Partial<SessionMeta> }
+  | { type: "commands_changed" };
 
 export function isEphemeral(event: ChatEvent): boolean {
-  return event.type === "delta" || event.type === "meta" || event.type === "status";
+  return event.type === "delta" || event.type === "meta" || event.type === "status" || event.type === "commands_changed";
 }
 
 /** Keeps every event below the host's 64 KiB frame limit, even at 4 bytes per character. */
@@ -161,8 +180,21 @@ export function translate(message: SDKMessage): ChatEvent[] {
   if ("parent_tool_use_id" in message && message.parent_tool_use_id) return [];
   switch (message.type) {
     case "system":
-      if (message.subtype !== "init") return [];
-      return [{ type: "meta", meta: { model: message.model, permission_mode: message.permissionMode } }];
+      switch (message.subtype) {
+        case "init":
+          return [{ type: "meta", meta: { active_model: message.model, permission_mode: message.permissionMode } }];
+        case "status":
+          if (message.status === "compacting") return [{ type: "meta", meta: { compacting: true } }];
+          return message.compact_result ? [{ type: "meta", meta: { compacting: false } }] : [];
+        case "compact_boundary": {
+          const { trigger, pre_tokens, post_tokens } = message.compact_metadata;
+          return [{ type: "compacted", trigger, pre_tokens, ...(post_tokens === undefined ? {} : { post_tokens }) }];
+        }
+        default:
+          return [];
+      }
+    case "conversation_reset":
+      return [{ type: "cleared" }];
     case "stream_event": {
       const event = message.event;
       if (event.type === "content_block_delta" && event.delta.type === "text_delta" && event.delta.text) {
@@ -189,6 +221,8 @@ export function translate(message: SDKMessage): ChatEvent[] {
       );
     }
     case "result": {
+      // Local slash commands such as /context end without a model turn; their output is the message.
+      if (message.num_turns === 0 && !message.is_error) return [];
       const failure = message.subtype === "success" && message.is_error ? message.result : undefined;
       if (failure && NOT_LOGGED_IN.test(failure)) {
         return [{ type: "error", message: "Claude Code is not logged in. Run `claude` in a terminal, log in, then send your message again." }];

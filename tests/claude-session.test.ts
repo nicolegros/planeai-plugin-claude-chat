@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeSession } from "../src/claude-session";
 import type { ChatEvent, SessionStatus } from "../src/events";
 import { TranscriptStore } from "../src/transcript";
@@ -20,6 +20,10 @@ describe("ClaudeSession", () => {
     events = [];
     statuses = [];
     fake = fakeQueryFactory();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // Status also streams to the UI as events; tests read it from host.status instead.
@@ -60,7 +64,7 @@ describe("ClaudeSession", () => {
     await flush();
     expect(query.sent[0].message).toEqual({ role: "user", content: "hello" });
 
-    query.emit(...fixture("bash-turn"));
+    query.emit(...fixture("bash-turn", SESSION_ID));
     await flush();
     expect(events.map(({ payload }) => payload.type).filter((type) => type !== "meta")).toEqual(["user", "tool", "tool_result", "delta", "assistant", "result"]);
     expect(events.every(({ seq }, index) => index === 0 || seq > events[index - 1].seq)).toBe(true);
@@ -70,7 +74,7 @@ describe("ClaudeSession", () => {
   it("resumes the same Claude session once it has a transcript", async () => {
     const first = session();
     await first.send("hello");
-    fake.queries[0].emit(...fixture("bash-turn"));
+    fake.queries[0].emit(...fixture("bash-turn", SESSION_ID));
     await flush();
     first.stop();
 
@@ -141,6 +145,7 @@ describe("ClaudeSession", () => {
       { createQuery: fake.factory, hasTranscript: () => new Promise((resolve) => (finishCheck = resolve)) },
     );
     const sending = chat.send("hello");
+    await flush();
     chat.stop();
     finishCheck(false);
     await expect(sending).rejects.toThrow("no longer drives");
@@ -201,7 +206,7 @@ describe("ClaudeSession", () => {
   it("reports models after init and context usage after each turn", async () => {
     const chat = session({ yolo: true });
     await chat.send("hello");
-    fake.queries[0].emit(...fixture("bash-turn"));
+    fake.queries[0].emit(...fixture("bash-turn", SESSION_ID));
     await flush();
     await flush();
     expect(chat.snapshot().meta).toMatchObject({
@@ -214,7 +219,7 @@ describe("ClaudeSession", () => {
   it("hands the conversation to the terminal and refuses input until it comes back", async () => {
     const chat = session();
     await chat.send("hello");
-    fake.queries[0].emit(...fixture("bash-turn"));
+    fake.queries[0].emit(...fixture("bash-turn", SESSION_ID));
     await flush();
     chat.setPermissionMode("plan");
     chat.setModel("opus");
@@ -282,6 +287,220 @@ describe("ClaudeSession", () => {
     const chat = session({ claudeExecutable: null });
     await expect(chat.send("hello")).rejects.toThrow("claude executable not found");
     expect(events[0].payload).toMatchObject({ type: "error" });
+    expect(fake.queries).toHaveLength(0);
+  });
+
+  it("follows Claude to the new conversation /clear starts, across restarts and handoffs", async () => {
+    const chat = session();
+    await chat.send("/clear");
+    fake.queries[0].emit(...fixture("slash-commands", SESSION_ID));
+    await flush();
+    expect(events.map(({ payload }) => payload.type)).toContain("cleared");
+    expect(statuses.at(-1)).toBe("idle");
+    chat.stop();
+
+    const restarted = session();
+    await restarted.send("hello");
+    expect(fake.queries[1].options).toMatchObject({ resume: "fixture-session-2" });
+    await flush();
+    expect(await restarted.handoff()).toEqual(["/usr/local/bin/claude", "--resume", "fixture-session-2", "--permission-mode", "default"]);
+  });
+
+  it("shows messages kept through compaction once, not again when Claude replays them", async () => {
+    const chat = session();
+    await chat.send("/compact");
+    fake.queries[0].emit(...fixture("slash-commands", SESSION_ID));
+    await flush();
+    const contexts = events.filter(({ payload }) => payload.type === "assistant" && payload.text.startsWith("## Context Usage"));
+    expect(contexts).toHaveLength(1);
+    expect(events.map(({ payload }) => payload.type)).toContain("compacted");
+  });
+
+  it("routes /model through the session's model control so the header stays truthful", async () => {
+    const chat = session();
+    await chat.send("hello");
+    fake.queries[0].emit(...fixture("bash-turn", SESSION_ID));
+    await flush();
+    await flush();
+    await chat.send(" /model opus ");
+    await flush();
+    expect(fake.queries[0].setModel).toHaveBeenCalledWith("opus");
+    expect(fake.queries[0].sent.map((message) => message.message.content)).toEqual(["hello"]);
+    expect(chat.snapshot().meta).toMatchObject({ model: "opus", active_model: null });
+    expect(events.slice(-2).map(({ payload }) => payload)).toEqual([
+      { type: "meta", meta: { model: "opus", active_model: null } },
+      { type: "notice", text: "Model set to Opus" },
+    ]);
+    expect(events.findLast(({ payload }) => payload.type === "user")!.payload).toEqual({ type: "user", text: " /model opus " });
+    expect(statuses.at(-1)).toBe("idle");
+
+    await chat.send("/model default");
+    expect(chat.snapshot().meta.model).toBeNull();
+    expect(events.at(-1)!.payload).toEqual({ type: "notice", text: "Model reset to the default" });
+
+    // Without a name, or with one Claude does not list, Claude Code itself answers and validates.
+    await chat.send("/model");
+    await chat.send("/model opusplan");
+    await flush();
+    expect(fake.queries[0].sent.slice(-2).map((message) => message.message.content)).toEqual(["/model", "/model opusplan"]);
+    expect(chat.snapshot().meta.model).toBeNull();
+  });
+
+  it("recognizes /model names before the first turn, once Claude lists its models", async () => {
+    const chat = session();
+    await chat.send("/model sonnet");
+    await flush();
+    expect(fake.queries[0].sent).toHaveLength(0);
+    expect(chat.snapshot().meta.model).toBe("sonnet");
+    expect(fake.queries[0].setModel).toHaveBeenCalledWith("sonnet");
+  });
+
+  it("keeps prompts in order behind a /model waiting for Claude to list its models", async () => {
+    fake = fakeQueryFactory({ holdModels: true });
+    const chat = session();
+    const switching = chat.send("/model opus");
+    const prompting = chat.send("hello");
+    await flush();
+    fake.queries[0].releaseModels();
+    await Promise.all([switching, prompting]);
+    await flush();
+    expect(fake.queries[0].setModel).toHaveBeenCalledWith("opus");
+    expect(fake.queries[0].sent.map((message) => message.message.content)).toEqual(["hello"]);
+    expect(events.filter(({ payload }) => payload.type === "user" || payload.type === "notice").map(({ payload }) => payload.type)).toEqual(["user", "notice", "user"]);
+    expect(statuses.at(-1)).toBe("busy");
+  });
+
+  it("does not deliver a prompt when the chat stops driving the session while Claude starts", async () => {
+    fake = fakeQueryFactory({ holdModels: true });
+    const chat = session();
+    const switching = chat.send("/model opus");
+    await flush();
+    await chat.handoff();
+    fake.queries[0].releaseModels();
+    await expect(switching).rejects.toThrow("no longer drives");
+    expect(fake.queries[0].setModel).not.toHaveBeenCalled();
+    expect(chat.snapshot().meta.model).toBeNull();
+  });
+
+  it("hands /model to Claude Code when its model list does not arrive in time", async () => {
+    vi.useFakeTimers();
+    fake = fakeQueryFactory({ holdModels: true });
+    const chat = session();
+    const switching = chat.send("/model opus");
+    const prompting = chat.send("hello");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await Promise.all([switching, prompting]);
+    expect(fake.queries[0].sent.map((message) => message.message.content)).toEqual(["/model opus", "hello"]);
+    expect(chat.snapshot().meta.model).toBeNull();
+  });
+
+  it("drops a /model whose request was cancelled while Claude listed its models", async () => {
+    fake = fakeQueryFactory({ holdModels: true });
+    const controller = new AbortController();
+    const chat = session();
+    const switching = chat.send("/model opus", controller.signal);
+    await flush();
+    controller.abort();
+    fake.queries[0].releaseModels();
+    await expect(switching).rejects.toThrow("request cancelled");
+    expect(chat.snapshot().meta.model).toBeNull();
+    expect(events.at(-1)!.payload).toMatchObject({ type: "error", message: expect.stringContaining("not sent") });
+  });
+
+  it("restores the previous model when Claude rejects a switch", async () => {
+    const chat = session();
+    await chat.send("hello");
+    fake.queries[0].setModel.mockRejectedValueOnce(new Error("unknown model"));
+    chat.setModel("opus");
+    await flush();
+    expect(chat.snapshot().meta.model).toBeNull();
+    expect(events.at(-1)!.payload).toEqual({ type: "error", message: "Could not switch model: unknown model" });
+  });
+
+  it("follows a new conversation from the turn result, even before the next init", async () => {
+    const chat = session();
+    await chat.send("/clear");
+    const turn = fixture("bash-turn", SESSION_ID);
+    const init = turn.find((message) => message.type === "system")!;
+    const result = turn.find((message) => message.type === "result")!;
+    fake.queries[0].emit(init, { ...result, num_turns: 0, session_id: "after-clear" } as typeof result);
+    await flush();
+    chat.stop();
+    await session().send("hello");
+    expect(fake.queries[1].options).toMatchObject({ resume: "after-clear" });
+  });
+
+  it("keeps the model the user picked when Claude reports the model it resolved", async () => {
+    const chat = session();
+    chat.setModel("opus");
+    await chat.send("hello");
+    fake.queries[0].emit(...fixture("bash-turn", SESSION_ID));
+    await flush();
+    expect(chat.snapshot().meta).toMatchObject({ model: "opus", active_model: "claude-opus-5-5" });
+  });
+
+  it("lists slash commands without a turn, paged, without terminal-only ones", async () => {
+    const chat = session();
+    const listing = chat.commands();
+    await flush();
+    const [query] = fake.queries;
+    expect(query.sent).toHaveLength(0);
+    query.resolveCommands([
+      { name: "compact", description: "My own compact", argumentHint: "" },
+      { name: "compact", description: "Free up context", argumentHint: "<instructions>", builtin: true },
+      { name: "color", description: "Set the prompt bar color", argumentHint: "" },
+      { name: "__remote-workflow", description: "Server-launched sessions only", argumentHint: "", builtin: true },
+      { name: "review", description: "x".repeat(5_000), argumentHint: "", aliases: ["r"] },
+      ...Array.from({ length: 400 }, (_, i) => ({ name: `skill-${i}`, description: "d".repeat(300), argumentHint: "" })),
+    ]);
+    const pages = [await listing];
+    while (pages.at(-1)!.more) pages.push(await chat.commands(pages.flatMap((page) => page.commands).length));
+    expect(pages.length).toBeGreaterThan(1);
+    for (const page of pages) expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(60_000);
+    const listed = pages.flatMap((page) => page.commands);
+    expect(listed).toHaveLength(403);
+    // Before Claude has named its terminal-only commands once, nothing is known to hide.
+    expect(listed[0]).toEqual({ name: "compact", description: "Free up context", argument_hint: "<instructions>", aliases: [] });
+    expect(listed[2]).toMatchObject({ name: "review", aliases: ["r"] });
+    expect(listed[2].description.length).toBeLessThan(300);
+    expect(statuses).toEqual([]);
+
+    // Claude names terminal-only commands at the start of each turn.
+    await chat.send("hi");
+    query.emit({ type: "system", subtype: "init", session_id: SESSION_ID, model: "claude-opus-5-5", permissionMode: "default", terminal_slash_commands: ["color"] } as never);
+    await flush();
+    expect(events.map(({ payload }) => payload)).toContainEqual({ type: "commands_changed" });
+    const refreshed = await chat.commands();
+    expect(refreshed.commands.map((command) => command.name)).not.toContain("color");
+    expect(query.supportedCommands).toHaveBeenCalledOnce();
+  });
+
+  it("hides terminal-only commands before the first turn once Claude has named them", async () => {
+    store.setTerminalCommands(["color"]);
+    const chat = session();
+    const listing = chat.commands();
+    await flush();
+    fake.queries[0].resolveCommands([{ name: "color", description: "", argumentHint: "" }, { name: "compact", description: "", argumentHint: "" }]);
+    expect((await listing).commands.map((command) => command.name)).toEqual(["compact"]);
+  });
+
+  it("replaces its command list when Claude discovers new commands", async () => {
+    const chat = session();
+    const listing = chat.commands();
+    await flush();
+    fake.queries[0].resolveCommands([{ name: "compact", description: "", argumentHint: "" }]);
+    await listing;
+    fake.queries[0].emit({ type: "system", subtype: "commands_changed", commands: [{ name: "deploy", description: "Ship it", argumentHint: "" }], uuid: "u", session_id: SESSION_ID } as never);
+    await flush();
+    expect(events.at(-1)!.payload).toEqual({ type: "commands_changed" });
+    expect((await chat.commands()).commands.map((command) => command.name)).toEqual(["deploy"]);
+  });
+
+  it("cannot list commands while a terminal drives the session or Claude is missing", async () => {
+    await expect(session({ claudeExecutable: null }).commands()).rejects.toThrow("not found");
+    const chat = session();
+    await chat.handoff();
+    await expect(chat.commands()).rejects.toThrow("continuing in a terminal");
     expect(fake.queries).toHaveLength(0);
   });
 
