@@ -11,7 +11,7 @@ Slash commands and skills run as in the terminal, with a `/` menu, and the chat'
 
 ## Requirements
 
-- A PlaneAI build with plugin providers (host API `planeai.plugin-host.v3`, ADR-0013).
+- A PlaneAI build with plugin providers (host API `planeai.plugin-host.v3`).
 - Claude Code installed and on PlaneAI's `PATH` (`~/.local/bin`, Homebrew and `extra_path_dirs` are searched).
 - Claude Code logged in: run `claude` once in a terminal.
 
