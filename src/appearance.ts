@@ -58,11 +58,12 @@ export function normalizeAppearance(value: unknown): Appearance {
   };
 }
 
-/** Inline style for a root element: the fonts, with PlaneAI's as fallbacks for missing ones, and the base size. */
+/** Inline style for a root element: the fonts, with PlaneAI's as fallbacks for missing ones, the base size, and how much it scales the default spacing. */
 export function appearanceStyle(appearance: Appearance): string {
   return [
     `--chat-font: ${appearance.font_family ? `${cssFamily(appearance.font_family)}, ` : ""}var(--planeai-font-sans)`,
     `--chat-code-font: ${appearance.code_font_family ? `${cssFamily(appearance.code_font_family)}, ` : ""}var(--planeai-font-mono)`,
     `--chat-size: ${appearance.font_size ?? FONT_SIZE.default}px`,
+    `--chat-scale: ${(appearance.font_size ?? FONT_SIZE.default) / FONT_SIZE.default}`,
   ].join("; ");
 }

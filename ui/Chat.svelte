@@ -360,11 +360,14 @@
           aria-activedescendant={menuOpen && matches.length > 0 ? `${MENU_ID}-${activeIndex}` : undefined}
         ></textarea>
         <div class="bar">
-          <ComposerBar meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff} />
-          {#if working}
-            <button type="button" class="round" onclick={interrupt} title="Stop (Esc)" aria-label="Stop"><Icon name="stop" size={12} /></button>
-          {/if}
-          <button type="submit" class="round primary" disabled={!draft.trim()} title={working ? "Queue (Enter)" : "Send (Enter)"} aria-label={working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
+          <ComposerBar meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff}>
+            {#snippet actions()}
+              {#if working}
+                <button type="button" class="round" onclick={interrupt} title="Stop (Esc)" aria-label="Stop"><Icon name="stop" size={12} /></button>
+              {/if}
+              <button type="submit" class="round primary" disabled={!draft.trim()} title={working ? "Queue (Enter)" : "Send (Enter)"} aria-label={working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
+            {/snippet}
+          </ComposerBar>
         </div>
       </form>
     </div>
@@ -382,6 +385,15 @@
     --chat-line: calc(var(--chat-size) + 5px);
     --chat-line-text: calc(var(--chat-size) + 6px);
     --chat-line-heading: calc(var(--chat-size) + 7px);
+    /* Spacing and control sizes grow with the text, so a larger font keeps the default proportions. */
+    --chat-unit: calc(1px * var(--chat-scale, 1));
+    --chat-space-1: calc(4 * var(--chat-unit));
+    --chat-space-2: calc(8 * var(--chat-unit));
+    --chat-space-3: calc(12 * var(--chat-unit));
+    --chat-space-4: calc(16 * var(--chat-unit));
+    --chat-space-5: calc(20 * var(--chat-unit));
+    --chat-space-6: calc(24 * var(--chat-unit));
+    --chat-radius: calc(8 * var(--chat-unit));
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -391,38 +403,43 @@
   /* PlaneAI's baseline sizes these in px; as element rules after it, these keep its sizes at the default and scale them. */
   :global(p) { font-size: inherit; line-height: var(--chat-line-text); }
   :global(:is(button, input, select, textarea)) { line-height: var(--chat-line); }
+  /* PlaneAI's baseline sizes controls in px too; :where keeps these below every component's own rules. */
+  :where(.chat) :global(:is(button, input, select, textarea)) { border-radius: var(--chat-radius); }
+  :where(.chat) :global(button) { min-height: calc(32 * var(--chat-unit)); padding: calc(6 * var(--chat-unit)) calc(10 * var(--chat-unit)); }
+  :where(.chat) :global(:is(input, select)) { padding: calc(7 * var(--chat-unit)) calc(9 * var(--chat-unit)); }
   .log { flex: 1; overflow-y: auto; }
-  .empty { margin: 30vh var(--planeai-space-5) 0; text-align: center; color: var(--planeai-text-subtle); }
+  .empty { margin: 30vh var(--chat-space-5) 0; text-align: center; color: var(--planeai-text-subtle); }
   .turn { border-bottom: 1px solid var(--planeai-border); }
   .turn:last-child { border-bottom: 0; }
-  .body { display: flex; flex-direction: column; gap: var(--planeai-space-3); padding: var(--planeai-space-4) var(--planeai-space-5) var(--planeai-space-5); }
+  .body { display: flex; flex-direction: column; gap: var(--chat-space-3); padding: var(--chat-space-4) var(--chat-space-5) var(--chat-space-5); }
   .message { max-width: 100%; }
-  .work summary { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 2px 8px 2px 4px; margin-left: -4px; border-radius: 6px; color: var(--planeai-text-muted); font-size: var(--chat-size-sm); cursor: pointer; list-style: none; }
+  .work summary { display: inline-flex; align-items: center; gap: calc(6 * var(--chat-unit)); max-width: 100%; padding: calc(2 * var(--chat-unit)) calc(8 * var(--chat-unit)) calc(2 * var(--chat-unit)) calc(4 * var(--chat-unit)); margin-left: calc(-4 * var(--chat-unit)); border-radius: calc(6 * var(--chat-unit)); color: var(--planeai-text-muted); font-size: var(--chat-size-sm); cursor: pointer; list-style: none; }
   .work summary:hover { background: var(--planeai-accent-subtle); color: var(--planeai-text); }
   .work summary::-webkit-details-marker { display: none; }
   .work summary :global(.icon) { transition: transform 120ms; }
   .work[open] summary :global(.icon) { transform: rotate(90deg); }
   .steps { overflow: hidden; color: var(--planeai-text-subtle); text-overflow: ellipsis; white-space: nowrap; }
-  .folded { display: flex; flex-direction: column; gap: var(--planeai-space-3); margin: var(--planeai-space-2) 0 0 5px; padding-left: var(--planeai-space-4); border-left: 1px solid var(--planeai-border-strong); }
+  .folded { display: flex; flex-direction: column; gap: var(--chat-space-3); margin: var(--chat-space-2) 0 0 calc(5 * var(--chat-unit)); padding-left: var(--chat-space-4); border-left: 1px solid var(--planeai-border-strong); }
   .turn-summary { align-self: flex-end; color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); font-variant-numeric: tabular-nums; }
   .failed, .error { color: var(--planeai-danger); }
   .turn-summary.failed { align-self: stretch; }
   .working { color: var(--planeai-text-subtle); font-size: var(--chat-size-code); }
-  .divider { display: flex; align-items: center; gap: var(--planeai-space-3); color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
+  .divider { display: flex; align-items: center; gap: var(--chat-space-3); color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
   .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--planeai-border-strong); }
   .notice { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .ellipsis::after { content: "…"; animation: blink 1.4s steps(4, end) infinite; }
-  .dock { padding: var(--planeai-space-3) var(--planeai-space-5) var(--planeai-space-4); border-top: 1px solid var(--planeai-border); }
-  .composer, .handed-off { position: relative; border: 1px solid var(--planeai-border-strong); border-radius: 12px; background: var(--planeai-surface); }
+  .dock { padding: var(--chat-space-3) var(--chat-space-5) var(--chat-space-4); border-top: 1px solid var(--planeai-border); }
+  .composer, .handed-off { position: relative; border: 1px solid var(--planeai-border-strong); border-radius: calc(12 * var(--chat-unit)); background: var(--planeai-surface); }
   .composer:focus-within { border-color: color-mix(in srgb, var(--planeai-text) 32%, transparent); }
-  textarea { display: block; width: 100%; min-height: 44px; max-height: 240px; padding: var(--planeai-space-3) var(--planeai-space-3) var(--planeai-space-1); border: 0; background: transparent; resize: none; font-size: var(--chat-size-body); }
+  textarea { display: block; width: 100%; min-height: calc(44 * var(--chat-unit)); max-height: calc(240 * var(--chat-unit)); padding: var(--chat-space-3) var(--chat-space-3) var(--chat-space-1); border: 0; background: transparent; resize: none; font-size: var(--chat-size-body); }
   textarea:focus-visible { outline: none; }
-  .composer :global(.commands) { right: 0; left: 0; bottom: calc(100% + var(--planeai-space-2)); }
-  .bar { display: flex; align-items: center; gap: var(--planeai-space-1); min-width: 0; padding: var(--planeai-space-1) var(--planeai-space-2) var(--planeai-space-2); }
-  .round { display: grid; flex: none; place-items: center; width: 28px; height: 28px; min-height: 0; padding: 0; border-radius: 50%; }
+  .composer :global(.commands) { right: 0; left: 0; bottom: calc(100% + var(--chat-space-2)); }
+  /* In a narrow pane at a large size the right-hand controls wrap rather than cut the model name. */
+  .bar { display: flex; flex-wrap: wrap; row-gap: var(--chat-space-1); align-items: center; gap: var(--chat-space-1); min-width: 0; padding: var(--chat-space-1) var(--chat-space-2) var(--chat-space-2); }
+  .round { display: grid; flex: none; place-items: center; width: calc(28 * var(--chat-unit)); height: calc(28 * var(--chat-unit)); min-height: 0; padding: 0; border-radius: 50%; }
   .round.primary:disabled { opacity: 0.3; }
-  .handed-off { display: flex; align-items: center; gap: var(--planeai-space-3); padding: var(--planeai-space-3) var(--planeai-space-4); }
+  .handed-off { display: flex; align-items: center; gap: var(--chat-space-3); padding: var(--chat-space-3) var(--chat-space-4); }
   .handed-off p { flex: 1; color: var(--planeai-text-muted); }
   button.primary { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
   @keyframes blink { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }

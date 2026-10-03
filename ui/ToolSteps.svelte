@@ -61,24 +61,24 @@
 </ul>
 
 <style>
-  .steps { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 0; padding: 0; list-style: none; }
-  .step { display: flex; align-items: center; gap: var(--planeai-space-2); width: calc(100% + 16px); min-height: 28px; margin-left: -8px; padding: 3px 8px; border: 0; border-radius: 6px; background: none; color: var(--planeai-text-muted); font: inherit; font-size: var(--chat-size-sm); text-align: left; }
+  .steps { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(2 * var(--chat-unit)); margin: 0; padding: 0; list-style: none; }
+  .step { display: flex; align-items: center; gap: var(--chat-space-2); width: calc(100% + calc(16 * var(--chat-unit))); min-height: calc(28 * var(--chat-unit)); margin-left: calc(-8 * var(--chat-unit)); padding: calc(3 * var(--chat-unit)) calc(8 * var(--chat-unit)); border: 0; border-radius: calc(6 * var(--chat-unit)); background: none; color: var(--planeai-text-muted); font: inherit; font-size: var(--chat-size-sm); text-align: left; }
   .step:hover:not(:disabled) { background: var(--planeai-accent-subtle); color: var(--planeai-text); }
-  .icon { display: grid; place-items: center; flex: none; width: 16px; color: var(--planeai-text-subtle); }
+  .icon { display: grid; place-items: center; flex: none; width: calc(16 * var(--chat-unit)); color: var(--planeai-text-subtle); }
   [data-state="failed"] .icon { color: var(--planeai-danger); }
   .sentence { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   strong { color: var(--planeai-text); font-weight: 600; }
-  code { margin-left: 2px; padding: 1px 5px; border-radius: 4px; background: var(--planeai-surface-raised); color: var(--planeai-text); font-family: var(--chat-code-font); font-size: var(--chat-size-xs); }
-  code.quiet { margin-left: 6px; padding: 0; background: none; color: var(--planeai-text-subtle); }
+  code { margin-left: calc(2 * var(--chat-unit)); padding: 1px calc(5 * var(--chat-unit)); border-radius: calc(4 * var(--chat-unit)); background: var(--planeai-surface-raised); color: var(--planeai-text); font-family: var(--chat-code-font); font-size: var(--chat-size-xs); }
+  code.quiet { margin-left: calc(6 * var(--chat-unit)); padding: 0; background: none; color: var(--planeai-text-subtle); }
   .dim { color: var(--planeai-text-subtle); }
-  .meta { display: flex; flex: none; gap: 6px; color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); font-variant-numeric: tabular-nums; }
+  .meta { display: flex; flex: none; gap: calc(6 * var(--chat-unit)); color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); font-variant-numeric: tabular-nums; }
   .added { color: var(--planeai-success); }
   .removed, .failed { color: var(--planeai-danger); }
   .chevron { flex: none; color: var(--planeai-text-subtle); opacity: 0; transition: transform 120ms, opacity 120ms; }
   .step:hover .chevron, .step:focus-visible .chevron, [aria-expanded="true"] .chevron { opacity: 1; }
   [aria-expanded="true"] .chevron { transform: rotate(90deg); }
   /* Lines up with the sentence, past the icon. */
-  .preview { margin: 2px 0 8px 24px; }
+  .preview { margin: calc(2 * var(--chat-unit)) 0 calc(8 * var(--chat-unit)) calc(24 * var(--chat-unit)); }
   .answer { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; color: var(--planeai-text-muted); font-size: var(--chat-size-sm); white-space: pre-line; }
-  .nested { margin: 2px 0 8px 7px; padding-left: 16px; border-left: 1px solid var(--planeai-border-strong); }
+  .nested { margin: calc(2 * var(--chat-unit)) 0 calc(8 * var(--chat-unit)) calc(7 * var(--chat-unit)); padding-left: calc(16 * var(--chat-unit)); border-left: 1px solid var(--planeai-border-strong); }
 </style>

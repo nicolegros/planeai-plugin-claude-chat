@@ -16,9 +16,9 @@
 </div>
 
 <style>
-  .output-tail { padding-left: var(--planeai-space-3); border-left: 2px solid var(--planeai-border-strong); }
+  .output-tail { padding-left: var(--chat-space-3); border-left: 2px solid var(--planeai-border-strong); }
   .output-tail.failed { border-left-color: var(--planeai-danger); }
-  pre { margin: 0; max-height: 320px; overflow: auto; color: var(--planeai-text-muted); font-family: var(--chat-code-font); font-size: var(--chat-size-xs); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-  .earlier { display: block; min-height: 0; padding: 0 0 2px; border: 0; background: none; color: var(--planeai-text-subtle); font-size: calc(var(--chat-size-xs) - 0.5px); }
+  pre { margin: 0; max-height: calc(320 * var(--chat-unit)); overflow: auto; color: var(--planeai-text-muted); font-family: var(--chat-code-font); font-size: var(--chat-size-xs); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+  .earlier { display: block; min-height: 0; padding: 0 0 calc(2 * var(--chat-unit)); border: 0; background: none; color: var(--planeai-text-subtle); font-size: calc(var(--chat-size-xs) - 0.5px); }
   .earlier:hover:not(:disabled) { background: none; color: var(--planeai-text); }
 </style>

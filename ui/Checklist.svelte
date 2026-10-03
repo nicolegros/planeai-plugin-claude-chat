@@ -9,7 +9,7 @@
   {#each todos as todo, index (index)}
     <li data-status={todo.status}>
       <span class="box" role="img" aria-label={LABELS[todo.status]}>
-        {#if todo.status === "completed"}<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>{/if}
+        {#if todo.status === "completed"}<svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>{/if}
       </span>
       <span class="text">{todo.content}</span>
     </li>
@@ -17,9 +17,10 @@
 </ul>
 
 <style>
-  .checklist { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: var(--chat-size-sm); }
-  li { display: flex; align-items: flex-start; gap: var(--planeai-space-2); line-height: var(--chat-line); }
-  .box { display: grid; place-items: center; flex: none; width: 14px; height: 14px; margin-top: calc((var(--chat-line) - 14px) / 2); border: 1.5px solid var(--planeai-border-strong); border-radius: 4px; }
+  .checklist { display: grid; gap: calc(4 * var(--chat-unit)); margin: 0; padding: 0; list-style: none; font-size: var(--chat-size-sm); }
+  li { display: flex; align-items: flex-start; gap: var(--chat-space-2); line-height: var(--chat-line); }
+  .box { display: grid; place-items: center; flex: none; width: calc(14 * var(--chat-unit)); height: calc(14 * var(--chat-unit)); margin-top: calc((var(--chat-line) - calc(14 * var(--chat-unit))) / 2); border: 1.5px solid var(--planeai-border-strong); border-radius: calc(4 * var(--chat-unit)); }
+  .check { width: calc(10 * var(--chat-unit)); height: calc(10 * var(--chat-unit)); }
   [data-status="completed"] .box { border-color: var(--planeai-success); background: var(--planeai-success); color: var(--planeai-main); }
   [data-status="completed"] .text { color: var(--planeai-text-subtle); text-decoration: line-through; }
   [data-status="in_progress"] .box { border-color: var(--planeai-text); }

@@ -29,6 +29,11 @@ describe("appearance", () => {
     expect([custom("--chat-font"), custom("--chat-code-font"), custom("--chat-size")]).toEqual(['"Inter", "Helvetica Neue", serif, var(--planeai-font-sans)', '"Fira Code", var(--planeai-font-mono)', "16px"]);
   });
 
+  it("scales spacing with the base size", () => {
+    expect(style({})("--chat-scale")).toBe("1");
+    expect(style({ font_size: 26 })("--chat-scale")).toBe("2");
+  });
+
   it("quotes each font name, so no name can spill into the other variables", () => {
     const odd = style({ font_family: "Fira (Code", code_font_family: "Inter /* x", font_size: 18 });
     expect(odd("--chat-font")).toBe('"Fira (Code", var(--planeai-font-sans)');

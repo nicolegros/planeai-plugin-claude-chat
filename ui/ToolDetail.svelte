@@ -23,8 +23,8 @@
 </div>
 
 <style>
-  .detail { display: grid; gap: var(--planeai-space-2); min-width: 0; }
-  .block { margin: 0; max-height: 280px; overflow: auto; padding: var(--planeai-space-2) var(--planeai-space-3); border-radius: calc(var(--planeai-radius) - 2px); background: var(--planeai-canvas); font-family: var(--chat-code-font); font-size: var(--chat-size-sm); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  .detail { display: grid; gap: var(--chat-space-2); min-width: 0; }
+  .block { margin: 0; max-height: calc(280 * var(--chat-unit)); overflow: auto; padding: var(--chat-space-2) var(--chat-space-3); border-radius: calc(var(--chat-radius) - calc(2 * var(--chat-unit))); background: var(--planeai-canvas); font-family: var(--chat-code-font); font-size: var(--chat-size-sm); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
   .prompt { color: var(--planeai-text-subtle); user-select: none; }
   .output { color: var(--planeai-text-muted); }
   .caption { color: var(--planeai-text-muted); font-size: var(--chat-size-sm); }

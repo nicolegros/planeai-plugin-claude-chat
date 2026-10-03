@@ -15,16 +15,16 @@
 </div>
 
 <style>
-  .diff-preview { overflow: hidden; border: 1px solid var(--planeai-border); border-radius: calc(var(--planeai-radius) - 2px); background: var(--planeai-surface); }
-  pre { margin: 0; overflow-x: auto; padding: 4px 0; font-family: var(--chat-code-font); font-size: var(--chat-size-xs); line-height: 1.55; }
+  .diff-preview { overflow: hidden; border: 1px solid var(--planeai-border); border-radius: calc(var(--chat-radius) - calc(2 * var(--chat-unit))); background: var(--planeai-surface); }
+  pre { margin: 0; overflow-x: auto; padding: calc(4 * var(--chat-unit)) 0; font-family: var(--chat-code-font); font-size: var(--chat-size-xs); line-height: 1.55; }
   /* The last shown lines fade into the "Show all" button. */
   .capped pre { mask-image: linear-gradient(to bottom, black 70%, transparent); }
-  .line { display: block; padding: 0 var(--planeai-space-3) 0 var(--planeai-space-2); white-space: pre; }
-  .marker { display: inline-block; width: 14px; color: var(--planeai-text-subtle); user-select: none; }
+  .line { display: block; padding: 0 var(--chat-space-3) 0 var(--chat-space-2); white-space: pre; }
+  .marker { display: inline-block; width: calc(14 * var(--chat-unit)); color: var(--planeai-text-subtle); user-select: none; }
   .add { background: color-mix(in srgb, var(--planeai-success) 13%, transparent); }
   .add .marker { color: var(--planeai-success); }
   .remove { background: color-mix(in srgb, var(--planeai-danger) 13%, transparent); }
   .remove .marker { color: var(--planeai-danger); }
-  .gap { display: block; padding: 1px var(--planeai-space-3); background: var(--planeai-canvas); color: var(--planeai-text-subtle); font-family: var(--chat-font); font-size: calc(var(--chat-size-xs) - 0.5px); }
-  .more { display: block; width: 100%; min-height: 26px; padding: 2px; border: 0; border-top: 1px solid var(--planeai-border); border-radius: 0; background: var(--planeai-surface); color: var(--planeai-text-muted); font-size: var(--chat-size-xs); }
+  .gap { display: block; padding: 1px var(--chat-space-3); background: var(--planeai-canvas); color: var(--planeai-text-subtle); font-family: var(--chat-font); font-size: calc(var(--chat-size-xs) - 0.5px); }
+  .more { display: block; width: 100%; min-height: calc(26 * var(--chat-unit)); padding: calc(2 * var(--chat-unit)); border: 0; border-top: 1px solid var(--planeai-border); border-radius: 0; background: var(--planeai-surface); color: var(--planeai-text-muted); font-size: var(--chat-size-xs); }
 </style>

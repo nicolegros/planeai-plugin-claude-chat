@@ -23,7 +23,7 @@
   };
 </script>
 
-<svg class="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<svg class="icon" style:width="calc({size} * var(--chat-unit, 1px))" style:height="calc({size} * var(--chat-unit, 1px))" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
   {#each PATHS[name] as d (d)}<path {d} />{/each}
 </svg>
 

@@ -36,11 +36,11 @@
 </section>
 
 <style>
-  .permission { display: grid; gap: var(--planeai-space-2); padding: var(--planeai-space-3); border: 1px solid var(--planeai-warning); border-radius: var(--planeai-radius); background: color-mix(in srgb, var(--planeai-warning) 6%, var(--planeai-surface)); }
+  .permission { display: grid; gap: var(--chat-space-2); padding: var(--chat-space-3); border: 1px solid var(--planeai-warning); border-radius: var(--chat-radius); background: color-mix(in srgb, var(--planeai-warning) 6%, var(--planeai-surface)); }
   .permission.resolved { border-color: var(--planeai-border); background: var(--planeai-surface); }
   .title { font-weight: 600; }
-  .actions, .deny { display: flex; flex-wrap: wrap; gap: var(--planeai-space-2); }
-  .deny input { flex: 1; min-width: 200px; }
+  .actions, .deny { display: flex; flex-wrap: wrap; gap: var(--chat-space-2); }
+  .deny input { flex: 1; min-width: calc(200 * var(--chat-unit)); }
   .resolution { color: var(--planeai-text-subtle); font-size: var(--chat-size-sm); }
   button.primary { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
   button.quiet { border-color: transparent; background: transparent; }

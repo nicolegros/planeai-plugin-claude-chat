@@ -20,9 +20,9 @@
 </span>{/each}</pre>
 
 <style>
-  .diff { margin: 0; max-height: 320px; overflow: auto; font-family: var(--chat-code-font); font-size: var(--chat-size-sm); line-height: 1.5; border: 1px solid var(--planeai-border); border-radius: var(--planeai-radius); background: var(--planeai-surface); }
-  .line { display: block; padding: 0 var(--planeai-space-3) 0 var(--planeai-space-2); white-space: pre; }
-  .marker { display: inline-block; width: 14px; color: var(--planeai-text-subtle); user-select: none; }
+  .diff { margin: 0; max-height: calc(320 * var(--chat-unit)); overflow: auto; font-family: var(--chat-code-font); font-size: var(--chat-size-sm); line-height: 1.5; border: 1px solid var(--planeai-border); border-radius: var(--chat-radius); background: var(--planeai-surface); }
+  .line { display: block; padding: 0 var(--chat-space-3) 0 var(--chat-space-2); white-space: pre; }
+  .marker { display: inline-block; width: calc(14 * var(--chat-unit)); color: var(--planeai-text-subtle); user-select: none; }
   .add { background: color-mix(in srgb, var(--planeai-success) 14%, transparent); }
   .remove { background: color-mix(in srgb, var(--planeai-danger) 14%, transparent); }
 </style>

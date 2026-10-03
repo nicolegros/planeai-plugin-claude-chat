@@ -419,6 +419,7 @@ describe("Chat", () => {
     expect(chat.style.getPropertyValue("--chat-font")).toBe('"Inter", var(--planeai-font-sans)');
     expect(chat.style.getPropertyValue("--chat-code-font")).toBe("var(--planeai-font-mono)");
     expect(chat.style.getPropertyValue("--chat-size")).toBe("16px");
+    expect(chat.style.getPropertyValue("--chat-scale")).toBe(String(16 / 13));
     harness.push(1, { type: "appearance", appearance: { code_font_family: "Fira Code" } });
     await settle();
     expect(chat.style.getPropertyValue("--chat-font")).toBe("var(--planeai-font-sans)");
