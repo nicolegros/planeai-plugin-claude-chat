@@ -1,10 +1,11 @@
 <script lang="ts">
   import Diff from "./Diff.svelte";
+  import { plural } from "./format";
   import type { ToolInput } from "./host";
+  import { editsOf } from "./preview";
 
   /** `inline`: inside a step, whose line already names the file and describes the command. */
   let { input, summary, output = "", inline = false }: { input?: ToolInput; summary: string; output?: string; inline?: boolean } = $props();
-  const written = $derived(input?.kind === "write" ? [{ old_string: "", new_string: input.content }] : []);
 </script>
 
 {#if input?.kind === "bash"}
@@ -13,10 +14,10 @@
 {:else if input?.kind === "edit"}
   {#if !inline}<p class="caption">{input.file_path}</p>{/if}
   <Diff edits={input.edits} />
-  {#if input.hidden_edits}<p class="caption">{input.hidden_edits} more {input.hidden_edits === 1 ? "edit" : "edits"} not shown</p>{/if}
+  {#if input.hidden_edits}<p class="caption">{plural(input.hidden_edits, "more edit", "more edits")} not shown</p>{/if}
 {:else if input?.kind === "write"}
   {#if !inline}<p class="caption">{input.file_path}</p>{/if}
-  <Diff edits={written} />
+  <Diff edits={editsOf(input)} />
 {:else}
   <pre class="command">{output || summary}</pre>
 {/if}

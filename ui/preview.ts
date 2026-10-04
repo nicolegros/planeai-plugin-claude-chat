@@ -1,4 +1,5 @@
 import { diffLines } from "diff";
+import type { ToolInput } from "./host";
 
 export interface Edit {
   old_string: string;
@@ -6,6 +7,17 @@ export interface Edit {
 }
 
 export type DiffRow = { kind: "add" | "remove" | "same"; text: string } | { kind: "gap"; count: number };
+
+const writes = new WeakMap<ToolInput, Edit[]>();
+
+/** The edits a change makes; a write is one edit from nothing, the same list each time so its diff is cached. */
+export function editsOf(input?: ToolInput): Edit[] {
+  if (input?.kind === "edit") return input.edits;
+  if (input?.kind !== "write") return [];
+  let edits = writes.get(input);
+  if (!edits) writes.set(input, (edits = [{ old_string: "", new_string: input.content }]));
+  return edits;
+}
 
 /** Each edit list is diffed once, whether for its preview, its full view or its stats. */
 const lineDiffs = new WeakMap<Edit[], DiffRow[][]>();

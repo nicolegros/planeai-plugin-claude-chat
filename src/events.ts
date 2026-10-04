@@ -138,8 +138,10 @@ export interface CommandOption {
  * everything else is part of the transcript.
  */
 export type ChatEvent =
-  /** `queued`: sent while a turn ran, so Claude Code takes it into that turn. */
-  | { type: "user"; text: string; queued?: boolean }
+  /** `queued`: sent while a turn ran; Claude Code folds it into that turn unless a `turn_start` names its `id`. */
+  | { type: "user"; text: string; queued?: boolean; id?: string }
+  /** Claude started a turn for the queued follow-up `user_id`, rather than folding it into the turn that was running. */
+  | { type: "turn_start"; user_id: string }
   | { type: "delta"; text: string }
   | { type: "assistant"; text: string }
   | { type: "tool"; id: string; name: string; summary: string; input?: ToolInput }
@@ -173,7 +175,7 @@ export function clip(text: string, limit = MAX_TEXT_CHARS): string {
   return text.length <= limit ? text : `${text.slice(0, limit)}\n… [${text.length - limit} more characters]`;
 }
 
-const SUMMARY_FIELDS = ["command", "file_path", "path", "pattern", "url", "query", "description", "skill"];
+const SUMMARY_FIELDS = ["command", "file_path", "pattern", "path", "url", "query", "description", "skill"];
 
 /** One line describing what a tool call does, for compact rendering. */
 export function summarizeInput(input: unknown): string {
@@ -273,13 +275,31 @@ function toolResultText(content: unknown): string {
 
 const MAX_RESULT_CHARS = 6_000;
 
-/** Output keeps its start and its end, where a command's outcome usually is. */
+/** Lines of output, not counting trailing newlines. */
+export function lineCount(text: string): number {
+  const trimmed = text.replace(/\n+$/, "");
+  return trimmed ? trimmed.split("\n").length : 0;
+}
+
+/** Moves a cut off the middle of a surrogate pair. */
+function safeCut(text: string, at: number): number {
+  const code = text.charCodeAt(at - 1);
+  return code >= 0xd800 && code <= 0xdbff ? at - 1 : at;
+}
+
+/** Output keeps its start and its end, where a command's outcome usually is, each cut on a line boundary when it can be. */
 function toolResult(toolUseId: string, isError: boolean, output: string): ChatEvent {
   if (output.length <= MAX_RESULT_CHARS) return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary: output };
-  const head = output.slice(0, MAX_RESULT_CHARS / 3);
-  const tail = output.slice(output.length - (MAX_RESULT_CHARS * 2) / 3);
-  const summary = `${head}\n… [${output.length - head.length - tail.length} more characters]\n${tail}`;
-  return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary, lines: output.replace(/\n$/, "").split("\n").length };
+  const headCut = MAX_RESULT_CHARS / 3;
+  const tailCut = output.length - (MAX_RESULT_CHARS * 2) / 3;
+  const lastHeadNewline = output.lastIndexOf("\n", headCut);
+  const headEnd = lastHeadNewline > 0 ? lastHeadNewline : safeCut(output, headCut);
+  const firstTailNewline = output.indexOf("\n", tailCut);
+  const tailStart = firstTailNewline >= 0 && firstTailNewline < output.length - 1 ? firstTailNewline + 1 : safeCut(output, tailCut);
+  const head = output.slice(0, headEnd);
+  const tail = output.slice(tailStart);
+  const summary = `${head}\n… [${tailStart - headEnd} more characters]\n${tail}`;
+  return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary, lines: lineCount(output) };
 }
 
 function usage(raw: unknown): TokenUsage | undefined {

@@ -5,7 +5,8 @@
   import OutputTail from "./OutputTail.svelte";
   import Spinner from "./Spinner.svelte";
   import ToolDetail from "./ToolDetail.svelte";
-  import { previewOf, viewTool, type ToolEntry } from "./tools";
+  import { previewOf, viewTool } from "./tools";
+  import type { ToolEntry } from "./transcript.svelte";
 
   let { tools, root }: { tools: ToolEntry[]; root?: string } = $props();
   const uid = $props.id();
@@ -26,7 +27,7 @@
           {:else}
             {verb}
             {#if view.style === "code"}<code>{view.target}</code>
-            {:else if view.style === "file"}<strong>{view.target}</strong>
+            {:else if view.style === "name"}<strong>{view.target}</strong>
             {:else}{view.target}{/if}
             {#if view.folder}<span class="dim"> in {view.folder}</span>{/if}
             {#if view.note}<span class="dim"> · {view.note}</span>{/if}
@@ -50,7 +51,7 @@
         {#if preview?.kind === "diff"}
           <div class="preview"><Diff edits={preview.edits} preview /></div>
         {:else if preview?.kind === "output"}
-          <div class="preview"><OutputTail output={preview.output} failed={preview.failed} /></div>
+          <div class="preview"><OutputTail output={preview.output} failed={preview.failed} total={preview.lines} /></div>
         {:else if preview?.kind === "answer"}
           <p class="preview answer">{preview.text}</p>
         {/if}

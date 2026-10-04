@@ -249,7 +249,22 @@ describe("ClaudeSession", () => {
     await chat.send("second");
     await flush();
     const users = events.map(({ payload }) => payload).filter((payload) => payload.type === "user");
-    expect(users).toEqual([{ type: "user", text: "first" }, { type: "user", text: "second", queued: true }]);
+    expect(users).toEqual([{ type: "user", text: "first" }, { type: "user", text: "second", queued: true, id: expect.any(String) }]);
+  });
+
+  it("marks where Claude starts a turn of its own for a queued follow-up", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("second");
+    await flush();
+    const followUp = events.map(({ payload }) => payload).find((payload) => payload.type === "user" && payload.queued);
+    const id = followUp?.type === "user" ? followUp.id : undefined;
+    expect(fake.queries[0].sent.at(-1)?.uuid).toBe(id);
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    fake.queries[0].emit({ ...assistant, user_message_uuid: id } as never);
+    fake.queries[0].emit({ ...assistant, user_message_uuid: id } as never);
+    await flush();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([{ type: "turn_start", user_id: id }]);
   });
 
   it("merges plan limits with what other sessions stored since", async () => {

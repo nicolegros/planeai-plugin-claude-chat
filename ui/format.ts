@@ -1,5 +1,9 @@
 import type { Compaction, TokenUsage } from "./host";
 
+export function plural(count: number, word: string, words = `${word}s`): string {
+  return `${count} ${count === 1 ? word : words}`;
+}
+
 export function duration(ms: number): string {
   if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
   const minutes = Math.floor(ms / 60_000);

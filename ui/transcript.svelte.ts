@@ -13,7 +13,8 @@ export interface PermissionEntry {
 }
 
 export type Entry =
-  | { kind: "user"; seq: number; text: string; queued?: boolean }
+  | { kind: "user"; seq: number; text: string; queued?: boolean; id?: string }
+  | { kind: "turn_start"; seq: number; user_id: string }
   | { kind: "assistant"; seq: number; text: string }
   | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string; lines?: number } | null }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
@@ -23,6 +24,10 @@ export type Entry =
   | ({ kind: "compacted"; seq: number } & Compaction)
   | { kind: "cleared"; seq: number }
   | { kind: "notice"; seq: number; text: string };
+
+export type ToolEntry = Extract<Entry, { kind: "tool" }>;
+export type UserEntry = Extract<Entry, { kind: "user" }>;
+export type ResultEntry = Extract<Entry, { kind: "result" }>;
 
 const EMPTY_META: SessionMeta = { model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false, cwd: null, limits: null };
 
@@ -57,7 +62,7 @@ export class Transcript {
         this.status = event.status;
         return;
       case "user":
-        this.entries.push({ kind: "user", seq, text: event.text, ...(event.queued ? { queued: true } : {}) });
+        this.entries.push({ kind: "user", seq, text: event.text, ...(event.queued ? { queued: true } : {}), ...(event.id ? { id: event.id } : {}) });
         return;
       case "assistant":
         this.live = "";
@@ -104,6 +109,9 @@ export class Transcript {
         return;
       case "notice":
         this.entries.push({ kind: "notice", seq, text: event.text });
+        return;
+      case "turn_start":
+        this.entries.push({ kind: "turn_start", seq, user_id: event.user_id });
         return;
       case "commands_changed":
       case "appearance":

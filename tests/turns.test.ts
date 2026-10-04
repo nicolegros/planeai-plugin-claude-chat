@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Entry } from "../ui/transcript.svelte";
-import type { ToolEntry } from "../ui/tools";
+import type { ToolEntry } from "../ui/transcript.svelte";
 import { turns } from "../ui/turns";
 
 let seq = 0;
@@ -42,6 +42,16 @@ describe("turns", () => {
     expect(turn.folded).toEqual([expect.objectContaining({ kind: "tools", tools: [expect.objectContaining({ name: "Bash" })] })]);
     expect(turn.shown.map((block) => (block.kind === "tools" ? "tools" : block.entry.kind))).toEqual(["user", "tools", "assistant"]);
     expect(turn.result?.duration_ms).toBe(3_000);
+  });
+
+  it("moves a queued follow-up to a turn of its own once Claude starts one for it", () => {
+    const followUp: Entry = { kind: "user", seq: ++seq, text: "and the docs", queued: true, id: "u2" };
+    const entries = [user("go"), tool("Bash", "ls"), followUp, assistant("Done."), result(2_000), { kind: "turn_start", seq: ++seq, user_id: "u2" } as Entry, tool("Read", "docs.md"), assistant("Docs too."), result(1_000)];
+    const all = turns(entries);
+    expect(all.map((turn) => [turn.user?.text, turn.result?.duration_ms])).toEqual([["go", 2_000], ["and the docs", 1_000]]);
+    expect(all[0].shown.some((block) => block.kind === "entry" && block.entry.kind === "user")).toBe(false);
+    expect(all[1].foldedTools.map((entry) => entry.name)).toEqual(["Read"]);
+    expect(all[0].foldedTools.map((entry) => entry.name)).toEqual(["Bash"]);
   });
 
   it("starts a new turn for a queued follow-up that arrives once the turn has ended", () => {

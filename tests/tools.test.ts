@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { describeSteps, previewOf, viewTool, type ToolEntry } from "../ui/tools";
+import { describeSteps, previewOf, viewTool } from "../ui/tools";
+import type { ToolEntry } from "../ui/transcript.svelte";
 
 let seq = 0;
 const tool = (name: string, summary: string, extra: Partial<ToolEntry> = {}): ToolEntry => ({ kind: "tool", seq: ++seq, id: `t${seq}`, name, summary, result: { is_error: false, summary: "" }, ...extra });

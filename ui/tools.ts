@@ -1,9 +1,9 @@
-import type { Todo, ToolInput } from "./host";
+import { lineCount } from "../src/events";
+import { plural } from "./format";
+import type { Todo } from "./host";
 import type { IconName } from "./icons";
-import { diffStats, type Edit } from "./preview";
-import type { Entry } from "./transcript.svelte";
-
-export type ToolEntry = Extract<Entry, { kind: "tool" }>;
+import { diffStats, editsOf, type Edit } from "./preview";
+import type { ToolEntry } from "./transcript.svelte";
 
 /** How a tool call reads as one line: "Edited Chat.svelte in ui +3 −1". */
 export interface ToolView {
@@ -11,8 +11,8 @@ export interface ToolView {
   /** While running, then once done. */
   verbs: [string, string];
   target: string;
-  /** Shown as inline code, a file name, or plain text. */
-  style: "code" | "file" | "text";
+  /** Shown as inline code, an emphasized name (a file, a skill), or plain text. */
+  style: "code" | "name" | "text";
   /** Where the target lives, shown after it. */
   folder?: string;
   /** Leads the line instead of the verb, such as a Bash command's description. */
@@ -28,7 +28,7 @@ export interface ToolView {
 }
 
 /** What is worth reading without expanding a step. */
-export type Preview = { kind: "diff"; edits: Edit[] } | { kind: "output"; output: string; failed: boolean } | { kind: "answer"; text: string };
+export type Preview = { kind: "diff"; edits: Edit[] } | { kind: "output"; output: string; failed: boolean; lines?: number } | { kind: "answer"; text: string };
 
 interface Facts {
   root?: string;
@@ -44,14 +44,6 @@ interface ToolKind {
   preview?(tool: ToolEntry): Preview | null;
 }
 
-function plural(count: number, word: string, words = `${word}s`): string {
-  return `${count} ${count === 1 ? word : words}`;
-}
-
-function lineCount(text: string): number {
-  return text ? text.replace(/\n$/, "").split("\n").length : 0;
-}
-
 function relative(path: string, root?: string): string {
   return root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
 }
@@ -63,7 +55,7 @@ function splitPath(path: string, root?: string): { target: string; folder?: stri
   return slash < 0 ? { target: local } : { target: local.slice(slash + 1), folder: local.slice(0, slash) || "/" };
 }
 
-/** Chats stored before Skill, TodoWrite, Grep and Glob had their own inputs only kept the JSON summary. */
+/** Chats stored before Skill and TodoWrite had their own inputs only kept the JSON summary. */
 function storedJson(summary: string): Record<string, unknown> {
   try {
     const value = JSON.parse(summary);
@@ -71,12 +63,6 @@ function storedJson(summary: string): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-function editsOf(input?: ToolInput): Edit[] {
-  if (input?.kind === "edit") return input.edits;
-  if (input?.kind === "write") return [{ old_string: "", new_string: input.content }];
-  return [];
 }
 
 const diffPreview = (tool: ToolEntry): Preview | null => (tool.input?.kind === "edit" || tool.input?.kind === "write" ? { kind: "diff", edits: editsOf(tool.input) } : null);
@@ -93,7 +79,7 @@ function search(icon: IconName, verbs: [string, string], count: (facts: Facts) =
 
 const EDIT: ToolKind = {
   steps: ["edit", "edits"],
-  view: (tool, { root }) => ({ icon: "pencil", verbs: ["Editing", "Edited"], ...splitPath(tool.input?.kind === "edit" ? tool.input.file_path : tool.summary, root), style: "file", ...diffStats(editsOf(tool.input)) }),
+  view: (tool, { root }) => ({ icon: "pencil", verbs: ["Editing", "Edited"], ...splitPath(tool.input?.kind === "edit" ? tool.input.file_path : tool.summary, root), style: "name", ...diffStats(editsOf(tool.input)) }),
   preview: diffPreview,
 };
 
@@ -110,11 +96,11 @@ const TOOLS: Record<string, ToolKind> = {
       const input = tool.input?.kind === "bash" ? tool.input : null;
       return { icon: "terminal", verbs: ["Running", "Ran"], target: input?.command ?? tool.summary, style: "code", lead: input?.description, count: lines ? plural(lines, "line") : undefined };
     },
-    preview: (tool) => (tool.result?.summary.trim() ? { kind: "output", output: tool.result.summary.trim(), failed: tool.result.is_error } : null),
+    preview: (tool) => (tool.result?.summary.trim() ? { kind: "output", output: tool.result.summary.trim(), failed: tool.result.is_error, lines: tool.result.lines } : null),
   },
   Read: {
     steps: ["file read", "files read"],
-    view: (tool, { root, lines }) => ({ icon: "file", verbs: ["Reading", "Read"], ...splitPath(tool.summary, root), style: "file", count: lines ? plural(lines, "line") : undefined }),
+    view: (tool, { root, lines }) => ({ icon: "file", verbs: ["Reading", "Read"], ...splitPath(tool.summary, root), style: "name", count: lines ? plural(lines, "line") : undefined }),
   },
   Edit: EDIT,
   MultiEdit: EDIT,
@@ -124,7 +110,7 @@ const TOOLS: Record<string, ToolKind> = {
       icon: "file-plus",
       verbs: ["Writing", "Wrote"],
       ...splitPath(tool.input?.kind === "write" ? tool.input.file_path : tool.summary, root),
-      style: "file",
+      style: "name",
       added: tool.input?.kind === "write" ? lineCount(tool.input.content) : undefined,
     }),
     preview: diffPreview,
@@ -138,7 +124,7 @@ const TOOLS: Record<string, ToolKind> = {
     steps: ["skill", "skills"],
     view: (tool) => {
       const { skill, args } = tool.input?.kind === "skill" ? tool.input : (storedJson(tool.summary) as { skill?: unknown; args?: unknown });
-      return { icon: "sparkle", verbs: ["Using the skill", "Used the skill"], target: typeof skill === "string" ? skill : tool.summary, style: "file", note: typeof args === "string" && args ? args : undefined };
+      return { icon: "sparkle", verbs: ["Using the skill", "Used the skill"], target: typeof skill === "string" ? skill : tool.summary, style: "name", note: typeof args === "string" && args ? args : undefined };
     },
   },
   TodoWrite: {

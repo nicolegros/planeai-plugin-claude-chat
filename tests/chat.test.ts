@@ -207,7 +207,6 @@ describe("Chat", () => {
     expect(tip?.[0]).toBe("50k of 200k tokens of context used");
     expect(tip?.[1]).toMatch(/^5-hour limit: 61% used · resets (at|\w{3}) /);
     expect(tip).toHaveLength(2);
-    expect(document.querySelector("[aria-label='Open in terminal']")?.getAttribute("data-tip")).toBe("Continue in Claude Code's terminal");
     const modes = () => [...document.querySelectorAll("[role=group] [aria-pressed]")].map((mode) => [mode.textContent?.trim(), mode.getAttribute("aria-pressed")]);
     expect(modes()).toEqual([["Ask", "true"], ["Edits", "false"], ["Plan", "false"]]);
     button("Plan only").click();
@@ -235,14 +234,14 @@ describe("Chat", () => {
 
   it("opens the terminal and shows a read-only banner until the session comes back", async () => {
     const harness = await render();
-    button("Open in terminal").click();
+    button("Continue in Claude Code's terminal").click();
     expect(harness.value.host.session.handoff).toHaveBeenCalledOnce();
 
     harness.push(1, { type: "handoff", in_terminal: true });
     harness.push(2, { type: "meta", meta: { handed_off: true } });
     await settle();
     expect(document.querySelector("textarea")).toBeNull();
-    expect(() => button("Open in terminal")).toThrow();
+    expect(() => button("Continue in Claude Code's terminal")).toThrow();
     expect(document.body.textContent).toContain("Continued in the terminal");
     button("Return to chat").click();
     expect(harness.value.host.session.handback).toHaveBeenCalledOnce();
@@ -497,13 +496,22 @@ describe("Chat", () => {
     expect(document.querySelector(".answer")?.textContent).toBe("Two callers.");
   });
 
+  it("counts the lines a clipped output hid by the output's real length", async () => {
+    const harness = await render();
+    harness.push(1, { type: "tool", id: "t1", name: "Bash", summary: "make", input: { kind: "bash", command: "make" } });
+    harness.push(2, { type: "tool_result", tool_use_id: "t1", is_error: false, summary: "start\n… [90 more characters]\nx\ny\nz", lines: 500 });
+    await settle();
+    expect(document.querySelector(".output-tail .earlier")?.textContent).toBe("⋯ 497 earlier lines");
+    expect(document.querySelector(".tool .meta")?.textContent?.trim()).toBe("500 lines");
+  });
+
   it("caps a long diff preview until it is shown in full", async () => {
     const harness = await render();
     const content = Array.from({ length: 30 }, (_, line) => `line ${line}`).join("\n");
     harness.push(1, { type: "tool", id: "t1", name: "Write", summary: "a.md", input: { kind: "write", file_path: "a.md", content } });
     await settle();
     expect(document.querySelectorAll(".diff.preview .line")).toHaveLength(12);
-    button("Show all 30 lines").click();
+    button("Show 18 more lines").click();
     flushSync();
     expect(document.querySelectorAll(".diff.preview .line")).toHaveLength(30);
   });

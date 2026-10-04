@@ -25,62 +25,62 @@
 </script>
 
 <div class="settings">
-{#if meta.modes.length > 0}
-  <div class="modes" role="group" aria-label="Permission mode">
-    {#each meta.modes as mode (mode)}
-      <button
-        type="button"
-        aria-pressed={meta.permission_mode === mode}
-        aria-label={MODES[mode]?.label ?? mode}
-        data-tip={MODES[mode]?.label ?? mode}
-        data-mode={mode}
-        onclick={() => onMode(mode)}>{MODES[mode]?.short ?? mode}</button
-      >
-    {/each}
-  </div>
-{/if}
-<label class="model" data-tip="Model">
-  <Icon name="sparkle" size={12} />
-  <span class="model-label">{modelLabel(meta)}</span>
-  <select value={meta.model ?? DEFAULT_MODEL} onchange={(event) => onModel(event.currentTarget.value || null)} aria-label="Model">
-    <option value={DEFAULT_MODEL}>{meta.model === null && meta.active_model ? `Default (${meta.active_model})` : "Default"}</option>
-    {#if unlisted}
-      <option value={meta.model}>{meta.model}</option>
-    {/if}
-    {#each meta.models as model (model.value)}
-      <option value={model.value}>{model.label}</option>
-    {/each}
-  </select>
-</label>
+  {#if meta.modes.length > 0}
+    <div class="modes" role="group" aria-label="Permission mode">
+      {#each meta.modes as mode (mode)}
+        <button
+          type="button"
+          aria-pressed={meta.permission_mode === mode}
+          aria-label={MODES[mode]?.label ?? mode}
+          data-tip={MODES[mode]?.label ?? mode}
+          data-mode={mode}
+          onclick={() => onMode(mode)}>{MODES[mode]?.short ?? mode}</button
+        >
+      {/each}
+    </div>
+  {/if}
+  <label class="model" data-tip="Model">
+    <Icon name="sparkle" size={12} />
+    <span class="model-label">{modelLabel(meta)}</span>
+    <select value={meta.model ?? DEFAULT_MODEL} onchange={(event) => onModel(event.currentTarget.value || null)} aria-label="Model">
+      <option value={DEFAULT_MODEL}>{meta.model === null && meta.active_model ? `Default (${meta.active_model})` : "Default"}</option>
+      {#if unlisted}
+        <option value={meta.model}>{meta.model}</option>
+      {/if}
+      {#each meta.models as model (model.value)}
+        <option value={model.value}>{model.label}</option>
+      {/each}
+    </select>
+  </label>
 </div>
 <!-- One group, so in a narrow pane it wraps whole and stays on the right. -->
 <div class="status">
-{#if meta.context}
-  <!-- Focusable so keyboard and screen reader users reach the usage the tooltip shows. -->
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <span
-    class="context"
-    role="meter"
-    tabindex="0"
-    aria-label="Context usage"
-    aria-valuemin={0}
-    aria-valuemax={100}
-    aria-valuenow={percent}
-    aria-valuetext={usage}
-    data-tip={usage}
-    data-tip-end
-    onpointerenter={() => (now = new Date())}
-    onfocus={() => (now = new Date())}
-  >
-    <svg class="ring" viewBox="0 0 16 16" aria-hidden="true">
-      <circle cx="8" cy="8" r="6" fill="none" stroke="var(--planeai-border-strong)" stroke-width="2" />
-      <circle class="fill" class:high={percent >= 80} cx="8" cy="8" r="6" fill="none" stroke-width="2" stroke-linecap="round" stroke-dasharray="{(RING * Math.min(100, percent)) / 100} {RING}" transform="rotate(-90 8 8)" />
-    </svg>
-    <span class="context-label">{percent}%</span>
-  </span>
-{/if}
-<button type="button" class="icon-control quiet" onclick={onHandoff} data-tip="Continue in Claude Code's terminal" data-tip-end aria-label="Open in terminal"><Icon name="terminal" /></button>
-{@render actions()}
+  {#if meta.context}
+    <!-- Focusable so keyboard and screen reader users reach the usage the tooltip shows. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <span
+      class="context"
+      role="meter"
+      tabindex="0"
+      aria-label="Context usage"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percent}
+      aria-valuetext={usage}
+      data-tip={usage}
+      data-tip-end
+      onpointerenter={() => (now = new Date())}
+      onfocus={() => (now = new Date())}
+    >
+      <svg class="ring" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="6" fill="none" stroke="var(--planeai-border-strong)" stroke-width="2" />
+        <circle class="fill" class:high={percent >= 80} cx="8" cy="8" r="6" fill="none" stroke-width="2" stroke-linecap="round" stroke-dasharray="{(RING * Math.min(100, percent)) / 100} {RING}" transform="rotate(-90 8 8)" />
+      </svg>
+      <span class="context-label">{percent}%</span>
+    </span>
+  {/if}
+  <button type="button" class="icon-control quiet" onclick={onHandoff} data-tip="Continue in Claude Code's terminal" data-tip-end aria-label="Continue in Claude Code's terminal"><Icon name="terminal" /></button>
+  {@render actions()}
 </div>
 
 <style>

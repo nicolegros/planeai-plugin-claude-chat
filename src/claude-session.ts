@@ -1,4 +1,5 @@
 import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import { randomUUID } from "node:crypto";
 import type { Appearance } from "./appearance";
 import { SlashCommands } from "./commands";
 import { clip, isEphemeral, planLimits, replay, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
@@ -89,6 +90,8 @@ export class ClaudeSession {
   private conversationId: string;
   /** Messages compaction kept, which Claude replays after its boundary. */
   private preserved = new Set<string>();
+  /** Follow-ups sent while a turn ran, until Claude starts a turn of their own; one folded into the running turn never does. */
+  private queued = new Set<string>();
   private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
   /** Counts status changes, so a send can tell whether anything moved it while it waited. */
@@ -202,7 +205,10 @@ export class ClaudeSession {
       throw new Error("claude executable not found on PATH");
     }
     const before = this.status;
-    this.emit({ type: "user", text: clip(text), ...(before === "busy" || before === "needs_attention" ? { queued: true } : {}) });
+    const id = randomUUID();
+    const queued = before === "busy" || before === "needs_attention";
+    if (queued) this.queued.add(id);
+    this.emit({ type: "user", text: clip(text), ...(queued ? { queued, id } : {}) });
     this.setStatus("busy");
     const ours = this.statusChanges;
     // Puts back the status from before this send, unless a turn changed it meanwhile.
@@ -241,6 +247,7 @@ export class ClaudeSession {
       message: { role: "user", content: text },
       parent_tool_use_id: null,
       origin: { kind: "human" },
+      uuid: id as SDKUserMessage["uuid"],
     });
   }
 
@@ -451,6 +458,9 @@ export class ClaudeSession {
       }
     }
     if (message.type === "rate_limit_event") this.onRateLimit(message.rate_limit_info);
+    // Claude stamps the first reply of a turn with the message that started it.
+    const answering = (message as { user_message_uuid?: string }).user_message_uuid;
+    if (answering && this.queued.delete(answering)) this.emit({ type: "turn_start", user_id: answering });
     // /clear moves Claude to a new id within the turn; its result already carries it.
     if (message.type === "result") this.follow(message.session_id);
     for (const event of translate(message)) this.emit(event);

@@ -1,6 +1,6 @@
 <script lang="ts">
   import ToolInputView from "./ToolInputView.svelte";
-  import type { ToolEntry } from "./tools";
+  import type { ToolEntry } from "./transcript.svelte";
 
   let { tool }: { tool: ToolEntry } = $props();
 </script>

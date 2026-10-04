@@ -110,6 +110,14 @@ describe("translate", () => {
     expect(summary.length).toBeLessThan(6_100);
   });
 
+  it("cuts a long single-line output without splitting a character", () => {
+    const [toolUse] = fixture("bash-turn").filter((message) => message.type === "user");
+    const output = `${"a".repeat(1_999)}😀${"b".repeat(10_000)}`;
+    const long = { ...toolUse, message: { ...toolUse.message, content: [{ type: "tool_result", tool_use_id: "t1", content: output }] } } as typeof toolUse;
+    const summary = (translate(long)[0] as { summary: string }).summary;
+    expect(summary.split("\n")[0]).toBe("a".repeat(1_999));
+  });
+
   it("clips long text so events stay within the host frame limit", () => {
     const clipped = clip("x".repeat(20), 5);
     expect(clipped.startsWith("xxxxx\n…")).toBe(true);

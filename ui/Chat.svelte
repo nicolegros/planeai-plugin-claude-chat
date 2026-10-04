@@ -281,7 +281,7 @@
         {#if turn.user}<UserPrompt text={turn.user.text} />{/if}
         <div class="body">
           {#if turn.folded.length > 0}
-            {@const steps = describeSteps(turn.folded.flatMap((item) => (item.kind === "tools" ? item.tools : [])))}
+            {@const steps = describeSteps(turn.foldedTools)}
             <details class="work">
               <summary>
                 <Icon name="chevron" size={12} />
@@ -436,6 +436,6 @@
   .round.primary:disabled { opacity: 1; border-color: transparent; background: color-mix(in srgb, var(--planeai-accent) 30%, var(--planeai-surface)); }
   .handed-off { display: flex; align-items: center; gap: var(--chat-space-3); padding: var(--chat-space-3) var(--chat-space-4); }
   .handed-off p { flex: 1; color: var(--planeai-text-muted); }
-  button.primary { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
+  :where(.chat) :global(button.primary) { background: var(--planeai-accent); color: var(--planeai-on-accent); border-color: var(--planeai-accent); }
   @keyframes blink { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }
 </style>
