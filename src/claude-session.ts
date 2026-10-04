@@ -484,7 +484,7 @@ export class ClaudeSession {
       this.guessed = null;
       this.betweenTurns = this.stamps && this.heldFollowUps.size > 0;
       // Claude goes on to the follow-ups it still holds.
-      this.setStatus(this.pending.size > 0 ? "needs_attention" : this.stamps && this.heldFollowUps.size > 0 ? "busy" : "idle");
+      this.setStatus(this.pending.size > 0 ? "needs_attention" : this.betweenTurns ? "busy" : "idle");
       void this.loadContextUsage(query);
     } else if (this.status === "idle" && (message.type === "assistant" || message.type === "stream_event")) {
       // A queued follow-up started its own turn after the previous result.
