@@ -124,6 +124,36 @@ export interface Compaction {
   post_tokens?: number;
 }
 
+/** A question Claude asks with AskUserQuestion; the chat adds a free-text "Other" answer itself. */
+export interface Question {
+  question: string;
+  /** A short chip label, at most about 12 characters. */
+  header: string;
+  options: { label: string; description: string; preview?: string }[];
+  multi_select: boolean;
+}
+
+/** AskUserQuestion's input as the chat renders it, or `null` when it is not one it can ask. */
+export function questionsOf(input: unknown): Question[] | null {
+  const raw = input && typeof input === "object" ? (input as { questions?: unknown }).questions : undefined;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const questions = raw.map((item): Question | null => {
+    const fields = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+    const options = Array.isArray(fields.options) ? fields.options : [];
+    if (typeof fields.question !== "string" || options.length === 0) return null;
+    return {
+      question: clip(fields.question, 1_000),
+      header: clip(text(fields.header), 40),
+      multi_select: fields.multiSelect === true,
+      options: options.map((option) => {
+        const { label, description, preview } = option && typeof option === "object" ? (option as Record<string, unknown>) : {};
+        return { label: clip(text(label), 200), description: clip(text(description), 500), ...(typeof preview === "string" && preview ? { preview: clip(preview, 2_000) } : {}) };
+      }),
+    };
+  });
+  return questions.every((question) => question !== null) ? (questions as Question[]) : null;
+}
+
 /** A slash command as the chat's menu lists it. */
 export interface CommandOption {
   name: string;
@@ -152,6 +182,10 @@ export type ChatEvent =
   | { type: "tool_result"; tool_use_id: string; is_error: boolean; summary: string; lines?: number }
   | { type: "permission"; request_id: string; tool: string; title: string; summary: string; input?: ToolInput; can_remember: boolean }
   | { type: "permission_resolved"; request_id: string; allowed: boolean; remembered?: boolean; reason?: string }
+  /** Claude asks the user; answering resolves the AskUserQuestion call. */
+  | { type: "question"; request_id: string; questions: Question[] }
+  /** `answers` maps each question to its answer, multi-select answers comma-separated; absent when the user skipped. */
+  | { type: "question_resolved"; request_id: string; answers?: Record<string, string> }
   | { type: "result"; is_error: boolean; subtype: string; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { type: "error"; message: string }
   | { type: "handoff"; in_terminal: boolean }

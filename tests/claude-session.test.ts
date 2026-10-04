@@ -171,6 +171,47 @@ describe("ClaudeSession", () => {
     expect(statuses.at(-1)).toBe("busy");
   });
 
+  it("asks Claude's questions in the chat, even when permissions are bypassed, and answers with the user's choices", async () => {
+    const chat = session({ yolo: true });
+    await chat.send("set it up");
+    const input = { questions: [{ question: "Which platforms?", header: "Platforms", multiSelect: true, options: [{ label: "macOS", description: "" }, { label: "Linux", description: "" }] }] };
+    const decision = fake.queries[0].options.canUseTool!("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "t" } as never);
+    const request = events.at(-1)!.payload;
+    expect(request).toMatchObject({ type: "question", questions: [{ question: "Which platforms?", multi_select: true }] });
+    expect(statuses.at(-1)).toBe("needs_attention");
+    chat.answerQuestion((request as { request_id: string }).request_id, { "Which platforms?": "macOS, Linux" });
+    await expect(decision).resolves.toEqual({ behavior: "allow", updatedInput: { ...input, answers: { "Which platforms?": "macOS, Linux" } } });
+    expect(events.at(-1)!.payload).toMatchObject({ type: "question_resolved", answers: { "Which platforms?": "macOS, Linux" } });
+    expect(statuses.at(-1)).toBe("busy");
+  });
+
+  it("tells Claude the user skipped its questions, and ends them when Claude is interrupted", async () => {
+    const chat = session();
+    await chat.send("set it up");
+    const input = { questions: [{ question: "Which?", header: "", options: [{ label: "A", description: "" }] }] };
+    const skipped = fake.queries[0].options.canUseTool!("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "t" } as never);
+    chat.answerQuestion((events.at(-1)!.payload as { request_id: string }).request_id, null);
+    await expect(skipped).resolves.toMatchObject({ behavior: "deny", message: expect.stringContaining("skipped") });
+    expect(events.at(-1)!.payload).toEqual({ type: "question_resolved", request_id: expect.any(String) });
+    const interrupted = fake.queries[0].options.canUseTool!("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "t2" } as never);
+    chat.interrupt();
+    await expect(interrupted).resolves.toMatchObject({ behavior: "deny" });
+    expect(events.at(-1)!.payload).toEqual({ type: "question_resolved", request_id: expect.any(String) });
+  });
+
+  it("keeps AskUserQuestion's tool call out of the transcript, and asks malformed questions as a permission", async () => {
+    const chat = session();
+    await chat.send("set it up");
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    fake.queries[0].emit({ ...assistant, message: { ...assistant.message, content: [{ type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [] } }] } } as never);
+    fake.queries[0].emit({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "ask", content: "answered" }] }, parent_tool_use_id: null, session_id: SESSION_ID } as never);
+    await flush();
+    expect(events.map(({ payload }) => payload.type)).not.toContain("tool");
+    expect(events.map(({ payload }) => payload.type)).not.toContain("tool_result");
+    void fake.queries[0].options.canUseTool!("AskUserQuestion", { questions: "?" }, { signal: new AbortController().signal, toolUseID: "t" } as never);
+    expect(events.at(-1)!.payload).toMatchObject({ type: "permission", tool: "AskUserQuestion" });
+  });
+
   it("remembers an approval for the session with the SDK's suggested rules", async () => {
     const chat = session();
     await chat.send("run it");

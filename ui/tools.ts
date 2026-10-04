@@ -55,7 +55,7 @@ function splitPath(path: string, root?: string): { target: string; folder?: stri
   return slash < 0 ? { target: local } : { target: local.slice(slash + 1), folder: local.slice(0, slash) || "/" };
 }
 
-/** Chats stored before Skill and TodoWrite had their own inputs only kept the JSON summary. */
+/** Chats stored before Skill and TodoWrite had their own inputs only kept the JSON summary, as do AskUserQuestion calls. */
 function storedJson(summary: string): Record<string, unknown> {
   try {
     const value = JSON.parse(summary);
@@ -141,6 +141,15 @@ const TOOLS: Record<string, ToolKind> = {
   WebFetch: {
     steps: ["page fetched", "pages fetched"],
     view: (tool) => ({ icon: "globe", verbs: ["Fetching", "Fetched"], target: tool.summary.replace(/^https?:\/\//, ""), style: "text" }),
+  },
+  // Live chats show questions as their own prompt; this is how a chat rebuilt from Claude Code's transcript shows them.
+  AskUserQuestion: {
+    steps: ["question", "questions"],
+    view: (tool) => {
+      const questions = storedJson(tool.summary).questions;
+      const asked = Array.isArray(questions) ? questions.filter((question) => typeof question?.question === "string") : [];
+      return { icon: "help", verbs: ["Asking", "Asked"], target: asked[0]?.question ?? "a question", style: "text", count: asked.length > 1 ? plural(asked.length, "question") : undefined };
+    },
   },
   WebSearch: {
     steps: ["web search", "web searches"],

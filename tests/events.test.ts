@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clip, lineCount, planLimits, replay, summarizeInput, toolInput, translate } from "../src/events";
+import { clip, lineCount, planLimits, questionsOf, replay, summarizeInput, toolInput, translate } from "../src/events";
 import { fixture, history } from "./helpers";
 
 describe("translate", () => {
@@ -125,6 +125,14 @@ describe("translate", () => {
     const summary = (translate(long)[0] as { summary: string }).summary;
     expect(summary.length).toBeGreaterThan(5_000);
     expect(summary.endsWith("\nFAILED")).toBe(true);
+  });
+
+  it("reads AskUserQuestion's questions, refusing input it cannot ask", () => {
+    const input = { questions: [{ question: "Which?", header: "Pick", multiSelect: true, options: [{ label: "A", description: "first", preview: "tree" }, { label: "B", description: "" }] }] };
+    expect(questionsOf(input)).toEqual([{ question: "Which?", header: "Pick", multi_select: true, options: [{ label: "A", description: "first", preview: "tree" }, { label: "B", description: "" }] }]);
+    expect(questionsOf({ questions: [] })).toBeNull();
+    expect(questionsOf({ questions: [{ question: "Which?", options: [] }] })).toBeNull();
+    expect(questionsOf("nope")).toBeNull();
   });
 
   it("counts lines without trailing newlines", () => {

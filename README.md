@@ -7,6 +7,7 @@ It has its own worktree, branch, linked task, sidebar status and lifecycle.
 Only its primary tab differs: PlaneAI mounts this plugin's chat UI where the terminal would be.
 
 The chat renders markdown, tool calls with diffs, and permission prompts that can be allowed once, for the session, or denied with a reason.
+When Claude asks questions, they take the message box's place, one at a time: pick with the arrow keys or a number, type another answer, or press Esc to skip; this works in every permission mode, including Bypass.
 Each prompt starts a turn and stays pinned while you read its answer; once the turn ends, the steps Claude took fold behind a "Worked for 1m 4s · 3 commands, 2 edits" summary, each step reading as one line.
 Edits and new files show their changed lines, commands their last lines of output, and agents their answer, without expanding the step.
 Slash commands and skills run as in the terminal, with a `/` menu, and the chat's fonts and size are set in PlaneAI's preferences.

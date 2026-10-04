@@ -7,6 +7,8 @@
   import Icon from "./Icon.svelte";
   import Markdown from "./Markdown.svelte";
   import PermissionCard from "./PermissionCard.svelte";
+  import QuestionAnswers from "./QuestionAnswers.svelte";
+  import QuestionPrompt from "./QuestionPrompt.svelte";
   import ToolSteps from "./ToolSteps.svelte";
   import { compacted, duration, turnSummary } from "./format";
   import { describeSteps } from "./tools";
@@ -21,6 +23,8 @@
   const MAX_MESSAGE_BYTES = 48 * 1024;
 
   const transcript = new Transcript();
+  /** Claude's questions take the composer's place until answered. */
+  const pendingQuestion = $derived(transcript.entries.findLast((entry) => entry.kind === "question" && !entry.resolved));
   let appearance = $state<Appearance>({});
   let draft = $state("");
   /** Streaming text re-rendered as markdown at most once per frame, not once per delta. */
@@ -127,6 +131,10 @@
 
   function handback(): void {
     void run(() => context.host.session.handback());
+  }
+
+  function answerQuestion(requestId: string, answers: Record<string, string> | null): void {
+    void run(() => context.host.call("claude.question.answer", { session_id: sessionId, request_id: requestId, ...(answers ? { answers } : {}) }));
   }
 
   function setModel(model: string | null): void {
@@ -242,6 +250,12 @@
     <div class="follow-up"><p class="follow-up-label">Your follow-up</p><p class="follow-up-text">{item.entry.text}</p></div>
   {:else if item.entry.kind === "assistant"}
     <div class="message"><Markdown text={item.entry.text} onLink={openExternal} /></div>
+  {:else if item.entry.kind === "question"}
+    {#if item.entry.resolved}
+      <QuestionAnswers questions={item.entry.questions} answers={item.entry.answers} />
+    {:else}
+      <p class="asking"><span class="asking-dot" aria-hidden="true"></span>Claude is asking {item.entry.questions.length === 1 ? "a question" : `${item.entry.questions.length} questions`} · answer below</p>
+    {/if}
   {:else if item.entry.kind === "permission"}
     {@const permission = item.entry.permission}
     <PermissionCard {permission} onRespond={(decision, reason) => respond(permission.request_id, decision, reason)} />
@@ -303,7 +317,12 @@
     {/each}
   </div>
   <p class="visually-hidden" role="status">{status === "needs_attention" ? "Claude is waiting for your answer" : working ? "Claude is working" : ""}</p>
-  {#if transcript.meta.handed_off}
+  {#if pendingQuestion?.kind === "question" && !transcript.meta.handed_off}
+    {@const question = pendingQuestion}
+    <div class="dock">
+      {#key question.request_id}<QuestionPrompt questions={question.questions} onAnswer={(answers) => answerQuestion(question.request_id, answers)} />{/key}
+    </div>
+  {:else if transcript.meta.handed_off}
     <div class="dock">
       <div class="handed-off" role="status">
         <p>This conversation is continuing in a terminal tab. Closing that tab brings it back here.</p>
@@ -430,6 +449,8 @@
   /* A square control labelled by an icon. */
   :where(.chat) :global(.icon-control) { display: grid; flex: none; place-items: center; width: calc(28 * var(--chat-unit)); height: calc(28 * var(--chat-unit)); min-height: 0; padding: 0; }
   .round { border-radius: 50%; }
+  .asking { display: flex; align-items: center; gap: var(--chat-space-2); color: var(--planeai-text-muted); font-size: var(--chat-size-sm); }
+  .asking-dot { flex: none; width: calc(8 * var(--chat-unit)); height: calc(8 * var(--chat-unit)); border-radius: 50%; background: var(--planeai-warning); }
   .follow-up { align-self: flex-end; max-width: 85%; padding: var(--chat-space-2) var(--chat-space-3); border-radius: var(--chat-radius); background: var(--planeai-accent-subtle); }
   .follow-up-label { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
   .follow-up-text { white-space: pre-wrap; overflow-wrap: anywhere; }

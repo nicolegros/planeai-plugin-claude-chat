@@ -82,6 +82,13 @@ describe("ClaudeChatPlugin", () => {
     await expect(instance.handle("claude.commands", { session_id: SESSION_ID, offset: -1 })).rejects.toThrow("offset");
   });
 
+  it("validates question answers before passing them on", async () => {
+    const { instance } = plugin();
+    await instance.handle("provider.session.start", start());
+    await expect(instance.handle("claude.question.answer", { session_id: SESSION_ID, request_id: "q", answers: { "Which?": 3 } })).rejects.toThrow("answers");
+    await expect(instance.handle("claude.question.answer", { session_id: SESSION_ID, request_id: "q" })).rejects.toThrow("no pending question");
+  });
+
   it("lets a resumed session finish rebuilding its chat before anything else touches it", async () => {
     const root = mkdtempSync(join(tmpdir(), "claude-chat-plugin-"));
     let release: (messages: SessionMessage[]) => void = () => {};

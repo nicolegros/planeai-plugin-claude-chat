@@ -1,4 +1,4 @@
-import type { ChatEvent, Compaction, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput } from "./host";
+import type { ChatEvent, Compaction, Question, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput } from "./host";
 
 export interface PermissionEntry {
   request_id: string;
@@ -18,6 +18,8 @@ export type Entry =
   | { kind: "assistant"; seq: number; text: string }
   | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string; lines?: number } | null }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
+  /** `answers` is null until answered, and stays null when the user skipped (`resolved`). */
+  | { kind: "question"; seq: number; request_id: string; questions: Question[]; answers: Record<string, string> | null; resolved: boolean }
   | { kind: "result"; seq: number; is_error: boolean; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { kind: "error"; seq: number; message: string }
   | { kind: "handoff"; seq: number; in_terminal: boolean }
@@ -85,6 +87,14 @@ export class Transcript {
       case "permission_resolved": {
         const entry = this.entries.findLast((candidate) => candidate.kind === "permission" && candidate.permission.request_id === event.request_id);
         if (entry?.kind === "permission") Object.assign(entry.permission, { resolved: event.allowed, remembered: event.remembered, reason: event.reason });
+        return;
+      }
+      case "question":
+        this.entries.push({ kind: "question", seq, request_id: event.request_id, questions: event.questions, answers: null, resolved: false });
+        return;
+      case "question_resolved": {
+        const entry = this.entries.findLast((candidate) => candidate.kind === "question" && candidate.request_id === event.request_id);
+        if (entry?.kind === "question") Object.assign(entry, { answers: event.answers ?? null, resolved: true });
         return;
       }
       case "result":

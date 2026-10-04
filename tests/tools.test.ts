@@ -55,6 +55,11 @@ describe("viewTool", () => {
     expect(previewOf(tool("Read", "x", { result: { is_error: false, summary: "1\ta" } }))).toBeNull();
   });
 
+  it("shows a question from a rebuilt chat by its first question", () => {
+    const summary = JSON.stringify({ questions: [{ question: "Which platforms?" }, { question: "Which versions?" }] });
+    expect(viewTool(tool("AskUserQuestion", summary))).toMatchObject({ icon: "help", verbs: ["Asking", "Asked"], target: "Which platforms?", count: "2 questions" });
+  });
+
   it("names MCP tools by server and tool", () => {
     expect(viewTool(tool("mcp__github__get_pull_request", "{}"))).toMatchObject({ verbs: ["Calling github", "Called github"], target: "get pull request" });
   });

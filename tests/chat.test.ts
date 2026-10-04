@@ -526,6 +526,49 @@ describe("Chat", () => {
     expect(document.querySelector(".turn .follow-up-text")?.textContent).toBe("and the docs");
   });
 
+  it("asks Claude's questions in place of the composer, one at a time, from the keyboard", async () => {
+    const harness = await render({ status: "needs_attention" });
+    harness.push(1, {
+      type: "question",
+      request_id: "q1",
+      questions: [
+        { question: "Which platforms?", header: "Platforms", multi_select: true, options: [{ label: "macOS", description: "Apple Silicon" }, { label: "Linux", description: "" }] },
+        { question: "How to version?", header: "Versioning", multi_select: false, options: [{ label: "Commits", description: "" }, { label: "Tags", description: "" }] },
+      ],
+    });
+    await settle();
+    expect(document.querySelector("textarea")).toBeNull();
+    expect(document.querySelector(".asking")?.textContent).toContain("Claude is asking 2 questions");
+    const list = document.querySelector<HTMLElement>("[role=listbox]")!;
+    expect(list.getAttribute("aria-multiselectable")).toBe("true");
+    press(list, " ");
+    press(list, "ArrowDown");
+    press(list, " ");
+    expect([...document.querySelectorAll("[role=option]")].map((option) => option.getAttribute("aria-selected"))).toEqual(["true", "true"]);
+    press(list, "Enter");
+    expect(document.querySelector(".question")?.textContent).toBe("How to version?");
+    press(document.querySelector<HTMLElement>("[role=listbox]")!, "2");
+    expect(harness.value.host.call).toHaveBeenCalledWith("claude.question.answer", { session_id: "s1", request_id: "q1", answers: { "Which platforms?": "macOS, Linux", "How to version?": "Tags" } });
+
+    harness.push(2, { type: "question_resolved", request_id: "q1", answers: { "Which platforms?": "macOS, Linux", "How to version?": "Tags" } });
+    await settle();
+    expect(document.querySelector("textarea")).not.toBeNull();
+    expect([...document.querySelectorAll(".answers .answer")].map((answer) => answer.textContent)).toEqual(["macOS, Linux", "Tags"]);
+  });
+
+  it("takes a typed answer, and skips questions with Escape", async () => {
+    const harness = await render({ status: "needs_attention" });
+    harness.push(1, { type: "question", request_id: "q1", questions: [{ question: "Which?", header: "", multi_select: false, options: [{ label: "A", description: "" }] }] });
+    await settle();
+    type(document.querySelector<HTMLInputElement>("input[aria-label='Another answer']")!, "Something else");
+    button("Submit").click();
+    expect(harness.value.host.call).toHaveBeenCalledWith("claude.question.answer", { session_id: "s1", request_id: "q1", answers: { "Which?": "Something else" } });
+    harness.push(2, { type: "question", request_id: "q2", questions: [{ question: "Again?", header: "", multi_select: false, options: [{ label: "A", description: "" }] }] });
+    await settle();
+    press(document.querySelector<HTMLElement>("[role=listbox]")!, "Escape");
+    expect(harness.value.host.call).toHaveBeenCalledWith("claude.question.answer", { session_id: "s1", request_id: "q2" });
+  });
+
   it("shows the plan as a checklist without expanding it", async () => {
     const harness = await render();
     harness.push(1, {

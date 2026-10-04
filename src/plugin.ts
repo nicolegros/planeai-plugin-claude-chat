@@ -124,6 +124,15 @@ export class ClaudeChatPlugin {
         (await this.session(request)).respondToPermission(string(request, "request_id"), decision, reason);
         return {};
       }
+      case "claude.question.answer": {
+        const request = object(params);
+        const answers = request.answers;
+        if (answers !== undefined && (!answers || typeof answers !== "object" || Array.isArray(answers) || !Object.values(answers).every((answer) => typeof answer === "string"))) {
+          throw new RpcError(INVALID_PARAMS, "answers must map each question to a string");
+        }
+        (await this.session(request)).answerQuestion(string(request, "request_id"), (answers as Record<string, string> | undefined) ?? null);
+        return {};
+      }
       case "claude.mode.set": {
         const request = object(params);
         (await this.session(request)).setPermissionMode(string(request, "mode"));
