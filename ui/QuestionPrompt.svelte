@@ -66,7 +66,7 @@
   }
 </script>
 
-<section class="prompt" aria-labelledby="{uid}-question">
+<section class="prompt" data-question-prompt aria-labelledby="{uid}-question">
   <p class="top">
     {#if question.header}<span class="chip">{question.header}</span>{/if}
     {#if questions.length > 1}<span class="progress">Question {step + 1} of {questions.length}</span>{/if}

@@ -569,6 +569,40 @@ describe("Chat", () => {
     expect(harness.value.host.call).toHaveBeenCalledWith("claude.question.answer", { session_id: "s1", request_id: "q2" });
   });
 
+  it("gives the message box the keyboard when PlaneAI focuses the chat or the user types with nothing focused", async () => {
+    const harness = await render({ status: "busy" });
+    const textarea = document.querySelector("textarea")!;
+    textarea.blur();
+    window.dispatchEvent(new FocusEvent("focus"));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(document.activeElement).toBe(textarea);
+
+    textarea.blur();
+    press(document.body, "h");
+    expect(document.activeElement).toBe(textarea);
+
+    const stop = button("Stop");
+    stop.focus();
+    press(stop, " ");
+    expect(document.activeElement).toBe(stop);
+    press(document.body, "c");
+    expect(document.activeElement).toBe(textarea);
+
+    textarea.blur();
+    press(document.body, "Escape");
+    expect(harness.value.host.session.interrupt).toHaveBeenCalledOnce();
+  });
+
+  it("hands the keyboard back to the message box once a question is answered", async () => {
+    const harness = await render({ status: "needs_attention" });
+    harness.push(1, { type: "question", request_id: "q1", questions: [{ question: "Which?", header: "", multi_select: false, options: [{ label: "A", description: "" }] }] });
+    await settle();
+    expect(document.activeElement?.getAttribute("role")).toBe("listbox");
+    harness.push(2, { type: "question_resolved", request_id: "q1", answers: { "Which?": "A" } });
+    await settle();
+    expect(document.activeElement).toBe(document.querySelector("textarea"));
+  });
+
   it("shows the plan as a checklist without expanding it", async () => {
     const harness = await render();
     harness.push(1, {

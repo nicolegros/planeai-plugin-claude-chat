@@ -133,6 +133,41 @@
     void run(() => context.host.session.handback());
   }
 
+  /** Where typing goes: Claude's open question, otherwise the message box. */
+  function focusInput(): void {
+    (document.querySelector<HTMLElement>("[data-question-prompt] [role=listbox]") ?? composer)?.focus();
+  }
+
+  // PlaneAI focuses the chat's frame, not an element in it, when its pane takes the keyboard.
+  function onWindowFocus(): void {
+    requestAnimationFrame(() => {
+      if (!document.activeElement || document.activeElement === document.body) focusInput();
+    });
+  }
+
+  const TYPING_TARGETS = "input, textarea, select, [contenteditable], [role=listbox]";
+  const PRESSABLE = "button, a, summary, [tabindex]";
+
+  /** Typing with nothing to type into, as after clicking the transcript or a button, goes to the message box. */
+  function onWindowKeydown(event: KeyboardEvent): void {
+    const target = event.target instanceof Element ? event.target : null;
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || target?.closest(TYPING_TARGETS)) return;
+    if (event.key === "Escape" && working) {
+      event.preventDefault();
+      interrupt();
+    } else if (event.key.length === 1 && !(event.key === " " && target?.closest(PRESSABLE))) {
+      focusInput();
+    }
+  }
+
+  // Answering a question or returning from the terminal brings the message box back; typing goes there again.
+  let hadPrompt = false;
+  $effect(() => {
+    const prompt = !!pendingQuestion || transcript.meta.handed_off;
+    if (hadPrompt && !prompt) void tick().then(focusInput);
+    hadPrompt = prompt;
+  });
+
   function answerQuestion(requestId: string, answers: Record<string, string> | null): void {
     void run(() => context.host.call("claude.question.answer", { session_id: sessionId, request_id: requestId, ...(answers ? { answers } : {}) }));
   }
@@ -281,6 +316,8 @@
     <p class="working" aria-hidden="true">{status === "needs_attention" ? "Waiting for your answer" : transcript.meta.compacting ? "Compacting the conversation" : "Claude is working"}<span class="ellipsis"></span></p>
   {/if}
 {/snippet}
+
+<svelte:window onfocus={onWindowFocus} onkeydown={onWindowKeydown} />
 
 <main class="chat" style={appearanceStyle(appearance)}>
   <div class="log" bind:this={log} onscroll={onScroll} role="log" aria-label="Conversation" aria-busy={!!transcript.live}>
