@@ -406,7 +406,7 @@ describe("Chat", () => {
   it("shows the picked model, a typed one, or the default Claude resolved", async () => {
     await render({ meta: { ...META, active_model: "claude-opus-5-5" } });
     const model = () => document.querySelector<HTMLSelectElement>("select")!;
-    expect(model().selectedOptions[0].textContent).toBe("Default (claude-opus-5-5)");
+    expect(model().selectedOptions[0].textContent).toBe("Default (Opus 5.5)");
     expect(document.querySelector(".model-label")?.textContent).toBe("Opus 5.5");
     unmount(app!);
     document.body.replaceChildren();

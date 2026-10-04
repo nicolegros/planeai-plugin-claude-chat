@@ -90,8 +90,8 @@ export class ClaudeSession {
   private conversationId: string;
   /** Messages compaction kept, which Claude replays after its boundary. */
   private preserved = new Set<string>();
-  /** Follow-ups sent while a turn ran, until Claude consumes them: folded into a turn, or as a turn of their own. */
-  private queued = new Set<string>();
+  /** Follow-ups sent while a turn ran, oldest first, until Claude consumes them: folded into a turn, or as a turn of their own. */
+  private heldFollowUps = new Set<string>();
   /** Whether a frame of the running turn named the messages it consumed. */
   private turnStamped = false;
   /** Whether this Claude names consumed messages at all; older versions do not, so follow-ups cannot be tracked. */
@@ -210,8 +210,8 @@ export class ClaudeSession {
     }
     const before = this.status;
     const id = randomUUID();
-    const queued = before === "busy" || before === "needs_attention";
-    this.emit({ type: "user", text: clip(text), ...(queued ? { queued, id } : {}) });
+    const isFollowUp = before === "busy" || before === "needs_attention";
+    this.emit({ type: "user", text: clip(text), ...(isFollowUp ? { queued: true, id } : {}) });
     this.setStatus("busy");
     const ours = this.statusChanges;
     // Puts back the status from before this send, unless a turn changed it meanwhile.
@@ -245,7 +245,7 @@ export class ClaudeSession {
       settle();
       return;
     }
-    if (queued) this.queued.add(id);
+    if (isFollowUp) this.heldFollowUps.add(id);
     input.push({
       type: "user",
       message: { role: "user", content: text },
@@ -370,7 +370,7 @@ export class ClaudeSession {
 
   private detach(reason: string): void {
     this.denyPending(reason);
-    this.forgetQueued();
+    this.resetFollowUps();
     const query = this.query;
     this.query = null;
     this.input?.close();
@@ -441,7 +441,7 @@ export class ClaudeSession {
         this.input?.close();
         this.input = null;
         this.denyPending("Claude stopped");
-        this.forgetQueued();
+        this.resetFollowUps();
         if (!this.stopped) this.setStatus("idle");
       }
     }
@@ -467,10 +467,14 @@ export class ClaudeSession {
     this.onConsumed(message);
     // /clear moves Claude to a new id within the turn; its result already carries it.
     if (message.type === "result") this.follow(message.session_id);
-    for (const event of translate(message)) this.emit(event);
+    const events = translate(message);
+    // A local command such as /context stamps only its result; its output already belongs to the follow-up's turn.
+    if (!this.turnStamped && this.stamps && this.heldFollowUps.size > 0 && events.some((event) => !isEphemeral(event))) this.startTurn([this.heldFollowUps.values().next().value!]);
+    for (const event of events) this.emit(event);
     if (message.type === "result") {
+      this.turnStamped = false;
       // Claude goes on to the follow-ups it still holds.
-      this.setStatus(this.pending.size > 0 ? "needs_attention" : this.stamps && this.queued.size > 0 ? "busy" : "idle");
+      this.setStatus(this.pending.size > 0 ? "needs_attention" : this.stamps && this.heldFollowUps.size > 0 ? "busy" : "idle");
       void this.loadContextUsage(query);
     } else if (this.status === "idle" && (message.type === "assistant" || message.type === "stream_event")) {
       // A queued follow-up started its own turn after the previous result.
@@ -492,14 +496,20 @@ export class ClaudeSession {
    */
   private onConsumed(message: SDKMessage): void {
     const stamped = message.type === "assistant" || message.type === "stream_event" || message.type === "result" ? message : null;
-    const consumed = stamped?.user_message_uuids ?? (stamped?.user_message_uuid ? [stamped.user_message_uuid] : []);
+    const single = stamped?.user_message_uuid ?? (message.type === "conversation_reset" ? message.user_message_uuid : undefined);
+    const consumed = stamped?.user_message_uuids ?? (single ? [single] : []);
     this.stamps ||= consumed.length > 0;
     if (consumed.length > 0 && !this.turnStamped) {
+      if (this.heldFollowUps.has(consumed[0])) this.startTurn(consumed.filter((id) => this.heldFollowUps.has(id)));
       this.turnStamped = true;
-      if (this.queued.has(consumed[0])) this.emit({ type: "turn_start", user_ids: consumed.filter((id) => this.queued.has(id)) });
     }
-    for (const id of consumed) this.queued.delete(id);
-    if (message.type === "result") this.turnStamped = false;
+    for (const id of consumed) this.heldFollowUps.delete(id);
+  }
+
+  private startTurn(followUps: string[]): void {
+    this.turnStamped = true;
+    for (const id of followUps) this.heldFollowUps.delete(id);
+    this.emit({ type: "turn_start", user_ids: followUps });
   }
 
   /** Each window updates on its own, as an event may describe only one; others come from the shared file, which other sessions update too. */
@@ -511,9 +521,9 @@ export class ClaudeSession {
     this.updateMeta({ limits });
   }
 
-  /** Follow-ups a stopped Claude never consumed get no turn of their own. */
-  private forgetQueued(): void {
-    this.queued.clear();
+  /** Follow-ups a stopped Claude never consumed get no turn of their own; the next Claude may stamp differently. */
+  private resetFollowUps(): void {
+    this.heldFollowUps.clear();
     this.turnStamped = false;
     this.stamps = false;
   }

@@ -2,7 +2,7 @@
   import type { Snippet } from "svelte";
   import Icon from "./Icon.svelte";
   import type { SessionMeta } from "./host";
-  import { modelLabel } from "./models";
+  import { modelLabel, modelName } from "./models";
   import { usageTip } from "./usage";
 
   let { meta, onMode, onModel, onHandoff, actions }: { meta: SessionMeta; onMode: (mode: string) => void; onModel: (model: string | null) => void; onHandoff: () => void; actions: Snippet } = $props();
@@ -43,7 +43,7 @@
     <Icon name="sparkle" size={12} />
     <span class="model-label">{modelLabel(meta)}</span>
     <select value={meta.model ?? DEFAULT_MODEL} onchange={(event) => onModel(event.currentTarget.value || null)} aria-label="Model">
-      <option value={DEFAULT_MODEL}>{meta.model === null && meta.active_model ? `Default (${meta.active_model})` : "Default"}</option>
+      <option value={DEFAULT_MODEL}>{meta.model === null && meta.active_model ? `Default (${modelName(meta.active_model)})` : "Default"}</option>
       {#if unlisted}
         <option value={meta.model}>{meta.model}</option>
       {/if}

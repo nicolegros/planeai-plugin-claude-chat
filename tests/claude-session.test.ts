@@ -287,6 +287,34 @@ describe("ClaudeSession", () => {
     expect(chat.snapshot().status).toBe("idle");
   });
 
+  it("starts a held follow-up's turn before the output of a local command, which stamps only its result", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("/context");
+    await chat.send("/clear");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    const output = { ...assistant, message: { ...assistant.message, content: [{ type: "text", text: "## Context Usage" }] } };
+    fake.queries[0].emit(
+      { ...assistant, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never,
+      result,
+      // As recorded from Claude Code: /context answers in an unstamped frame, then a stamped result.
+      output as never,
+      { ...result, num_turns: 0, user_message_uuid: ids[1], user_message_uuids: [ids[1]] } as never,
+      { type: "conversation_reset", user_message_uuid: ids[2], session_id: SESSION_ID, uuid: "r" } as never,
+    );
+    await flush();
+    const order = events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start" || (payload.type === "assistant" && payload.text === "## Context Usage") || payload.type === "cleared");
+    expect(order).toEqual([
+      { type: "turn_start", user_ids: [ids[1]] },
+      { type: "assistant", text: "## Context Usage" },
+      { type: "turn_start", user_ids: [ids[2]] },
+      { type: "cleared" },
+    ]);
+  });
+
   it("goes idle after a turn when Claude does not name consumed messages", async () => {
     const chat = session();
     await chat.send("first");

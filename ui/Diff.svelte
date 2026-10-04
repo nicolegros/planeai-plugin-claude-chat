@@ -6,8 +6,10 @@
   let { edits, preview = false }: { edits: Edit[]; preview?: boolean } = $props();
 
   const CAP = 12;
+  /** Unchanged lines a preview keeps around each change. */
+  const PREVIEW_CONTEXT = 2;
   let expanded = $state(false);
-  const rows = $derived(diffRows(edits, preview ? 2 : Infinity));
+  const rows = $derived(diffRows(edits, preview ? PREVIEW_CONTEXT : Infinity));
   const more = $derived(preview ? rows.slice(CAP).filter((row) => row.kind !== "gap").length : 0);
   const capped = $derived(more > 0 && !expanded);
 </script>

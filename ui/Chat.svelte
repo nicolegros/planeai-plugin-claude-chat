@@ -137,7 +137,8 @@
     await tick();
     if (!composer) return;
     composer.style.height = "auto";
-    composer.style.height = `${Math.min(composer.scrollHeight, 240)}px`;
+    // Its CSS max-height, which scales with the font size, caps the growth.
+    composer.style.height = `${composer.scrollHeight}px`;
   }
 
   function onInput(): void {
