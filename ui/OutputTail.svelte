@@ -5,7 +5,8 @@
   /** `lines`: the full output's line count, reported when `output` was clipped in the middle. */
   let { output, failed, lines }: { output: string; failed: boolean; lines?: number } = $props();
   let expanded = $state(false);
-  const tail = $derived(outputTail(output, 3, failed, lines));
+  const TAIL_LINES = 3;
+  const tail = $derived(outputTail(output, TAIL_LINES, failed, lines));
 </script>
 
 <div class="output-tail" class:failed>

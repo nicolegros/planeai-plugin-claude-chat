@@ -94,6 +94,8 @@ export class ClaudeSession {
   private queued = new Set<string>();
   /** Whether a frame of the running turn named the messages it consumed. */
   private turnStamped = false;
+  /** Whether this Claude names consumed messages at all; older versions do not, so follow-ups cannot be tracked. */
+  private stamps = false;
   private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
   /** Counts status changes, so a send can tell whether anything moved it while it waited. */
@@ -209,7 +211,6 @@ export class ClaudeSession {
     const before = this.status;
     const id = randomUUID();
     const queued = before === "busy" || before === "needs_attention";
-    if (queued) this.queued.add(id);
     this.emit({ type: "user", text: clip(text), ...(queued ? { queued, id } : {}) });
     this.setStatus("busy");
     const ours = this.statusChanges;
@@ -244,6 +245,7 @@ export class ClaudeSession {
       settle();
       return;
     }
+    if (queued) this.queued.add(id);
     input.push({
       type: "user",
       message: { role: "user", content: text },
@@ -467,7 +469,8 @@ export class ClaudeSession {
     if (message.type === "result") this.follow(message.session_id);
     for (const event of translate(message)) this.emit(event);
     if (message.type === "result") {
-      this.setStatus(this.pending.size > 0 ? "needs_attention" : "idle");
+      // Claude goes on to the follow-ups it still holds.
+      this.setStatus(this.pending.size > 0 ? "needs_attention" : this.stamps && this.queued.size > 0 ? "busy" : "idle");
       void this.loadContextUsage(query);
     } else if (this.status === "idle" && (message.type === "assistant" || message.type === "stream_event")) {
       // A queued follow-up started its own turn after the previous result.
@@ -484,15 +487,16 @@ export class ClaudeSession {
 
   /**
    * Claude stamps a turn's frames with the messages it consumed: the batch that started it,
-   * then any folded in. A turn started by follow-ups alone gets a `turn_start`; follow-ups in
-   * a turn some other prompt started were folded into it.
+   * then any folded in. A turn whose batch starts with a follow-up gets a `turn_start` naming
+   * its follow-ups; follow-ups in a turn some other prompt started were folded into it.
    */
   private onConsumed(message: SDKMessage): void {
     const stamped = message.type === "assistant" || message.type === "stream_event" || message.type === "result" ? message : null;
     const consumed = stamped?.user_message_uuids ?? (stamped?.user_message_uuid ? [stamped.user_message_uuid] : []);
+    this.stamps ||= consumed.length > 0;
     if (consumed.length > 0 && !this.turnStamped) {
       this.turnStamped = true;
-      if (consumed.every((id) => this.queued.has(id))) this.emit({ type: "turn_start", user_ids: consumed });
+      if (this.queued.has(consumed[0])) this.emit({ type: "turn_start", user_ids: consumed.filter((id) => this.queued.has(id)) });
     }
     for (const id of consumed) this.queued.delete(id);
     if (message.type === "result") this.turnStamped = false;
@@ -511,6 +515,7 @@ export class ClaudeSession {
   private forgetQueued(): void {
     this.queued.clear();
     this.turnStamped = false;
+    this.stamps = false;
   }
 
   private follow(sessionId: string): void {

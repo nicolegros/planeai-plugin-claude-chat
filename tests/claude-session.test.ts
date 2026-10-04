@@ -270,6 +270,44 @@ describe("ClaudeSession", () => {
     expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([{ type: "turn_start", user_ids: [ids[2]] }]);
   });
 
+  it("stays busy after a turn while Claude still holds follow-ups, and a batch led by one is its own turn", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("second");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit({ ...assistant, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never, result);
+    await flush();
+    expect(chat.snapshot().status).toBe("busy");
+    fake.queries[0].emit({ ...assistant, user_message_uuid: "later", user_message_uuids: [ids[1], "later"] } as never, result);
+    await flush();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([{ type: "turn_start", user_ids: [ids[1]] }]);
+    expect(chat.snapshot().status).toBe("idle");
+  });
+
+  it("goes idle after a turn when Claude does not name consumed messages", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("second");
+    await flush();
+    fake.queries[0].emit(...fixture("bash-turn", SESSION_ID));
+    await flush();
+    expect(chat.snapshot().status).toBe("idle");
+  });
+
+  it("does not wait on a queued /model switch that never reaches Claude", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("/model opus");
+    await flush();
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit(result);
+    await flush();
+    expect(chat.snapshot().status).toBe("idle");
+  });
+
 
   it("merges plan limits with what other sessions stored since", async () => {
     const chat = session();

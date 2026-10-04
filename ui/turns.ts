@@ -1,7 +1,10 @@
 import type { Entry, ResultEntry, ToolEntry, UserEntry } from "./transcript.svelte";
 
+/** A turn_start only marks where a turn begins; it never renders. */
+type TurnEntry = Exclude<Entry, { kind: "turn_start" }>;
+
 /** Consecutive tool calls render as one group; a user entry here is a follow-up Claude folded into the turn. */
-export type Block = { kind: "tools"; seq: number; tools: ToolEntry[] } | { kind: "entry"; seq: number; entry: Exclude<Entry, { kind: "tool" | "turn_start" }> };
+export type Block = { kind: "tools"; seq: number; tools: ToolEntry[] } | { kind: "entry"; seq: number; entry: Exclude<TurnEntry, { kind: "tool" }> };
 
 /**
  * One prompt and everything until the next. Finished work folds behind a summary,
@@ -46,8 +49,6 @@ function fold(seq: number, user: UserEntry | undefined, entries: TurnEntry[], fi
   if (foldedTools.length === 0) return { seq, user, folded: [], foldedTools, shown: work, result, after };
   return { seq, user, folded, foldedTools, shown: work.slice(end), result, after };
 }
-
-type TurnEntry = Exclude<Entry, { kind: "turn_start" }>;
 
 /**
  * Each user message starts a turn. A follow-up queued while a turn ran shows inside that turn,
