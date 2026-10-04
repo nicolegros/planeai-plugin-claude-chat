@@ -64,7 +64,7 @@
     background: var(--planeai-surface);
     box-shadow: 0 calc(8 * var(--chat-unit)) calc(24 * var(--chat-unit)) color-mix(in srgb, var(--planeai-text) 14%, transparent);
   }
-  .option { display: grid; gap: calc(2 * var(--chat-unit)); padding: calc(6 * var(--chat-unit)) var(--chat-space-2); border-radius: calc(var(--chat-radius) - calc(2 * var(--chat-unit))); cursor: pointer; }
+  .option { display: grid; gap: calc(2 * var(--chat-unit)); padding: calc(6 * var(--chat-unit)) var(--chat-space-2); border-radius: var(--chat-radius-inner); cursor: pointer; }
   .option[aria-selected="true"] { background: var(--planeai-accent-subtle); }
   .line { display: flex; align-items: baseline; gap: var(--chat-space-2); min-width: 0; }
   .name { flex: none; font-family: var(--chat-code-font); font-size: var(--chat-size-code); font-weight: 600; }

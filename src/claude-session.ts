@@ -171,7 +171,8 @@ export class ClaudeSession {
       seq: event.seq,
       payload: { type: "error", message: `A ${event.payload.type} entry was too large to show.` },
     }));
-    return { seq: this.seq, status: this.status, meta: this.meta, events, more };
+    // Plan limits are the account's; another session may have read newer ones.
+    return { seq: this.seq, status: this.status, meta: { ...this.meta, limits: this.store.limits() ?? this.meta.limits }, events, more };
   }
 
   /** Lets an open chat apply fonts changed in PlaneAI's preferences. */
@@ -200,8 +201,8 @@ export class ClaudeSession {
       this.emit({ type: "error", message: "Claude Code was not found on PATH. Install it, then run `claude` once in a terminal to log in." });
       throw new Error("claude executable not found on PATH");
     }
-    this.emit({ type: "user", text: clip(text) });
     const before = this.status;
+    this.emit({ type: "user", text: clip(text), ...(before === "busy" || before === "needs_attention" ? { queued: true } : {}) });
     this.setStatus("busy");
     const ours = this.statusChanges;
     // Puts back the status from before this send, unless a turn changed it meanwhile.
@@ -469,11 +470,11 @@ export class ClaudeSession {
     if (this.slashCommands.setTerminalOnly(terminalOnly)) this.emit({ type: "commands_changed" });
   }
 
-  /** Each window updates on its own, as an event may describe only one. */
+  /** Each window updates on its own, as an event may describe only one; others come from the shared file, which other sessions update too. */
   private onRateLimit(info: unknown): void {
     const reported = planLimits(info);
     if (!reported) return;
-    const limits = { ...this.meta.limits, ...reported };
+    const limits = { ...this.store.limits(), ...reported };
     this.store.setLimits(limits);
     this.updateMeta({ limits });
   }

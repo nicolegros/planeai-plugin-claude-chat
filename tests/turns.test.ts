@@ -1,0 +1,56 @@
+import { describe, expect, it } from "vitest";
+import type { Entry } from "../ui/transcript.svelte";
+import type { ToolEntry } from "../ui/tools";
+import { turns } from "../ui/turns";
+
+let seq = 0;
+const tool = (name: string, summary: string, extra: Partial<ToolEntry> = {}): ToolEntry => ({ kind: "tool", seq: ++seq, id: `t${seq}`, name, summary, result: { is_error: false, summary: "" }, ...extra });
+const user = (text: string, queued = false): Entry => ({ kind: "user", seq: ++seq, text, ...(queued ? { queued } : {}) });
+const assistant = (text: string): Entry => ({ kind: "assistant", seq: ++seq, text });
+const result = (duration_ms = 1_000): Entry => ({ kind: "result", seq: ++seq, is_error: false, cost_usd: 0, duration_ms });
+
+describe("turns", () => {
+  it("folds a finished turn's work, keeping the final answer and what follows the summary", () => {
+    const entries = [user("go"), assistant("Looking."), tool("Bash", "ls"), assistant("Done."), result(5_000), { kind: "notice", seq: ++seq, text: "Model set" } as Entry];
+    const [turn] = turns(entries);
+    expect(turn.user?.text).toBe("go");
+    expect(turn.folded.map((block) => (block.kind === "tools" ? "tools" : block.entry.kind))).toEqual(["assistant", "tools"]);
+    expect(turn.shown.map((block) => block.kind === "entry" && block.entry.kind)).toEqual(["assistant"]);
+    expect(turn.result?.duration_ms).toBe(5_000);
+    expect(turn.after.map((block) => block.kind === "entry" && block.entry.kind)).toEqual(["notice"]);
+  });
+
+  it("keeps the turn in progress open, and a turn without tools unfolded", () => {
+    const [done, running] = turns([user("hi"), assistant("Hello."), result(), user("go"), tool("Bash", "ls", { result: null })]);
+    expect(done.folded).toEqual([]);
+    expect(done.shown).toHaveLength(1);
+    expect(running.folded).toEqual([]);
+    expect(running.shown[0]).toMatchObject({ kind: "tools" });
+  });
+
+  it("folds an earlier turn that ended without a summary, as rebuilt chats do", () => {
+    const [first] = turns([user("go"), tool("Read", "a.ts"), tool("Read", "b.ts"), assistant("Read both."), user("next")]);
+    expect(first.folded).toHaveLength(1);
+    expect(first.folded[0]).toMatchObject({ kind: "tools", tools: [{ name: "Read" }, { name: "Read" }] });
+    expect(first.result).toBeUndefined();
+  });
+
+  it("keeps a follow-up queued while a turn ran in that turn, never folding it away", () => {
+    const all = turns([user("go"), tool("Bash", "ls"), user("also check docs", true), tool("Read", "README.md"), assistant("Done."), result(3_000)]);
+    expect(all).toHaveLength(1);
+    const [turn] = all;
+    expect(turn.folded).toEqual([expect.objectContaining({ kind: "tools", tools: [expect.objectContaining({ name: "Bash" })] })]);
+    expect(turn.shown.map((block) => (block.kind === "tools" ? "tools" : block.entry.kind))).toEqual(["user", "tools", "assistant"]);
+    expect(turn.result?.duration_ms).toBe(3_000);
+  });
+
+  it("starts a new turn for a queued follow-up that arrives once the turn has ended", () => {
+    expect(turns([user("go"), assistant("Done."), result(), user("next", true)]).map((turn) => turn.user?.text)).toEqual(["go", "next"]);
+  });
+
+  it("starts with a turn without a prompt when events come before any message", () => {
+    const all = turns([{ kind: "cleared", seq: ++seq }, user("hi")]);
+    expect(all.map((turn) => turn.user?.text)).toEqual([undefined, "hi"]);
+  });
+});
+

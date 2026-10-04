@@ -6,6 +6,7 @@ export type ToolInput =
   | { kind: "bash"; command: string; description?: string }
   | { kind: "edit"; file_path: string; edits: { old_string: string; new_string: string }[]; hidden_edits?: number }
   | { kind: "write"; file_path: string; content: string }
+  | { kind: "search"; pattern: string; path?: string }
   | { kind: "skill"; skill: string; args?: string }
   | { kind: "todos"; todos: Todo[] };
 
@@ -44,9 +45,25 @@ export interface PlanLimits {
 
 const LIMIT_WINDOWS = ["five_hour", "seven_day"] as const;
 
-function limitWindow(utilization: unknown, resetsAt: unknown): LimitWindow | undefined {
+function isLimitWindowName(name: unknown): name is (typeof LIMIT_WINDOWS)[number] {
+  return LIMIT_WINDOWS.includes(name as (typeof LIMIT_WINDOWS)[number]);
+}
+
+/** A window as Claude Code reports it: utilization as a fraction, reset in epoch seconds. */
+function reportedWindow(utilization: unknown, resetsAt: unknown): LimitWindow | undefined {
   if (typeof utilization !== "number" || typeof resetsAt !== "number" || !Number.isFinite(utilization) || !Number.isFinite(resetsAt)) return undefined;
   return { utilization: Math.min(100, Math.max(0, utilization * 100)), resets_at: resetsAt * 1000 };
+}
+
+/** Plan limits as stored by `TranscriptStore`, keeping only well-formed windows. */
+export function storedPlanLimits(value: unknown): PlanLimits | null {
+  if (!value || typeof value !== "object") return null;
+  const limits: PlanLimits = {};
+  for (const name of LIMIT_WINDOWS) {
+    const window = (value as Record<string, unknown>)[name] as Record<string, unknown> | undefined;
+    if (window && typeof window.utilization === "number" && typeof window.resets_at === "number") limits[name] = { utilization: window.utilization, resets_at: window.resets_at };
+  }
+  return Object.keys(limits).length > 0 ? limits : null;
 }
 
 /**
@@ -62,13 +79,13 @@ export function planLimits(info: unknown): PlanLimits | null {
   if (unified && typeof unified === "object") {
     for (const name of LIMIT_WINDOWS) {
       const window = (unified as Record<string, unknown>)[name] as Record<string, unknown> | undefined;
-      const parsed = window && typeof window === "object" ? limitWindow(window.utilization, window.resetsAt) : undefined;
+      const parsed = window && typeof window === "object" ? reportedWindow(window.utilization, window.resetsAt) : undefined;
       if (parsed) limits[name] = parsed;
     }
   }
   const type = fields.rateLimitType;
-  if ((type === "five_hour" || type === "seven_day") && !limits[type]) {
-    const parsed = limitWindow(fields.utilization, fields.resetsAt);
+  if (isLimitWindowName(type) && !limits[type]) {
+    const parsed = reportedWindow(fields.utilization, fields.resetsAt);
     if (parsed) limits[type] = parsed;
   }
   return Object.keys(limits).length > 0 ? limits : null;
@@ -121,11 +138,13 @@ export interface CommandOption {
  * everything else is part of the transcript.
  */
 export type ChatEvent =
-  | { type: "user"; text: string }
+  /** `queued`: sent while a turn ran, so Claude Code takes it into that turn. */
+  | { type: "user"; text: string; queued?: boolean }
   | { type: "delta"; text: string }
   | { type: "assistant"; text: string }
   | { type: "tool"; id: string; name: string; summary: string; input?: ToolInput }
-  | { type: "tool_result"; tool_use_id: string; is_error: boolean; summary: string }
+  /** `lines`: the output's line count, when `summary` had to be clipped. */
+  | { type: "tool_result"; tool_use_id: string; is_error: boolean; summary: string; lines?: number }
   | { type: "permission"; request_id: string; tool: string; title: string; summary: string; input?: ToolInput; can_remember: boolean }
   | { type: "permission_resolved"; request_id: string; allowed: boolean; remembered?: boolean; reason?: string }
   | { type: "result"; is_error: boolean; subtype: string; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
@@ -191,6 +210,13 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
         edits.map((entry) => ({ old_string: text(entry?.old_string), new_string: text(entry?.new_string) })),
       );
     }
+    case "Grep":
+    case "Glob":
+      return {
+        kind: "search",
+        pattern: clip(text(fields.pattern), 500),
+        ...(typeof fields.path === "string" && fields.path ? { path: clip(fields.path, 500) } : {}),
+      };
     case "Write":
       return { kind: "write", file_path: text(fields.file_path), content: clip(text(fields.content), MAX_INPUT_CHARS) };
     case "Skill":
@@ -243,6 +269,17 @@ function toolResultText(content: unknown): string {
       .join("\n");
   }
   return "";
+}
+
+const MAX_RESULT_CHARS = 6_000;
+
+/** Output keeps its start and its end, where a command's outcome usually is. */
+function toolResult(toolUseId: string, isError: boolean, output: string): ChatEvent {
+  if (output.length <= MAX_RESULT_CHARS) return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary: output };
+  const head = output.slice(0, MAX_RESULT_CHARS / 3);
+  const tail = output.slice(output.length - (MAX_RESULT_CHARS * 2) / 3);
+  const summary = `${head}\n… [${output.length - head.length - tail.length} more characters]\n${tail}`;
+  return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary, lines: output.replace(/\n$/, "").split("\n").length };
 }
 
 function usage(raw: unknown): TokenUsage | undefined {
@@ -340,7 +377,7 @@ export function translate(message: SDKMessage): ChatEvent[] {
       if (!Array.isArray(content)) return [];
       return content.flatMap((block): ChatEvent[] =>
         block.type === "tool_result"
-          ? [{ type: "tool_result", tool_use_id: block.tool_use_id, is_error: block.is_error === true, summary: clip(toolResultText(block.content), 6_000) }]
+          ? [toolResult(block.tool_use_id, block.is_error === true, toolResultText(block.content))]
           : [],
       );
     }

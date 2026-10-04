@@ -243,6 +243,26 @@ describe("ClaudeSession", () => {
     expect(session().snapshot().meta.limits).toEqual(limits);
   });
 
+  it("marks a message sent while Claude works as queued into that turn", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("second");
+    await flush();
+    const users = events.map(({ payload }) => payload).filter((payload) => payload.type === "user");
+    expect(users).toEqual([{ type: "user", text: "first" }, { type: "user", text: "second", queued: true }]);
+  });
+
+  it("merges plan limits with what other sessions stored since", async () => {
+    const chat = session();
+    store.setLimits({ seven_day: { utilization: 70, resets_at: 9_000 } });
+    await chat.send("hello");
+    fake.queries[0].emit({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.1, resetsAt: 5 }, uuid: "u", session_id: SESSION_ID } as never);
+    await flush();
+    expect(store.limits()).toEqual({ five_hour: { utilization: 10, resets_at: 5_000 }, seven_day: { utilization: 70, resets_at: 9_000 } });
+    store.setLimits({ five_hour: { utilization: 50, resets_at: 5_000 } });
+    expect(chat.snapshot().meta.limits).toEqual({ five_hour: { utilization: 50, resets_at: 5_000 } });
+  });
+
   it("hands the conversation to the terminal and refuses input until it comes back", async () => {
     const chat = session();
     await chat.send("hello");

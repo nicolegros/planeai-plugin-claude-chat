@@ -1,16 +1,10 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ChatEvent, LimitWindow, ModelOption, PlanLimits } from "./events";
+import { storedPlanLimits, type ChatEvent, type ModelOption, type PlanLimits } from "./events";
 
 export interface StoredEvent {
   seq: number;
   payload: ChatEvent;
-}
-
-function limitWindow(value: unknown): LimitWindow | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const { utilization, resets_at } = value as Record<string, unknown>;
-  return typeof utilization === "number" && typeof resets_at === "number" ? { utilization, resets_at } : undefined;
 }
 
 /** Keep reattach snapshots bounded; the full conversation lives in Claude's own transcript. */
@@ -113,10 +107,7 @@ export class TranscriptStore {
   /** The plan's usage windows Claude Code last reported; they belong to the account, not a session. */
   limits(): PlanLimits | null {
     try {
-      const stored = JSON.parse(readFileSync(this.limitsPath, "utf8")) as Record<string, unknown>;
-      const five_hour = limitWindow(stored?.five_hour);
-      const seven_day = limitWindow(stored?.seven_day);
-      return five_hour || seven_day ? { ...(five_hour ? { five_hour } : {}), ...(seven_day ? { seven_day } : {}) } : null;
+      return storedPlanLimits(JSON.parse(readFileSync(this.limitsPath, "utf8")));
     } catch {
       return null;
     }

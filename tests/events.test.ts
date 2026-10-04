@@ -60,7 +60,9 @@ describe("translate", () => {
     expect(toolInput("Edit", { file_path: "a.ts", old_string: "a", new_string: "b", replace_all: false })).toEqual({ kind: "edit", file_path: "a.ts", edits: [{ old_string: "a", new_string: "b" }] });
     expect(toolInput("MultiEdit", { file_path: "a.ts", edits: [{ old_string: "1", new_string: "2" }, { old_string: "3", new_string: "4" }] })).toMatchObject({ edits: [{ new_string: "2" }, { new_string: "4" }] });
     expect(toolInput("Write", { file_path: "b.ts", content: "x" })).toEqual({ kind: "write", file_path: "b.ts", content: "x" });
-    expect(toolInput("Grep", { pattern: "x" })).toBeUndefined();
+    expect(toolInput("Grep", { pattern: "x", path: "src" })).toEqual({ kind: "search", pattern: "x", path: "src" });
+    expect(toolInput("Glob", { pattern: "**/*.ts" })).toEqual({ kind: "search", pattern: "**/*.ts" });
+    expect(toolInput("Read", { file_path: "a.ts" })).toBeUndefined();
     expect(toolInput("Skill", { skill: "review", args: "42" })).toEqual({ kind: "skill", skill: "review", args: "42" });
     expect(toolInput("Skill", { skill: "review" })).toEqual({ kind: "skill", skill: "review" });
     expect(toolInput("TodoWrite", { todos: [{ content: "a", status: "completed", activeForm: "A" }, { content: "b", status: "unknown" }, null] })).toEqual({
@@ -93,6 +95,19 @@ describe("translate", () => {
     expect(planLimits({ status: "allowed", rateLimitType: "seven_day", utilization: 0.5, resetsAt: 10 })).toEqual({ seven_day: { utilization: 50, resets_at: 10_000 } });
     expect(planLimits({ status: "allowed", rateLimitType: "overage" })).toBeNull();
     expect(planLimits(null)).toBeNull();
+  });
+
+  it("keeps both ends of a long tool output, with its full line count", () => {
+    const [toolUse] = fixture("bash-turn").filter((message) => message.type === "user");
+    const output = Array.from({ length: 2_000 }, (_, line) => `line ${line}`).join("\n");
+    const long = { ...toolUse, message: { ...toolUse.message, content: [{ type: "tool_result", tool_use_id: "t1", content: output }] } } as typeof toolUse;
+    const [result] = translate(long);
+    expect(result).toMatchObject({ type: "tool_result", lines: 2_000 });
+    const summary = (result as { summary: string }).summary;
+    expect(summary.startsWith("line 0\n")).toBe(true);
+    expect(summary.endsWith("line 1999")).toBe(true);
+    expect(summary).toMatch(/\n… \[\d+ more characters\]\n/);
+    expect(summary.length).toBeLessThan(6_100);
   });
 
   it("clips long text so events stay within the host frame limit", () => {

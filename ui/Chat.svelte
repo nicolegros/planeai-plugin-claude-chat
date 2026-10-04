@@ -8,9 +8,11 @@
   import Markdown from "./Markdown.svelte";
   import PermissionCard from "./PermissionCard.svelte";
   import ToolSteps from "./ToolSteps.svelte";
-  import { describeSteps, duration, turns, type Block } from "./tools";
+  import { compacted, duration, turnSummary } from "./format";
+  import { describeSteps } from "./tools";
+  import { turns, type Block } from "./turns";
   import UserPrompt from "./UserPrompt.svelte";
-  import type { Appearance, CommandOption, Compaction, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent, TokenUsage } from "./host";
+  import type { Appearance, CommandOption, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent } from "./host";
   import { Transcript } from "./transcript.svelte";
 
   let { context }: { context: ProviderUiContext } = $props();
@@ -230,36 +232,13 @@
   onDestroy(() => unsubscribe?.());
 
   const openExternal = (url: string) => context.host.navigation.openExternal(url);
-
-  function seconds(ms: number): string {
-    return `${(ms / 1000).toFixed(1)}s`;
-  }
-
-  function turnSummary(entry: { is_error: boolean; text?: string; duration_ms: number; cost_usd: number; usage?: TokenUsage }): string {
-    return [entry.is_error ? (entry.text ?? "Turn failed") : null, seconds(entry.duration_ms), `$${entry.cost_usd.toFixed(4)}`, entry.usage ? tokens(entry.usage) : null]
-      .filter(Boolean)
-      .join(" · ");
-  }
-
-  function short(count: number): string {
-    return count >= 1000 ? `${(count / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(count);
-  }
-
-  function tokens(usage: TokenUsage): string {
-    const input = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-    return `${short(input)} in · ${short(usage.output_tokens)} out`;
-  }
-
-  function compacted(entry: Compaction): string {
-    const what = entry.trigger === "auto" ? "Conversation compacted automatically" : "Conversation compacted";
-    const detail = entry.post_tokens === undefined ? `${short(entry.pre_tokens)} tokens summarized` : `${short(entry.pre_tokens)} → ${short(entry.post_tokens)} tokens`;
-    return `${what} · ${detail}`;
-  }
 </script>
 
 {#snippet block(item: Block)}
   {#if item.kind === "tools"}
     <ToolSteps tools={item.tools} {root} />
+  {:else if item.entry.kind === "user"}
+    <div class="follow-up"><p class="follow-up-label">Your follow-up</p><p class="follow-up-text">{item.entry.text}</p></div>
   {:else if item.entry.kind === "assistant"}
     <div class="message"><Markdown text={item.entry.text} onLink={openExternal} /></div>
   {:else if item.entry.kind === "permission"}
@@ -363,9 +342,9 @@
           <ComposerBar meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff}>
             {#snippet actions()}
               {#if working}
-                <button type="button" class="round" onclick={interrupt} data-tip="Stop · Esc" data-tip-end aria-label="Stop"><Icon name="stop" size={12} /></button>
+                <button type="button" class="icon-control round" onclick={interrupt} data-tip="Stop · Esc" data-tip-end aria-label="Stop"><Icon name="stop" size={12} /></button>
               {/if}
-              <button type="submit" class="round primary" disabled={!draft.trim()} data-tip={working ? "Queue · Enter" : "Send · Enter"} data-tip-end aria-label={working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
+              <button type="submit" class="icon-control round primary" disabled={!draft.trim()} data-tip={working ? "Queue · Enter" : "Send · Enter"} data-tip-end aria-label={working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
             {/snippet}
           </ComposerBar>
         </div>
@@ -377,6 +356,7 @@
 <style>
   .chat {
     /* The type scale, from the size in the plugin's settings; at 13px it is the chat's original one. */
+    --chat-size-2xs: calc(var(--chat-size) - 2px);
     --chat-size-xs: calc(var(--chat-size) - 1.5px);
     --chat-size-sm: calc(var(--chat-size) - 1px);
     --chat-size-code: calc(var(--chat-size) - 0.5px);
@@ -394,6 +374,9 @@
     --chat-space-5: calc(20 * var(--chat-unit));
     --chat-space-6: calc(24 * var(--chat-unit));
     --chat-radius: calc(8 * var(--chat-unit));
+    --chat-radius-sm: calc(6 * var(--chat-unit));
+    /* For a box nested inside a radius-sized one. */
+    --chat-radius-inner: calc(var(--chat-radius) - calc(2 * var(--chat-unit)));
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -408,7 +391,7 @@
   :where(.chat) :global(button) { min-height: calc(32 * var(--chat-unit)); padding: calc(6 * var(--chat-unit)) calc(10 * var(--chat-unit)); }
   /* WebKit frames never show native title tooltips, so controls labelled by an icon or a short name get this one. */
   :where(.chat) :global([data-tip]) { position: relative; }
-  :where(.chat) :global([data-tip]::after) { content: attr(data-tip); position: absolute; bottom: calc(100% + calc(6 * var(--chat-unit))); left: 50%; z-index: 3; transform: translateX(-50%); padding: calc(4 * var(--chat-unit)) calc(8 * var(--chat-unit)); border-radius: calc(6 * var(--chat-unit)); background: var(--planeai-text); color: var(--planeai-main); font-family: var(--chat-font); font-size: var(--chat-size-xs); font-weight: 400; line-height: var(--chat-line); text-align: left; white-space: pre; pointer-events: none; opacity: 0; transition: opacity 120ms; }
+  :where(.chat) :global([data-tip]::after) { content: attr(data-tip); position: absolute; bottom: calc(100% + calc(6 * var(--chat-unit))); left: 50%; z-index: 3; transform: translateX(-50%); padding: var(--chat-space-1) var(--chat-space-2); border-radius: var(--chat-radius-sm); background: var(--planeai-text); color: var(--planeai-main); font-family: var(--chat-font); font-size: var(--chat-size-xs); font-weight: 400; line-height: var(--chat-line); text-align: left; white-space: pre; pointer-events: none; opacity: 0; transition: opacity 120ms; }
   :where(.chat) :global([data-tip-end]::after) { right: 0; left: auto; transform: none; }
   :where(.chat) :global([data-tip]:hover::after) { opacity: 1; transition-delay: 400ms; }
   :where(.chat) :global([data-tip]:focus-visible::after) { opacity: 1; }
@@ -419,7 +402,7 @@
   .turn:last-child { border-bottom: 0; }
   .body { display: flex; flex-direction: column; gap: var(--chat-space-3); padding: var(--chat-space-4) var(--chat-space-5) var(--chat-space-5); }
   .message { max-width: 100%; }
-  .work summary { display: inline-flex; align-items: center; gap: calc(6 * var(--chat-unit)); max-width: 100%; padding: calc(2 * var(--chat-unit)) calc(8 * var(--chat-unit)) calc(2 * var(--chat-unit)) calc(4 * var(--chat-unit)); margin-left: calc(-4 * var(--chat-unit)); border-radius: calc(6 * var(--chat-unit)); color: var(--planeai-text-muted); font-size: var(--chat-size-sm); cursor: pointer; list-style: none; }
+  .work summary { display: inline-flex; align-items: center; gap: calc(6 * var(--chat-unit)); max-width: 100%; padding: calc(2 * var(--chat-unit)) var(--chat-space-2) calc(2 * var(--chat-unit)) var(--chat-space-1); margin-left: calc(-4 * var(--chat-unit)); border-radius: var(--chat-radius-sm); color: var(--planeai-text-muted); font-size: var(--chat-size-sm); cursor: pointer; list-style: none; }
   .work summary:hover { background: var(--planeai-accent-subtle); color: var(--planeai-text); }
   .work summary::-webkit-details-marker { display: none; }
   .work summary :global(.icon) { transition: transform 120ms; }
@@ -443,7 +426,12 @@
   .composer :global(.commands) { right: 0; left: 0; bottom: calc(100% + var(--chat-space-2)); }
   /* In a narrow pane at a large size the right-hand controls wrap rather than cut the model name. */
   .bar { display: flex; flex-wrap: wrap; row-gap: var(--chat-space-1); align-items: center; gap: var(--chat-space-1); min-width: 0; padding: var(--chat-space-1) var(--chat-space-2) var(--chat-space-2); }
-  .round { display: grid; flex: none; place-items: center; width: calc(28 * var(--chat-unit)); height: calc(28 * var(--chat-unit)); min-height: 0; padding: 0; border-radius: 50%; }
+  /* A square control labelled by an icon. */
+  :where(.chat) :global(.icon-control) { display: grid; flex: none; place-items: center; width: calc(28 * var(--chat-unit)); height: calc(28 * var(--chat-unit)); min-height: 0; padding: 0; }
+  .round { border-radius: 50%; }
+  .follow-up { align-self: flex-end; max-width: 85%; padding: var(--chat-space-2) var(--chat-space-3); border-radius: var(--chat-radius); background: var(--planeai-accent-subtle); }
+  .follow-up-label { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
+  .follow-up-text { white-space: pre-wrap; overflow-wrap: anywhere; }
   /* Dimmed by color rather than opacity, which would fade its tooltip too. */
   .round.primary:disabled { opacity: 1; border-color: transparent; background: color-mix(in srgb, var(--planeai-accent) 30%, var(--planeai-surface)); }
   .handed-off { display: flex; align-items: center; gap: var(--chat-space-3); padding: var(--chat-space-3) var(--chat-space-4); }

@@ -151,12 +151,12 @@ describe("Chat", () => {
     expect(document.querySelector(".tool")?.getAttribute("data-state")).toBe("running");
     expect(document.querySelector(".tool .sentence")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Editing a.ts in src");
     expect(document.querySelector(".tool .meta")?.textContent?.replace(/\s+/g, " ").trim()).toBe("+1 −1");
-    expect(document.querySelector(".diff-preview .remove")?.textContent).toContain("const a = 1;");
-    expect(document.querySelector(".diff-preview .add")?.textContent).toContain("const a = 2;");
-    expect(document.querySelector(".diff")).toBeNull();
+    expect(document.querySelector(".diff.preview .remove")?.textContent).toContain("const a = 1;");
+    expect(document.querySelector(".diff.preview .add")?.textContent).toContain("const a = 2;");
+    expect(document.querySelector(".diff:not(.preview)")).toBeNull();
     document.querySelector<HTMLButtonElement>(".tool button")!.click();
     flushSync();
-    expect(document.querySelector(".diff-preview")).toBeNull();
+    expect(document.querySelector(".diff.preview")).toBeNull();
     expect(document.querySelector(".diff .remove")?.textContent).toContain("const a = 1;");
     expect(document.querySelector(".diff .add")?.textContent).toContain("const a = 2;");
 
@@ -198,6 +198,7 @@ describe("Chat", () => {
     expect(document.querySelector(".context-label")?.textContent).toBe("25%");
     expect(document.querySelector("[role=meter]")?.getAttribute("aria-valuenow")).toBe("25");
     expect(document.querySelector(".context")?.getAttribute("data-tip")).toBe("50k of 200k tokens of context used");
+    expect(document.querySelector("[role=meter]")?.getAttribute("aria-valuetext")).toBe("50k of 200k tokens of context used");
 
     const resets = new Date(Date.now() + 60 * 60 * 1000).getTime();
     harness.push(2, { type: "meta", meta: { limits: { five_hour: { utilization: 61.2, resets_at: resets }, seven_day: { utilization: 44, resets_at: 0 } } } });
@@ -207,7 +208,7 @@ describe("Chat", () => {
     expect(tip?.[1]).toMatch(/^5-hour limit: 61% used · resets (at|\w{3}) /);
     expect(tip).toHaveLength(2);
     expect(document.querySelector("[aria-label='Open in terminal']")?.getAttribute("data-tip")).toBe("Continue in Claude Code's terminal");
-    const modes = () => [...document.querySelectorAll("[role=radiogroup] [role=radio]")].map((mode) => [mode.textContent?.trim(), mode.getAttribute("aria-checked")]);
+    const modes = () => [...document.querySelectorAll("[role=group] [aria-pressed]")].map((mode) => [mode.textContent?.trim(), mode.getAttribute("aria-pressed")]);
     expect(modes()).toEqual([["Ask", "true"], ["Edits", "false"], ["Plan", "false"]]);
     button("Plan only").click();
     const model = document.querySelector("select")!;
@@ -457,7 +458,7 @@ describe("Chat", () => {
       usage: { input_tokens: 100, output_tokens: 340, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 100 },
     });
     await settle();
-    expect(document.querySelector(".turn-summary")?.textContent?.replace(/\s+/g, " ").trim()).toBe("12.9s · $0.1234 · 1.2k in · 340 out");
+    expect(document.querySelector(".turn-summary")?.textContent?.replace(/\s+/g, " ").trim()).toBe("13s · $0.1234 · 1.2k in · 340 out");
   });
 
   it("pins each prompt over its turn and folds finished work behind a summary", async () => {
@@ -501,10 +502,20 @@ describe("Chat", () => {
     const content = Array.from({ length: 30 }, (_, line) => `line ${line}`).join("\n");
     harness.push(1, { type: "tool", id: "t1", name: "Write", summary: "a.md", input: { kind: "write", file_path: "a.md", content } });
     await settle();
-    expect(document.querySelectorAll(".diff-preview .line")).toHaveLength(12);
+    expect(document.querySelectorAll(".diff.preview .line")).toHaveLength(12);
     button("Show all 30 lines").click();
     flushSync();
-    expect(document.querySelectorAll(".diff-preview .line")).toHaveLength(30);
+    expect(document.querySelectorAll(".diff.preview .line")).toHaveLength(30);
+  });
+
+  it("shows a follow-up sent while Claude works inside the running turn", async () => {
+    const harness = await render();
+    harness.push(1, { type: "user", text: "fix the tests" });
+    harness.push(2, { type: "tool", id: "t1", name: "Bash", summary: "npm test", input: { kind: "bash", command: "npm test" } });
+    harness.push(3, { type: "user", text: "and the docs", queued: true });
+    await settle();
+    expect(document.querySelectorAll(".turn")).toHaveLength(1);
+    expect(document.querySelector(".turn .follow-up-text")?.textContent).toBe("and the docs");
   });
 
   it("shows the plan as a checklist without expanding it", async () => {

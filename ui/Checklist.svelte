@@ -17,7 +17,7 @@
 </ul>
 
 <style>
-  .checklist { display: grid; gap: calc(4 * var(--chat-unit)); margin: 0; padding: 0; list-style: none; font-size: var(--chat-size-sm); }
+  .checklist { display: grid; gap: var(--chat-space-1); margin: 0; padding: 0; list-style: none; font-size: var(--chat-size-sm); }
   li { display: flex; align-items: flex-start; gap: var(--chat-space-2); line-height: var(--chat-line); }
   .box { display: grid; place-items: center; flex: none; width: calc(14 * var(--chat-unit)); height: calc(14 * var(--chat-unit)); margin-top: calc((var(--chat-line) - calc(14 * var(--chat-unit))) / 2); border: 1.5px solid var(--planeai-border-strong); border-radius: calc(4 * var(--chat-unit)); }
   .check { width: calc(10 * var(--chat-unit)); height: calc(10 * var(--chat-unit)); }

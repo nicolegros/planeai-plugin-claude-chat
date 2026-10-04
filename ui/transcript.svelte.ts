@@ -13,9 +13,9 @@ export interface PermissionEntry {
 }
 
 export type Entry =
-  | { kind: "user"; seq: number; text: string }
+  | { kind: "user"; seq: number; text: string; queued?: boolean }
   | { kind: "assistant"; seq: number; text: string }
-  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string } | null }
+  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string; lines?: number } | null }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
   | { kind: "result"; seq: number; is_error: boolean; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { kind: "error"; seq: number; message: string }
@@ -57,7 +57,7 @@ export class Transcript {
         this.status = event.status;
         return;
       case "user":
-        this.entries.push({ kind: "user", seq, text: event.text });
+        this.entries.push({ kind: "user", seq, text: event.text, ...(event.queued ? { queued: true } : {}) });
         return;
       case "assistant":
         this.live = "";
@@ -69,7 +69,7 @@ export class Transcript {
         return;
       case "tool_result": {
         const tool = this.entries.findLast((entry) => entry.kind === "tool" && entry.id === event.tool_use_id);
-        if (tool?.kind === "tool") tool.result = { is_error: event.is_error, summary: event.summary };
+        if (tool?.kind === "tool") tool.result = { is_error: event.is_error, summary: event.summary, ...(event.lines === undefined ? {} : { lines: event.lines }) };
         return;
       }
       case "permission": {
