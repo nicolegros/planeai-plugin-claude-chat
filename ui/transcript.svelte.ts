@@ -14,7 +14,7 @@ export interface PermissionEntry {
 
 export type Entry =
   | { kind: "user"; seq: number; text: string; queued?: boolean; id?: string }
-  | { kind: "turn_start"; seq: number; user_id: string }
+  | { kind: "turn_start"; seq: number; user_ids: string[] }
   | { kind: "assistant"; seq: number; text: string }
   | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string; lines?: number } | null }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
@@ -111,7 +111,7 @@ export class Transcript {
         this.entries.push({ kind: "notice", seq, text: event.text });
         return;
       case "turn_start":
-        this.entries.push({ kind: "turn_start", seq, user_id: event.user_id });
+        this.entries.push({ kind: "turn_start", seq, user_ids: event.user_ids });
         return;
       case "commands_changed":
       case "appearance":

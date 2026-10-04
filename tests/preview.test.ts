@@ -42,6 +42,11 @@ describe("outputTail", () => {
     expect(outputTail("1\n2", 3, false)).toEqual({ hidden: 0, shown: "1\n2" });
   });
 
+  it("reports the full length of an output clipped in the middle", () => {
+    expect(outputTail("a\n… [10 more characters]\nb\nc\nd", 3, false, 400)).toEqual({ hidden: 2, shown: "b\nc\nd", clippedFrom: 400 });
+    expect(outputTail("a\nb", 3, false, 2)).toEqual({ hidden: 0, shown: "a\nb" });
+  });
+
   it("shows more of a failure", () => {
     expect(outputTail("1\n2\n3\n4\n5\n6\n7\n8", 3, true)).toEqual({ hidden: 2, shown: "3\n4\n5\n6\n7\n8" });
   });

@@ -1,21 +1,18 @@
 <script lang="ts">
-  import { lineCount } from "../src/events";
   import { plural } from "./format";
   import { outputTail } from "./preview";
 
-  /** `total`: the full output's line count, when `output` was clipped in the middle. */
-  let { output, failed, total }: { output: string; failed: boolean; total?: number } = $props();
-  const LINES = 3;
+  /** `lines`: the full output's line count, reported when `output` was clipped in the middle. */
+  let { output, failed, lines }: { output: string; failed: boolean; lines?: number } = $props();
   let expanded = $state(false);
-  const tail = $derived(outputTail(output, LINES, failed));
-  const hidden = $derived(total === undefined ? tail.hidden : total - lineCount(tail.shown));
+  const tail = $derived(outputTail(output, 3, failed, lines));
 </script>
 
 <div class="output-tail" class:failed>
   {#if expanded || tail.hidden === 0}
     <pre>{output.replace(/\n+$/, "")}</pre>
   {:else}
-    <button type="button" class="earlier" onclick={() => (expanded = true)}>⋯ {plural(hidden, "earlier line")}</button>
+    <button type="button" class="earlier" onclick={() => (expanded = true)}>⋯ {plural(tail.hidden, "earlier line")}{#if tail.clippedFrom}{` · clipped from ${plural(tail.clippedFrom, "line")}`}{/if}</button>
     <pre>{tail.shown}</pre>
   {/if}
 </div>

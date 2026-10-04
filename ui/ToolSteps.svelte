@@ -51,7 +51,7 @@
         {#if preview?.kind === "diff"}
           <div class="preview"><Diff edits={preview.edits} preview /></div>
         {:else if preview?.kind === "output"}
-          <div class="preview"><OutputTail output={preview.output} failed={preview.failed} total={preview.lines} /></div>
+          <div class="preview"><OutputTail output={preview.output} failed={preview.failed} lines={preview.lines} /></div>
         {:else if preview?.kind === "answer"}
           <p class="preview answer">{preview.text}</p>
         {/if}

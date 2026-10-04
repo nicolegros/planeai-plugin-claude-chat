@@ -46,12 +46,27 @@ describe("turns", () => {
 
   it("moves a queued follow-up to a turn of its own once Claude starts one for it", () => {
     const followUp: Entry = { kind: "user", seq: ++seq, text: "and the docs", queued: true, id: "u2" };
-    const entries = [user("go"), tool("Bash", "ls"), followUp, assistant("Done."), result(2_000), { kind: "turn_start", seq: ++seq, user_id: "u2" } as Entry, tool("Read", "docs.md"), assistant("Docs too."), result(1_000)];
+    const entries = [user("go"), tool("Bash", "ls"), followUp, assistant("Done."), result(2_000), { kind: "turn_start", seq: ++seq, user_ids: ["u2"] } as Entry, tool("Read", "docs.md"), assistant("Docs too."), result(1_000)];
     const all = turns(entries);
     expect(all.map((turn) => [turn.user?.text, turn.result?.duration_ms])).toEqual([["go", 2_000], ["and the docs", 1_000]]);
     expect(all[0].shown.some((block) => block.kind === "entry" && block.entry.kind === "user")).toBe(false);
     expect(all[1].foldedTools.map((entry) => entry.name)).toEqual(["Read"]);
     expect(all[0].foldedTools.map((entry) => entry.name)).toEqual(["Bash"]);
+  });
+
+  it("opens a turn Claude ran for several follow-ups with the first, the others inside it", () => {
+    const first: Entry = { kind: "user", seq: ++seq, text: "a", queued: true, id: "a" };
+    const second: Entry = { kind: "user", seq: ++seq, text: "b", queued: true, id: "b" };
+    const all = turns([user("go"), assistant("…"), first, second, result(), { kind: "turn_start", seq: ++seq, user_ids: ["a", "b"] } as Entry, assistant("Both.")]);
+    expect(all.map((turn) => turn.user?.text)).toEqual(["go", "a"]);
+    expect(all[1].shown.map((block) => (block.kind === "entry" && block.entry.kind === "user" ? block.entry.text : block.kind === "entry" && block.entry.kind))).toEqual(["b", "assistant"]);
+  });
+
+  it("still starts a turn when its follow-up was paged out of the snapshot", () => {
+    const all = turns([user("go"), assistant("Done."), result(), { kind: "turn_start", seq: ++seq, user_ids: ["gone"] } as Entry, assistant("Reply.")]);
+    expect(all).toHaveLength(2);
+    expect(all[1].user).toBeUndefined();
+    expect(all[0].after).toEqual([]);
   });
 
   it("starts a new turn for a queued follow-up that arrives once the turn has ended", () => {

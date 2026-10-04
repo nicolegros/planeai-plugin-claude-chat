@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clip, planLimits, replay, summarizeInput, toolInput, translate } from "../src/events";
+import { clip, lineCount, planLimits, replay, summarizeInput, toolInput, translate } from "../src/events";
 import { fixture, history } from "./helpers";
 
 describe("translate", () => {
@@ -116,6 +116,19 @@ describe("translate", () => {
     const long = { ...toolUse, message: { ...toolUse.message, content: [{ type: "tool_result", tool_use_id: "t1", content: output }] } } as typeof toolUse;
     const summary = (translate(long)[0] as { summary: string }).summary;
     expect(summary.split("\n")[0]).toBe("a".repeat(1_999));
+  });
+
+  it("keeps the budget around one very long line instead of cutting at a far newline", () => {
+    const [toolUse] = fixture("bash-turn").filter((message) => message.type === "user");
+    const output = `$ build\n${"x".repeat(50_000)}\nFAILED`;
+    const long = { ...toolUse, message: { ...toolUse.message, content: [{ type: "tool_result", tool_use_id: "t1", content: output }] } } as typeof toolUse;
+    const summary = (translate(long)[0] as { summary: string }).summary;
+    expect(summary.length).toBeGreaterThan(5_000);
+    expect(summary.endsWith("\nFAILED")).toBe(true);
+  });
+
+  it("counts lines without trailing newlines", () => {
+    expect([lineCount(""), lineCount("\n\n"), lineCount("a"), lineCount("a\n"), lineCount("a\nb\n\n"), lineCount("a\r\nb")]).toEqual([0, 0, 1, 1, 2, 2]);
   });
 
   it("clips long text so events stay within the host frame limit", () => {

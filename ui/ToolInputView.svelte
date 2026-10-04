@@ -14,7 +14,7 @@
 {:else if input?.kind === "edit"}
   {#if !inline}<p class="caption">{input.file_path}</p>{/if}
   <Diff edits={input.edits} />
-  {#if input.hidden_edits}<p class="caption">{plural(input.hidden_edits, "more edit", "more edits")} not shown</p>{/if}
+  {#if input.hidden_edits}<p class="caption">{plural(input.hidden_edits, "more edit")} not shown</p>{/if}
 {:else if input?.kind === "write"}
   {#if !inline}<p class="caption">{input.file_path}</p>{/if}
   <Diff edits={editsOf(input)} />

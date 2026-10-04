@@ -18,11 +18,10 @@ export interface Turn {
   after: Block[];
 }
 
-function blocks(entries: Entry[]): Block[] {
+function blocks(entries: TurnEntry[]): Block[] {
   const out: Block[] = [];
   for (const entry of entries) {
     const last = out.at(-1);
-    if (entry.kind === "turn_start") continue;
     if (entry.kind !== "tool") out.push({ kind: "entry", seq: entry.seq, entry });
     else if (last?.kind === "tools") last.tools.push(entry);
     else out.push({ kind: "tools", seq: entry.seq, tools: [entry] });
@@ -30,7 +29,7 @@ function blocks(entries: Entry[]): Block[] {
   return out;
 }
 
-function fold(seq: number, user: UserEntry | undefined, entries: Entry[], finished: boolean): Turn {
+function fold(seq: number, user: UserEntry | undefined, entries: TurnEntry[], finished: boolean): Turn {
   const resultIndex = entries.findIndex((entry) => entry.kind === "result");
   const result = resultIndex < 0 ? undefined : (entries[resultIndex] as ResultEntry);
   const work = blocks(resultIndex < 0 ? entries : entries.slice(0, resultIndex));
@@ -48,21 +47,25 @@ function fold(seq: number, user: UserEntry | undefined, entries: Entry[], finish
   return { seq, user, folded, foldedTools, shown: work.slice(end), result, after };
 }
 
+type TurnEntry = Exclude<Entry, { kind: "turn_start" }>;
+
 /**
  * Each user message starts a turn. A follow-up queued while a turn ran shows inside that turn,
- * as Claude Code folds it in, unless Claude later started a turn for it, at its `turn_start`.
+ * as Claude Code folds it in, unless Claude started a turn for it: then it moves to that turn's
+ * `turn_start`, the first follow-up as its prompt and any others Claude took with it inside.
  * Anything before the first message is a turn without a prompt.
  */
 export function turns(entries: Entry[]): Turn[] {
-  const queued = new Map(entries.flatMap((entry) => (entry.kind === "user" && entry.id ? [[entry.id, entry] as const] : [])));
-  const started = new Set(entries.flatMap((entry) => (entry.kind === "turn_start" && queued.has(entry.user_id) ? [entry.user_id] : [])));
-  const groups: { seq: number; user?: UserEntry; entries: Entry[]; ended: boolean }[] = [];
+  const followUps = new Map(entries.flatMap((entry) => (entry.kind === "user" && entry.id ? [[entry.id, entry] as const] : [])));
+  const moved = new Set(entries.flatMap((entry) => (entry.kind === "turn_start" ? entry.user_ids.filter((id) => followUps.has(id)) : [])));
+  const groups: { seq: number; user?: UserEntry; entries: TurnEntry[]; ended: boolean }[] = [];
   for (const entry of entries) {
     const current = groups.at(-1);
     if (entry.kind === "turn_start") {
-      const user = started.has(entry.user_id) ? queued.get(entry.user_id) : undefined;
-      if (user) groups.push({ seq: entry.seq, user, entries: [], ended: false });
-    } else if (entry.kind === "user" && entry.id && started.has(entry.id)) {
+      // A follow-up paged out of the snapshot still leaves the turn its own boundary.
+      const [user, ...others] = entry.user_ids.flatMap((id) => followUps.get(id) ?? []);
+      groups.push({ seq: entry.seq, user, entries: others, ended: false });
+    } else if (entry.kind === "user" && entry.id && moved.has(entry.id)) {
       continue;
     } else if (entry.kind === "user" && !(entry.queued && current?.user && !current.ended)) {
       groups.push({ seq: entry.seq, user: entry, entries: [], ended: false });

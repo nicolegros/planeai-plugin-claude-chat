@@ -140,8 +140,8 @@ export interface CommandOption {
 export type ChatEvent =
   /** `queued`: sent while a turn ran; Claude Code folds it into that turn unless a `turn_start` names its `id`. */
   | { type: "user"; text: string; queued?: boolean; id?: string }
-  /** Claude started a turn for the queued follow-up `user_id`, rather than folding it into the turn that was running. */
-  | { type: "turn_start"; user_id: string }
+  /** Claude started a turn for these queued follow-ups, in the order it took them, rather than folding them into the turn that was running. */
+  | { type: "turn_start"; user_ids: string[] }
   | { type: "delta"; text: string }
   | { type: "assistant"; text: string }
   | { type: "tool"; id: string; name: string; summary: string; input?: ToolInput }
@@ -287,15 +287,17 @@ function safeCut(text: string, at: number): number {
   return code >= 0xd800 && code <= 0xdbff ? at - 1 : at;
 }
 
-/** Output keeps its start and its end, where a command's outcome usually is, each cut on a line boundary when it can be. */
+/** Output keeps its start and its end, where a command's outcome usually is, each cut on a line boundary near the cut. */
 function toolResult(toolUseId: string, isError: boolean, output: string): ChatEvent {
   if (output.length <= MAX_RESULT_CHARS) return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary: output };
   const headCut = MAX_RESULT_CHARS / 3;
   const tailCut = output.length - (MAX_RESULT_CHARS * 2) / 3;
+  // A far newline would waste the budget around one very long line.
+  const reach = MAX_RESULT_CHARS / 10;
   const lastHeadNewline = output.lastIndexOf("\n", headCut);
-  const headEnd = lastHeadNewline > 0 ? lastHeadNewline : safeCut(output, headCut);
+  const headEnd = lastHeadNewline > headCut - reach ? lastHeadNewline : safeCut(output, headCut);
   const firstTailNewline = output.indexOf("\n", tailCut);
-  const tailStart = firstTailNewline >= 0 && firstTailNewline < output.length - 1 ? firstTailNewline + 1 : safeCut(output, tailCut);
+  const tailStart = firstTailNewline >= 0 && firstTailNewline < tailCut + reach && firstTailNewline < output.length - 1 ? firstTailNewline + 1 : safeCut(output, tailCut);
   const head = output.slice(0, headEnd);
   const tail = output.slice(tailStart);
   const summary = `${head}\n… [${tailStart - headEnd} more characters]\n${tail}`;

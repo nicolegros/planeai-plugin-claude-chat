@@ -90,8 +90,10 @@ export class ClaudeSession {
   private conversationId: string;
   /** Messages compaction kept, which Claude replays after its boundary. */
   private preserved = new Set<string>();
-  /** Follow-ups sent while a turn ran, until Claude starts a turn of their own; one folded into the running turn never does. */
+  /** Follow-ups sent while a turn ran, until Claude consumes them: folded into a turn, or as a turn of their own. */
   private queued = new Set<string>();
+  /** Whether a frame of the running turn named the messages it consumed. */
+  private turnStamped = false;
   private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
   /** Counts status changes, so a send can tell whether anything moved it while it waited. */
@@ -366,6 +368,7 @@ export class ClaudeSession {
 
   private detach(reason: string): void {
     this.denyPending(reason);
+    this.forgetQueued();
     const query = this.query;
     this.query = null;
     this.input?.close();
@@ -436,6 +439,7 @@ export class ClaudeSession {
         this.input?.close();
         this.input = null;
         this.denyPending("Claude stopped");
+        this.forgetQueued();
         if (!this.stopped) this.setStatus("idle");
       }
     }
@@ -458,9 +462,7 @@ export class ClaudeSession {
       }
     }
     if (message.type === "rate_limit_event") this.onRateLimit(message.rate_limit_info);
-    // Claude stamps the first reply of a turn with the message that started it.
-    const answering = (message as { user_message_uuid?: string }).user_message_uuid;
-    if (answering && this.queued.delete(answering)) this.emit({ type: "turn_start", user_id: answering });
+    this.onConsumed(message);
     // /clear moves Claude to a new id within the turn; its result already carries it.
     if (message.type === "result") this.follow(message.session_id);
     for (const event of translate(message)) this.emit(event);
@@ -480,6 +482,22 @@ export class ClaudeSession {
     if (this.slashCommands.setTerminalOnly(terminalOnly)) this.emit({ type: "commands_changed" });
   }
 
+  /**
+   * Claude stamps a turn's frames with the messages it consumed: the batch that started it,
+   * then any folded in. A turn started by follow-ups alone gets a `turn_start`; follow-ups in
+   * a turn some other prompt started were folded into it.
+   */
+  private onConsumed(message: SDKMessage): void {
+    const stamped = message.type === "assistant" || message.type === "stream_event" || message.type === "result" ? message : null;
+    const consumed = stamped?.user_message_uuids ?? (stamped?.user_message_uuid ? [stamped.user_message_uuid] : []);
+    if (consumed.length > 0 && !this.turnStamped) {
+      this.turnStamped = true;
+      if (consumed.every((id) => this.queued.has(id))) this.emit({ type: "turn_start", user_ids: consumed });
+    }
+    for (const id of consumed) this.queued.delete(id);
+    if (message.type === "result") this.turnStamped = false;
+  }
+
   /** Each window updates on its own, as an event may describe only one; others come from the shared file, which other sessions update too. */
   private onRateLimit(info: unknown): void {
     const reported = planLimits(info);
@@ -487,6 +505,12 @@ export class ClaudeSession {
     const limits = { ...this.store.limits(), ...reported };
     this.store.setLimits(limits);
     this.updateMeta({ limits });
+  }
+
+  /** Follow-ups a stopped Claude never consumed get no turn of their own. */
+  private forgetQueued(): void {
+    this.queued.clear();
+    this.turnStamped = false;
   }
 
   private follow(sessionId: string): void {

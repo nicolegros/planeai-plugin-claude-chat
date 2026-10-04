@@ -496,12 +496,12 @@ describe("Chat", () => {
     expect(document.querySelector(".answer")?.textContent).toBe("Two callers.");
   });
 
-  it("counts the lines a clipped output hid by the output's real length", async () => {
+  it("says how long a clipped output really was", async () => {
     const harness = await render();
     harness.push(1, { type: "tool", id: "t1", name: "Bash", summary: "make", input: { kind: "bash", command: "make" } });
     harness.push(2, { type: "tool_result", tool_use_id: "t1", is_error: false, summary: "start\n… [90 more characters]\nx\ny\nz", lines: 500 });
     await settle();
-    expect(document.querySelector(".output-tail .earlier")?.textContent).toBe("⋯ 497 earlier lines");
+    expect(document.querySelector(".output-tail .earlier")?.textContent?.replace(/\s+/g, " ").trim()).toBe("⋯ 2 earlier lines · clipped from 500 lines");
     expect(document.querySelector(".tool .meta")?.textContent?.trim()).toBe("500 lines");
   });
 

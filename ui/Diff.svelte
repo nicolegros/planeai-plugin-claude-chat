@@ -8,13 +8,13 @@
   const CAP = 12;
   let expanded = $state(false);
   const rows = $derived(diffRows(edits, preview ? 2 : Infinity));
-  const capped = $derived(preview && !expanded && rows.length > CAP);
-  const more = $derived(rows.slice(CAP).filter((row) => row.kind !== "gap").length);
+  const more = $derived(preview ? rows.slice(CAP).filter((row) => row.kind !== "gap").length : 0);
+  const capped = $derived(more > 0 && !expanded);
 </script>
 
 <div class="diff" class:preview class:capped>
   <pre>{#each capped ? rows.slice(0, CAP) : rows as row, index (index)}{#if row.kind === "gap"}<span class="gap">{row.count ? `⋯ ${plural(row.count, "unchanged line")}` : "⋯"}</span>{:else}<span class="line {row.kind}"><span class="marker">{row.kind === "add" ? "+" : row.kind === "remove" ? "−" : " "}</span>{row.text || " "}</span>{/if}{/each}</pre>
-  {#if preview && rows.length > CAP}
+  {#if more > 0}
     <button type="button" class="more" onclick={() => (expanded = !expanded)}>{expanded ? "Show less" : `Show ${plural(more, "more line")}`}</button>
   {/if}
 </div>

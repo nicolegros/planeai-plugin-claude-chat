@@ -6,7 +6,7 @@ export interface Edit {
   new_string: string;
 }
 
-export type DiffRow = { kind: "add" | "remove" | "same"; text: string } | { kind: "gap"; count: number };
+type DiffRow = { kind: "add" | "remove" | "same"; text: string } | { kind: "gap"; count: number };
 
 const writes = new WeakMap<ToolInput, Edit[]>();
 
@@ -62,10 +62,13 @@ export function diffStats(edits: Edit[]): { added: number; removed: number } {
   return { added: lines.filter((line) => line.kind === "add").length, removed: lines.filter((line) => line.kind === "remove").length };
 }
 
-/** The last `lines` lines of output, more for a failure since its cause usually sits above the summary. */
-export function outputTail(output: string, lines: number, failed: boolean): { hidden: number; shown: string } {
+/**
+ * The last `count` lines of output, more for a failure since its cause usually sits above the summary.
+ * `hidden` is what expanding reveals; `clippedFrom` is the full output's line count when its middle was clipped.
+ */
+export function outputTail(output: string, count: number, failed: boolean, lines?: number): { hidden: number; shown: string; clippedFrom?: number } {
   const all = output.replace(/\n+$/, "").split("\n");
-  let start = Math.max(0, all.length - (failed ? lines + 3 : lines));
+  let start = Math.max(0, all.length - (failed ? count + 3 : count));
   while (start < all.length - 1 && !all[start].trim()) start++;
-  return { hidden: start, shown: all.slice(start).join("\n") };
+  return { hidden: start, shown: all.slice(start).join("\n"), ...(lines !== undefined && lines > all.length ? { clippedFrom: lines } : {}) };
 }

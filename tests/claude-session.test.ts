@@ -252,20 +252,24 @@ describe("ClaudeSession", () => {
     expect(users).toEqual([{ type: "user", text: "first" }, { type: "user", text: "second", queued: true, id: expect.any(String) }]);
   });
 
-  it("marks where Claude starts a turn of its own for a queued follow-up", async () => {
+  it("marks where Claude starts a turn of its own for queued follow-ups, not where it folds them in", async () => {
     const chat = session();
     await chat.send("first");
     await chat.send("second");
+    await chat.send("third");
     await flush();
-    const followUp = events.map(({ payload }) => payload).find((payload) => payload.type === "user" && payload.queued);
-    const id = followUp?.type === "user" ? followUp.id : undefined;
-    expect(fake.queries[0].sent.at(-1)?.uuid).toBe(id);
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
     const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
-    fake.queries[0].emit({ ...assistant, user_message_uuid: id } as never);
-    fake.queries[0].emit({ ...assistant, user_message_uuid: id } as never);
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    const stamped = (consumed: unknown[]) => ({ ...assistant, user_message_uuid: consumed.at(-1), user_message_uuids: consumed }) as never;
+    // The first turn takes "second" in too: folded, no marker.
+    fake.queries[0].emit(stamped([ids[0]]), stamped([ids[0], ids[1]]), result);
+    // "third" runs as a turn of its own.
+    fake.queries[0].emit(stamped([ids[2]]), stamped([ids[2]]));
     await flush();
-    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([{ type: "turn_start", user_id: id }]);
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([{ type: "turn_start", user_ids: [ids[2]] }]);
   });
+
 
   it("merges plan limits with what other sessions stored since", async () => {
     const chat = session();
