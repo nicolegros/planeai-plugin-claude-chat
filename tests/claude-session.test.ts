@@ -315,6 +315,51 @@ describe("ClaudeSession", () => {
     ]);
   });
 
+  it("leaves a running /compact's own marker in its turn when a follow-up is queued during it", async () => {
+    const chat = session();
+    await chat.send("hello");
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    let ids = fake.queries[0].sent.map((message) => message.uuid);
+    fake.queries[0].emit({ ...assistant, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never, result);
+    await flush();
+    await chat.send("/compact");
+    await chat.send("after");
+    await flush();
+    ids = fake.queries[0].sent.map((message) => message.uuid);
+    fake.queries[0].emit({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 10, post_tokens: 2 }, uuid: "c", session_id: SESSION_ID } as never);
+    await flush();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([]);
+    fake.queries[0].emit({ ...result, num_turns: 0, user_message_uuid: ids[1], user_message_uuids: [ids[1]] } as never);
+    await flush();
+    expect(chat.snapshot().status).toBe("busy");
+    fake.queries[0].emit({ ...assistant, user_message_uuid: ids[2], user_message_uuids: [ids[2]] } as never);
+    await flush();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([{ type: "turn_start", user_ids: [ids[2]] }]);
+  });
+
+  it("adds the rest of a batch to a turn started before its stamp", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("second");
+    await chat.send("third");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit(
+      { ...assistant, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never,
+      result,
+      { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", pre_tokens: 10 }, uuid: "c", session_id: SESSION_ID } as never,
+      { ...assistant, user_message_uuid: ids[2], user_message_uuids: [ids[1], ids[2]] } as never,
+    );
+    await flush();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([
+      { type: "turn_start", user_ids: [ids[1]] },
+      { type: "turn_start", user_ids: [ids[1], ids[2]] },
+    ]);
+  });
+
   it("goes idle after a turn when Claude does not name consumed messages", async () => {
     const chat = session();
     await chat.send("first");

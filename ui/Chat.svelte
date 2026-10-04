@@ -426,7 +426,7 @@
   textarea:focus-visible { outline: none; }
   .composer :global(.commands) { right: 0; left: 0; bottom: calc(100% + var(--chat-space-2)); }
   /* In a narrow pane at a large size the right-hand controls wrap rather than cut the model name. */
-  .bar { display: flex; flex-wrap: wrap; row-gap: var(--chat-space-1); align-items: center; gap: var(--chat-space-1); min-width: 0; padding: var(--chat-space-1) var(--chat-space-2) var(--chat-space-2); }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--chat-space-1); min-width: 0; padding: var(--chat-space-1) var(--chat-space-2) var(--chat-space-2); }
   /* A square control labelled by an icon. */
   :where(.chat) :global(.icon-control) { display: grid; flex: none; place-items: center; width: calc(28 * var(--chat-unit)); height: calc(28 * var(--chat-unit)); min-height: 0; padding: 0; }
   .round { border-radius: 50%; }

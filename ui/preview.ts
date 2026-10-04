@@ -70,7 +70,7 @@ const FAILURE_CONTEXT = 3;
  * `hidden` is what expanding reveals; `clippedFrom` is the full output's line count when its middle was clipped.
  */
 export function outputTail(output: string, count: number, failed: boolean, lines?: number): { hidden: number; shown: string; clippedFrom?: number } {
-    const all = output.replace(/\n+$/, "").split("\n");
+  const all = output.replace(/\n+$/, "").split("\n");
   let start = Math.max(0, all.length - (failed ? count + FAILURE_CONTEXT : count));
   while (start < all.length - 1 && !all[start].trim()) start++;
   return { hidden: start, shown: all.slice(start).join("\n"), ...(lines !== undefined && lines > all.length ? { clippedFrom: lines } : {}) };

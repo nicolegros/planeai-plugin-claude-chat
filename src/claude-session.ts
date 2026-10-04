@@ -96,6 +96,10 @@ export class ClaudeSession {
   private turnStamped = false;
   /** Whether this Claude names consumed messages at all; older versions do not, so follow-ups cannot be tracked. */
   private stamps = false;
+  /** A turn ended with follow-ups held, so the next turn's content is theirs even before a stamp names them. */
+  private betweenTurns = false;
+  /** The follow-ups a turn was started for before its stamp confirmed them. */
+  private guessed: string[] | null = null;
   private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
   /** Counts status changes, so a send can tell whether anything moved it while it waited. */
@@ -246,6 +250,7 @@ export class ClaudeSession {
       return;
     }
     if (isFollowUp) this.heldFollowUps.add(id);
+    else this.betweenTurns = false;
     input.push({
       type: "user",
       message: { role: "user", content: text },
@@ -469,10 +474,15 @@ export class ClaudeSession {
     if (message.type === "result") this.follow(message.session_id);
     const events = translate(message);
     // A local command such as /context stamps only its result; its output already belongs to the follow-up's turn.
-    if (!this.turnStamped && this.stamps && this.heldFollowUps.size > 0 && events.some((event) => !isEphemeral(event))) this.startTurn([this.heldFollowUps.values().next().value!]);
+    if (this.betweenTurns && !this.turnStamped && this.heldFollowUps.size > 0 && events.some((event) => !isEphemeral(event))) {
+      this.guessed = [this.heldFollowUps.values().next().value!];
+      this.startTurn(this.guessed);
+    }
     for (const event of events) this.emit(event);
     if (message.type === "result") {
       this.turnStamped = false;
+      this.guessed = null;
+      this.betweenTurns = this.stamps && this.heldFollowUps.size > 0;
       // Claude goes on to the follow-ups it still holds.
       this.setStatus(this.pending.size > 0 ? "needs_attention" : this.stamps && this.heldFollowUps.size > 0 ? "busy" : "idle");
       void this.loadContextUsage(query);
@@ -502,12 +512,18 @@ export class ClaudeSession {
     if (consumed.length > 0 && !this.turnStamped) {
       if (this.heldFollowUps.has(consumed[0])) this.startTurn(consumed.filter((id) => this.heldFollowUps.has(id)));
       this.turnStamped = true;
+    } else if (consumed.length > 0 && this.guessed) {
+      // The stamp names the batch the guess started; any more follow-ups join that turn.
+      const more = consumed.filter((id) => this.heldFollowUps.has(id));
+      if (more.length > 0) this.emit({ type: "turn_start", user_ids: [...this.guessed, ...more] });
+      this.guessed = null;
     }
     for (const id of consumed) this.heldFollowUps.delete(id);
   }
 
   private startTurn(followUps: string[]): void {
     this.turnStamped = true;
+    this.betweenTurns = false;
     for (const id of followUps) this.heldFollowUps.delete(id);
     this.emit({ type: "turn_start", user_ids: followUps });
   }
@@ -526,6 +542,8 @@ export class ClaudeSession {
     this.heldFollowUps.clear();
     this.turnStamped = false;
     this.stamps = false;
+    this.betweenTurns = false;
+    this.guessed = null;
   }
 
   private follow(sessionId: string): void {

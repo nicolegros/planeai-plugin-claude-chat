@@ -63,9 +63,11 @@ export function turns(entries: Entry[]): Turn[] {
   for (const entry of entries) {
     const current = groups.at(-1);
     if (entry.kind === "turn_start") {
-      // A follow-up paged out of the snapshot still leaves the turn its own boundary.
       const [user, ...others] = entry.user_ids.flatMap((id) => followUps.get(id) ?? []);
-      groups.push({ seq: entry.seq, user, entries: others, ended: false });
+      const known = new Set(current?.entries.map((joined) => joined.seq));
+      if (user && current?.user === user) current.entries.push(...others.filter((other) => !known.has(other.seq)));
+      // A follow-up paged out of the snapshot still leaves the turn its own boundary.
+      else groups.push({ seq: entry.seq, user, entries: others, ended: false });
     } else if (entry.kind === "user" && entry.id && moved.has(entry.id)) {
       continue;
     } else if (entry.kind === "user" && !(entry.queued && current?.user && !current.ended)) {

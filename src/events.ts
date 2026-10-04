@@ -140,7 +140,10 @@ export interface CommandOption {
 export type ChatEvent =
   /** `queued`: sent while a turn ran; Claude Code folds it into that turn unless a `turn_start` names its `id`. */
   | { type: "user"; text: string; queued?: boolean; id?: string }
-  /** Claude started a turn for these queued follow-ups, in the order it took them, rather than folding them into the turn that was running. */
+  /**
+   * Claude started a turn for these queued follow-ups, in the order it took them, rather than folding them into the turn that was running.
+   * One naming the current turn's prompt first adds the others to that turn.
+   */
   | { type: "turn_start"; user_ids: string[] }
   | { type: "delta"; text: string }
   | { type: "assistant"; text: string }

@@ -62,6 +62,14 @@ describe("turns", () => {
     expect(all[1].shown.map((block) => (block.kind === "entry" && block.entry.kind === "user" ? block.entry.text : block.kind === "entry" && block.entry.kind))).toEqual(["b", "assistant"]);
   });
 
+  it("adds follow-ups to the current turn when a later marker names its prompt first", () => {
+    const first: Entry = { kind: "user", seq: ++seq, text: "a", queued: true, id: "a" };
+    const second: Entry = { kind: "user", seq: ++seq, text: "b", queued: true, id: "b" };
+    const all = turns([user("go"), first, second, result(), { kind: "turn_start", seq: ++seq, user_ids: ["a"] } as Entry, assistant("…"), { kind: "turn_start", seq: ++seq, user_ids: ["a", "b"] } as Entry]);
+    expect(all.map((turn) => turn.user?.text)).toEqual(["go", "a"]);
+    expect(all[1].shown.map((block) => (block.kind === "entry" && block.entry.kind === "user" ? block.entry.text : "other"))).toEqual(["other", "b"]);
+  });
+
   it("still starts a turn when its follow-up was paged out of the snapshot", () => {
     const all = turns([user("go"), assistant("Done."), result(), { kind: "turn_start", seq: ++seq, user_ids: ["gone"] } as Entry, assistant("Reply.")]);
     expect(all).toHaveLength(2);

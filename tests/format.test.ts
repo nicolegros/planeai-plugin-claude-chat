@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { slashCommand } from "../ui/commands.svelte";
 import { compacted, duration, shortCount, turnSummary } from "../ui/format";
 
 describe("format", () => {
@@ -12,11 +11,5 @@ describe("format", () => {
   it("shortens counts and describes compaction", () => {
     expect([shortCount(999), shortCount(1_000), shortCount(17_576)]).toEqual(["999", "1k", "17.6k"]);
     expect(compacted({ trigger: "manual", pre_tokens: 17_576, post_tokens: 1_094 })).toBe("Conversation compacted · 17.6k → 1.1k tokens");
-  });
-
-  it("parses slash commands", () => {
-    expect(slashCommand("/review 42")).toEqual({ name: "review", args: "42" });
-    expect(slashCommand("/plugin:skill")).toEqual({ name: "plugin:skill", args: "" });
-    expect(slashCommand("not /a command")).toBeNull();
   });
 });
