@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Appearance } from "./appearance";
 import { SlashCommands } from "./commands";
 import { clip, isEphemeral, planLimits, questionsOf, replay, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
+import { FollowUpTracker } from "./follow-ups";
 import { InputQueue } from "./input-queue";
 import { page } from "./paging";
 import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
@@ -95,16 +96,7 @@ export class ClaudeSession {
   private conversationId: string;
   /** Messages compaction kept, which Claude replays after its boundary. */
   private preserved = new Set<string>();
-  /** Follow-ups sent while a turn ran, oldest first, until Claude consumes them: folded into a turn, or as a turn of their own. */
-  private heldFollowUps = new Set<string>();
-  /** Whether a frame of the running turn named the messages it consumed. */
-  private turnStamped = false;
-  /** Whether this Claude names consumed messages at all; older versions do not, so follow-ups cannot be tracked. */
-  private stamps = false;
-  /** A turn ended with follow-ups held, so the next turn's content is theirs even before a stamp names them. */
-  private betweenTurns = false;
-  /** The follow-ups a turn was started for before its stamp confirmed them. */
-  private guessed: string[] | null = null;
+  private readonly followUps = new FollowUpTracker();
   private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
   /** Counts status changes, so a send can tell whether anything moved it while it waited. */
@@ -254,8 +246,7 @@ export class ClaudeSession {
       settle();
       return;
     }
-    if (isFollowUp) this.heldFollowUps.add(id);
-    else this.betweenTurns = false;
+    this.followUps.sent(id, isFollowUp);
     input.push({
       type: "user",
       message: { role: "user", content: text },
@@ -396,7 +387,7 @@ export class ClaudeSession {
 
   private detach(reason: string): void {
     this.denyPending(reason);
-    this.resetFollowUps();
+    this.followUps.reset();
     const query = this.query;
     this.query = null;
     this.input?.close();
@@ -467,7 +458,7 @@ export class ClaudeSession {
         this.input?.close();
         this.input = null;
         this.denyPending("Claude stopped");
-        this.resetFollowUps();
+        this.followUps.reset();
         if (!this.stopped) this.setStatus("idle");
       }
     }
@@ -490,7 +481,6 @@ export class ClaudeSession {
       }
     }
     if (message.type === "rate_limit_event") this.onRateLimit(message.rate_limit_info);
-    this.onConsumed(message);
     // /clear moves Claude to a new id within the turn; its result already carries it.
     if (message.type === "result") this.follow(message.session_id);
     const events = translate(message).filter((event) => {
@@ -500,18 +490,12 @@ export class ClaudeSession {
       }
       return !(event.type === "tool_result" && this.questionCalls.delete(event.tool_use_id));
     });
-    // A local command such as /context stamps only its result; its output already belongs to the follow-up's turn.
-    if (this.betweenTurns && !this.turnStamped && this.heldFollowUps.size > 0 && events.some((event) => !isEphemeral(event))) {
-      this.guessed = [this.heldFollowUps.values().next().value!];
-      this.startTurn(this.guessed);
-    }
+    const started = this.followUps.frame(message, events.some((event) => !isEphemeral(event)));
+    if (started) this.emit({ type: "turn_start", user_ids: started });
     for (const event of events) this.emit(event);
     if (message.type === "result") {
-      this.turnStamped = false;
-      this.guessed = null;
-      this.betweenTurns = this.stamps && this.heldFollowUps.size > 0;
       // Claude goes on to the follow-ups it still holds.
-      this.setStatus(this.pending.size > 0 ? "needs_attention" : this.betweenTurns ? "busy" : "idle");
+      this.setStatus(this.pending.size > 0 ? "needs_attention" : this.followUps.holding ? "busy" : "idle");
       void this.loadContextUsage(query);
     } else if (this.status === "idle" && (message.type === "assistant" || message.type === "stream_event")) {
       // A queued follow-up started its own turn after the previous result.
@@ -526,35 +510,6 @@ export class ClaudeSession {
     if (this.slashCommands.setTerminalOnly(terminalOnly)) this.emit({ type: "commands_changed" });
   }
 
-  /**
-   * Claude stamps a turn's frames with the messages it consumed: the batch that started it,
-   * then any folded in. A turn whose batch starts with a follow-up gets a `turn_start` naming
-   * its follow-ups; follow-ups in a turn some other prompt started were folded into it.
-   */
-  private onConsumed(message: SDKMessage): void {
-    const stamped = message.type === "assistant" || message.type === "stream_event" || message.type === "result" ? message : null;
-    const single = stamped?.user_message_uuid ?? (message.type === "conversation_reset" ? message.user_message_uuid : undefined);
-    const consumed = stamped?.user_message_uuids ?? (single ? [single] : []);
-    this.stamps ||= consumed.length > 0;
-    if (consumed.length > 0 && !this.turnStamped) {
-      if (this.heldFollowUps.has(consumed[0])) this.startTurn(consumed.filter((id) => this.heldFollowUps.has(id)));
-      this.turnStamped = true;
-    } else if (consumed.length > 0 && this.guessed) {
-      // The stamp names the batch the guess started; any more follow-ups join that turn.
-      const more = consumed.filter((id) => this.heldFollowUps.has(id));
-      if (more.length > 0) this.emit({ type: "turn_start", user_ids: [...this.guessed, ...more] });
-      this.guessed = null;
-    }
-    for (const id of consumed) this.heldFollowUps.delete(id);
-  }
-
-  private startTurn(followUps: string[]): void {
-    this.turnStamped = true;
-    this.betweenTurns = false;
-    for (const id of followUps) this.heldFollowUps.delete(id);
-    this.emit({ type: "turn_start", user_ids: followUps });
-  }
-
   /** Each window updates on its own, as an event may describe only one; others come from the shared file, which other sessions update too. */
   private onRateLimit(info: unknown): void {
     const reported = planLimits(info);
@@ -562,15 +517,6 @@ export class ClaudeSession {
     const limits = { ...this.store.limits(), ...reported };
     this.store.setLimits(limits);
     this.updateMeta({ limits });
-  }
-
-  /** Follow-ups a stopped Claude never consumed get no turn of their own; the next Claude may stamp differently. */
-  private resetFollowUps(): void {
-    this.heldFollowUps.clear();
-    this.turnStamped = false;
-    this.stamps = false;
-    this.betweenTurns = false;
-    this.guessed = null;
   }
 
   private follow(sessionId: string): void {
