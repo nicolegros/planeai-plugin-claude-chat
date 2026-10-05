@@ -294,15 +294,15 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
   }
 }
 
-/** The field chats saved by 0.2.0 and earlier kept as the summary of tools without an input; Grep and Glob kept the path instead when a call had one. */
-const LEGACY_SUMMARY_FIELDS = new Map([
-  ["Read", "file_path"],
-  ["Grep", "pattern"],
-  ["Glob", "pattern"],
-  ["Agent", "description"],
-  ["Task", "description"],
-  ["WebFetch", "url"],
-  ["WebSearch", "query"],
+/** Rebuilds the input of a tool that chats saved by 0.2.0 and earlier kept only as its summary; Grep and Glob kept the path when a call had one. */
+const LEGACY_SUMMARY_INPUTS = new Map<string, (summary: string) => ToolInput>([
+  ["Read", (file_path) => ({ kind: "read", file_path })],
+  ["Grep", (pattern) => ({ kind: "grep", pattern })],
+  ["Glob", (pattern) => ({ kind: "glob", pattern })],
+  ["Agent", (description) => ({ kind: "agent", description })],
+  ["Task", (description) => ({ kind: "agent", description })],
+  ["WebFetch", (url) => ({ kind: "fetch", url })],
+  ["WebSearch", (query) => ({ kind: "web_search", query })],
 ]);
 
 /** The first `field` string in JSON clipped too early to parse. */
@@ -316,9 +316,9 @@ function storedToolInput(name: string, summary: string, input: ToolInput | { kin
   // Unreleased builds before Grep and Glob had kinds of their own.
   if (input?.kind === "search") return { ...input, kind: name === "Glob" ? "glob" : "grep" };
   if (input) return input;
-  const field = LEGACY_SUMMARY_FIELDS.get(name);
-  // The summary is already clipped; clipping it again would miscount what was cut.
-  if (field) return { ...toolInput(name, {}), [field]: summary } as ToolInput;
+  // Taken as saved: the summary is already clipped, and clipping it again would miscount what was cut.
+  const legacy = LEGACY_SUMMARY_INPUTS.get(name);
+  if (legacy) return legacy(summary);
   // 0.2.0 and earlier kept other tools' input as JSON, clipped to 500 characters.
   try {
     return toolInput(name, JSON.parse(summary));
