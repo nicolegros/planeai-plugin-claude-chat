@@ -392,9 +392,38 @@ describe("ClaudeSession", () => {
     const chat = session();
     await chat.send("edit it");
     const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf build" }, { signal: new AbortController().signal, toolUseID: "toolu_2" } as never);
+    expect(statuses.at(-1)).toBe("needs_attention");
     chat.interrupt();
     await expect(decision).resolves.toMatchObject({ behavior: "deny", interrupt: true });
     expect(fake.queries[0].interrupt).toHaveBeenCalledOnce();
+    // Nothing is left to answer while Claude finishes the turn.
+    expect(statuses.at(-1)).toBe("busy");
+  });
+
+  it("stops asking for attention when Claude cancels its request", async () => {
+    const chat = session();
+    await chat.send("edit it");
+    const cancel = new AbortController();
+    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf build" }, { signal: cancel.signal, toolUseID: "t" } as never);
+    expect(chat.snapshot().status).toBe("needs_attention");
+    cancel.abort();
+    await expect(decision).resolves.toMatchObject({ behavior: "deny" });
+    expect(chat.snapshot().status).toBe("busy");
+  });
+
+  it("ends compaction with its turn, even when Claude still holds follow-ups", async () => {
+    const chat = session();
+    await chat.send("/compact");
+    await chat.send("after");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit({ type: "system", subtype: "status", status: "compacting", uuid: "s", session_id: SESSION_ID } as never);
+    await flush();
+    expect(chat.snapshot().meta.compacting).toBe(true);
+    fake.queries[0].emit({ ...result, is_error: true, num_turns: 0, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never);
+    await flush();
+    expect(chat.snapshot()).toMatchObject({ status: "busy", meta: { compacting: false } });
   });
 
   it("resumes from Claude's own transcript when the plugin lost its data", async () => {
@@ -467,7 +496,7 @@ describe("ClaudeSession", () => {
     expect(fake.queries[1].options).toMatchObject({ resume: "fixture-session-2" });
   });
 
-  it("leaves the status to a turn that ended while a /model waited for the model list", async () => {
+  it("stays busy after a turn while a /model waits for the model list, then goes idle", async () => {
     fake = fakeQueryFactory({ holdModels: true });
     const chat = session();
     await chat.send("hello");
@@ -476,7 +505,7 @@ describe("ClaudeSession", () => {
     const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
     fake.queries[0].emit(result);
     await flush();
-    expect(statuses.at(-1)).toBe("idle");
+    expect(statuses.at(-1)).toBe("busy");
     fake.queries[0].releaseModels();
     await switching;
     expect(statuses.at(-1)).toBe("idle");

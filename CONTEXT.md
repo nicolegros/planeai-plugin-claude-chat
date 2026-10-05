@@ -33,3 +33,14 @@ Several user messages Claude takes together to start one turn.
 **Follow-up tracker**:
 The module that decides from Claude's frames which turn each follow-up belongs to.
 _Avoid_: Queue manager
+
+### Session status
+
+**Session status**:
+What the host shows for a session: needs attention while a pending request waits on the user, busy while Claude works or owes held follow-ups a turn, otherwise idle.
+It is derived from facts, never set directly.
+_Avoid_: State, activity
+
+**Pending request**:
+A permission prompt or a question from Claude, waiting on the user.
+_Avoid_: Prompt (that is what the user sends)

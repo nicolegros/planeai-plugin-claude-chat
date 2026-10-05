@@ -6,6 +6,7 @@ import { clip, isEphemeral, planLimits, questionsOf, replay, summarizeInput, too
 import { FollowUpTracker } from "./follow-ups";
 import { InputQueue } from "./input-queue";
 import { page } from "./paging";
+import { statusOf } from "./status";
 import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
 
 const REBUILT: ChatEvent = { type: "notice", text: "Earlier messages were rebuilt from Claude Code's transcript, without turn costs or permission prompts." };
@@ -99,8 +100,10 @@ export class ClaudeSession {
   private readonly followUps = new FollowUpTracker();
   private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
-  /** Counts status changes, so a send can tell whether anything moved it while it waited. */
-  private statusChanges = 0;
+  /** Sends accepted but not yet handed to Claude or dropped. */
+  private sending = 0;
+  /** A prompt reached Claude or a turn's frame arrived, and its result has not. */
+  private turnRunning = false;
   private delivering: Promise<unknown> = Promise.resolve();
   /** Settles once a chat whose own history is gone was rebuilt from Claude's transcript. */
   readonly restored: Promise<void>;
@@ -189,7 +192,7 @@ export class ClaudeSession {
   }
 
   announce(): void {
-    this.setStatus(this.status, true);
+    this.refreshStatus(true);
   }
 
   /**
@@ -209,31 +212,31 @@ export class ClaudeSession {
       this.emit({ type: "error", message: "Claude Code was not found on PATH. Install it, then run `claude` once in a terminal to log in." });
       throw new Error("claude executable not found on PATH");
     }
-    const before = this.status;
     const id = randomUUID();
-    const isFollowUp = before === "busy" || before === "needs_attention";
+    const isFollowUp = this.status !== "idle";
     this.emit({ type: "user", text: clip(text), ...(isFollowUp ? { queued: true, id } : {}) });
-    this.setStatus("busy");
-    const ours = this.statusChanges;
-    // Puts back the status from before this send, unless a turn changed it meanwhile.
-    const settle = () => {
-      if (this.statusChanges === ours) this.setStatus(before);
-    };
+    this.sending++;
+    this.refreshStatus();
+    try {
+      await this.forward(text, id, isFollowUp, signal);
+    } finally {
+      this.sending--;
+      this.refreshStatus();
+    }
+  }
+
+  private async forward(text: string, id: string, isFollowUp: boolean, signal?: AbortSignal): Promise<void> {
     let input: InputQueue<SDKUserMessage>;
     try {
       input = await this.ensureQuery();
     } catch (error) {
-      if (!this.stopped) {
-        this.emit({ type: "error", message: errorMessage(error) });
-        this.setStatus("idle");
-      }
+      if (!this.stopped) this.emit({ type: "error", message: errorMessage(error) });
       throw error;
     }
     const model = MODEL_COMMAND.exec(text.trim())?.[1];
     const known = model !== undefined && (model === "default" || (await this.listedModels()).some((option) => option.value === model));
     if (signal?.aborted) {
       this.emit({ type: "error", message: "This message was not sent because PlaneAI stopped waiting for it. Send it again." });
-      settle();
       throw new Error("request cancelled");
     }
     // Stopping, a handoff or Claude exiting while the models loaded leaves nothing to deliver to.
@@ -243,10 +246,10 @@ export class ClaudeSession {
     }
     if (model && known) {
       this.switchModel(model);
-      settle();
       return;
     }
     this.followUps.sent(id, isFollowUp);
+    this.turnRunning = true;
     input.push({
       type: "user",
       message: { role: "user", content: text },
@@ -259,6 +262,7 @@ export class ClaudeSession {
   /** Returns at once; the SDK's control channel can stall while Claude boots. */
   interrupt(): void {
     this.denyPending("Interrupted by the user");
+    this.refreshStatus();
     this.control(this.query?.interrupt(), "interrupt");
   }
 
@@ -275,7 +279,7 @@ export class ClaudeSession {
       pending.resolve(remembered ? { behavior: "allow", updatedPermissions: pending.suggestions } : { behavior: "allow" });
       this.emit({ type: "permission_resolved", request_id: requestId, allowed: true, ...(remembered ? { remembered } : {}) });
     }
-    this.setStatus(this.pending.size > 0 ? "needs_attention" : "busy");
+    this.refreshStatus();
   }
 
   /** `answers` maps each question to its answer; `null` skips the questions. */
@@ -291,7 +295,7 @@ export class ClaudeSession {
       pending.resolve({ behavior: "deny", message: "The user skipped these questions. Continue with your best judgment, or ask in your reply." });
       this.emit({ type: "question_resolved", request_id: requestId });
     }
-    this.setStatus(this.pending.size > 0 ? "needs_attention" : "busy");
+    this.refreshStatus();
   }
 
   setPermissionMode(mode: string): void {
@@ -362,7 +366,7 @@ export class ClaudeSession {
       this.detach("Continued in the terminal");
       this.emit({ type: "handoff", in_terminal: true });
       this.updateMeta({ handed_off: true });
-      this.setStatus("idle");
+      this.refreshStatus();
     }
     const mode = this.meta.permission_mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : ["--permission-mode", this.meta.permission_mode];
     return [
@@ -388,6 +392,7 @@ export class ClaudeSession {
   private detach(reason: string): void {
     this.denyPending(reason);
     this.followUps.reset();
+    this.endTurn();
     const query = this.query;
     this.query = null;
     this.input?.close();
@@ -459,7 +464,8 @@ export class ClaudeSession {
         this.input = null;
         this.denyPending("Claude stopped");
         this.followUps.reset();
-        if (!this.stopped) this.setStatus("idle");
+        this.endTurn();
+        this.refreshStatus();
       }
     }
   }
@@ -494,13 +500,13 @@ export class ClaudeSession {
     if (started) this.emit({ type: "turn_start", user_ids: started });
     for (const event of events) this.emit(event);
     if (message.type === "result") {
-      // Claude goes on to the follow-ups it still holds.
-      this.setStatus(this.pending.size > 0 ? "needs_attention" : this.followUps.holding ? "busy" : "idle");
+      this.endTurn();
       void this.loadContextUsage(query);
-    } else if (this.status === "idle" && (message.type === "assistant" || message.type === "stream_event")) {
-      // A queued follow-up started its own turn after the previous result.
-      this.setStatus("busy");
+    } else if (message.type === "assistant" || message.type === "stream_event") {
+      // A queued follow-up may start its own turn after the previous result.
+      this.turnRunning = true;
     }
+    this.refreshStatus();
   }
 
   /** Each turn's init: marks the session started, follows /clear's new id, refreshes terminal-only commands. */
@@ -567,10 +573,11 @@ export class ClaudeSession {
         this.pending.delete(requestId);
         resolve({ behavior: "deny", message: "The request was cancelled." });
         this.emitResolved(requestId, pending);
+        this.refreshStatus();
       });
       if (questions) {
         this.emit({ type: "question", request_id: requestId, questions });
-        this.setStatus("needs_attention");
+        this.refreshStatus();
         return;
       }
       const title = options.title ?? `Claude wants to use ${toolName}`;
@@ -584,7 +591,7 @@ export class ClaudeSession {
         ...(rendered ? { input: rendered } : {}),
         can_remember: suggestions.length > 0,
       });
-      this.setStatus("needs_attention");
+      this.refreshStatus();
     });
 
   private denyPending(message: string): void {
@@ -611,11 +618,18 @@ export class ClaudeSession {
     this.host.event(this.config.id, event.seq, payload);
   }
 
-  private setStatus(status: SessionStatus, force = false): void {
-    // Compaction ends with its turn, even one that failed or was interrupted.
-    if (status !== "busy" && this.meta.compacting) this.updateMeta({ compacting: false });
+  /** Compaction ends with its turn, even one that failed or was interrupted. */
+  private endTurn(): void {
+    this.turnRunning = false;
+    if (this.meta.compacting && !this.stopped) this.updateMeta({ compacting: false });
+  }
+
+  /** `force` repeats an unchanged status, for a host that just opened the session. */
+  private refreshStatus(force = false): void {
+    // A stopped session reports nothing more; the host already let it go.
+    if (this.stopped) return;
+    const status = statusOf({ sending: this.sending, turnRunning: this.turnRunning, holding: this.followUps.holding, pending: this.pending.size });
     if (this.status === status && !force) return;
-    this.statusChanges++;
     this.status = status;
     this.host.status(this.config.id, status);
     // The chat follows the same status the host shows, instead of inferring its own.
