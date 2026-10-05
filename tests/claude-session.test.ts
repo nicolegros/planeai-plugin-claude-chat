@@ -163,6 +163,7 @@ describe("ClaudeSession", () => {
 
     const request = events.at(-1)!.payload;
     expect(request).toMatchObject({ type: "permission", tool: "Edit", title: "Claude wants to edit src/a.ts", summary: "src/a.ts" });
+    await flush();
     expect(statuses.at(-1)).toBe("needs_attention");
 
     chat.respondToPermission((request as { request_id: string }).request_id, "allow");
@@ -178,25 +179,12 @@ describe("ClaudeSession", () => {
     const decision = fake.queries[0].options.canUseTool!("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "t" } as never);
     const request = events.at(-1)!.payload;
     expect(request).toMatchObject({ type: "question", questions: [{ question: "Which platforms?", multi_select: true }] });
+    await flush();
     expect(statuses.at(-1)).toBe("needs_attention");
     chat.answerQuestion((request as { request_id: string }).request_id, { "Which platforms?": "macOS, Linux" });
     await expect(decision).resolves.toEqual({ behavior: "allow", updatedInput: { ...input, answers: { "Which platforms?": "macOS, Linux" } } });
     expect(events.at(-1)!.payload).toMatchObject({ type: "question_resolved", answers: { "Which platforms?": "macOS, Linux" } });
     expect(statuses.at(-1)).toBe("busy");
-  });
-
-  it("tells Claude the user skipped its questions, and ends them when Claude is interrupted", async () => {
-    const chat = session();
-    await chat.send("set it up");
-    const input = { questions: [{ question: "Which?", header: "", options: [{ label: "A", description: "" }] }] };
-    const skipped = fake.queries[0].options.canUseTool!("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "t" } as never);
-    chat.answerQuestion((events.at(-1)!.payload as { request_id: string }).request_id, null);
-    await expect(skipped).resolves.toMatchObject({ behavior: "deny", message: expect.stringContaining("skipped") });
-    expect(events.at(-1)!.payload).toEqual({ type: "question_resolved", request_id: expect.any(String) });
-    const interrupted = fake.queries[0].options.canUseTool!("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "t2" } as never);
-    chat.interrupt();
-    await expect(interrupted).resolves.toMatchObject({ behavior: "deny" });
-    expect(events.at(-1)!.payload).toEqual({ type: "question_resolved", request_id: expect.any(String) });
   });
 
   it("keeps AskUserQuestion's tool call out of the transcript, and asks malformed questions as a permission", async () => {
@@ -210,29 +198,6 @@ describe("ClaudeSession", () => {
     expect(events.map(({ payload }) => payload.type)).not.toContain("tool_result");
     void fake.queries[0].options.canUseTool!("AskUserQuestion", { questions: "?" }, { signal: new AbortController().signal, toolUseID: "t" } as never);
     expect(events.at(-1)!.payload).toMatchObject({ type: "permission", tool: "AskUserQuestion" });
-  });
-
-  it("remembers an approval for the session with the SDK's suggested rules", async () => {
-    const chat = session();
-    await chat.send("run it");
-    const suggestions = [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test" }], behavior: "allow", destination: "session" }];
-    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "npm test" }, { signal: new AbortController().signal, suggestions, toolUseID: "t" } as never);
-    const request = events.at(-1)!.payload as { request_id: string; can_remember: boolean; input: unknown };
-    expect(request.can_remember).toBe(true);
-    expect(request.input).toEqual({ kind: "bash", command: "npm test" });
-    chat.respondToPermission(request.request_id, "allow_session");
-    await expect(decision).resolves.toEqual({ behavior: "allow", updatedPermissions: suggestions });
-    expect(events.at(-1)!.payload).toMatchObject({ type: "permission_resolved", allowed: true, remembered: true });
-  });
-
-  it("tells Claude why the user denied an action", async () => {
-    const chat = session();
-    await chat.send("clean up");
-    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf dist" }, { signal: new AbortController().signal, toolUseID: "t" } as never);
-    const { request_id } = events.at(-1)!.payload as { request_id: string };
-    chat.respondToPermission(request_id, "deny", "keep the build output");
-    await expect(decision).resolves.toEqual({ behavior: "deny", message: "The user denied this action: keep the build output" });
-    expect(events.at(-1)!.payload).toMatchObject({ allowed: false, reason: "keep the build output" });
   });
 
   it("switches permission mode and model, live and for the next start", async () => {
@@ -403,6 +368,7 @@ describe("ClaudeSession", () => {
     const chat = session();
     await chat.send("edit it");
     const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf build" }, { signal: new AbortController().signal, toolUseID: "toolu_2" } as never);
+    await flush();
     expect(statuses.at(-1)).toBe("needs_attention");
     chat.interrupt();
     await expect(decision).resolves.toMatchObject({ behavior: "deny", interrupt: true });

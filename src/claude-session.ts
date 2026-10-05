@@ -1,10 +1,11 @@
-import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, PermissionMode, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import type { Appearance } from "./appearance";
 import { SlashCommands } from "./commands";
-import { clip, isEphemeral, planLimits, questionsOf, replay, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
+import { clip, isEphemeral, planLimits, replay, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
 import { FollowUpTracker } from "./follow-ups";
 import { InputQueue } from "./input-queue";
+import { PendingRequests } from "./pending-requests";
 import { page } from "./paging";
 import { statusOf } from "./status";
 import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
@@ -50,14 +51,6 @@ export interface SessionConfig {
   claudeExecutable: string | null;
 }
 
-/** A tool call waiting on the user: a permission prompt, or AskUserQuestion's questions. */
-type PendingRequest =
-  | { kind: "permission"; suggestions: PermissionUpdate[]; resolve(result: PermissionResult): void }
-  | { kind: "question"; input: Record<string, unknown>; resolve(result: PermissionResult): void };
-
-/** Its questions show as a prompt of their own, so its tool call stays out of the transcript. */
-const ASK_USER_QUESTION = "AskUserQuestion";
-
 export function errorMessage(error: unknown): string {
   return clip(error instanceof Error ? error.message : String(error), 2_000);
 }
@@ -86,11 +79,13 @@ export class ClaudeSession {
   private starting: Promise<InputQueue<SDKUserMessage>> | null = null;
   private readonly events: StoredEvent[];
   private seq: number;
-  private status: SessionStatus = "idle";
-  private readonly pending = new Map<string, PendingRequest>();
-  /** AskUserQuestion calls, whose results stay out of the transcript too. */
-  private readonly questionCalls = new Set<string>();
-  private nextPermission = 0;
+  /** The status last told to the host. */
+  private announced: SessionStatus = "idle";
+  private announcing = false;
+  private readonly requests = new PendingRequests((event) => {
+    this.emit(event);
+    this.refreshStatus();
+  });
   private stopped = false;
   private meta: SessionMeta;
   /** Starts as the PlaneAI session id; /clear moves Claude to a new one. */
@@ -191,7 +186,7 @@ export class ClaudeSession {
   }
 
   announce(): void {
-    this.refreshStatus(true);
+    this.announceStatus(true);
   }
 
   /**
@@ -261,45 +256,17 @@ export class ClaudeSession {
 
   /** Returns at once; the SDK's control channel can stall while Claude boots. */
   interrupt(): void {
-    this.stopTurn();
-    this.refreshStatus();
-  }
-
-  private stopTurn(): void {
-    this.denyPending("Interrupted by the user");
+    this.requests.denyAll("Interrupted by the user");
     this.control(this.query?.interrupt(), "interrupt");
   }
 
   respondToPermission(requestId: string, decision: PermissionDecision, reason?: string): void {
-    const pending = this.pending.get(requestId);
-    if (pending?.kind !== "permission") throw new Error(`no pending permission request ${requestId}`);
-    this.pending.delete(requestId);
-    const note = reason?.trim() ? clip(reason.trim(), 2_000) : undefined;
-    if (decision === "deny") {
-      pending.resolve({ behavior: "deny", message: note ? `The user denied this action: ${note}` : "The user denied this action." });
-      this.emit({ type: "permission_resolved", request_id: requestId, allowed: false, ...(note ? { reason: note } : {}) });
-    } else {
-      const remembered = decision === "allow_session" && pending.suggestions.length > 0;
-      pending.resolve(remembered ? { behavior: "allow", updatedPermissions: pending.suggestions } : { behavior: "allow" });
-      this.emit({ type: "permission_resolved", request_id: requestId, allowed: true, ...(remembered ? { remembered } : {}) });
-    }
-    this.refreshStatus();
+    this.requests.respond(requestId, decision, reason);
   }
 
   /** `answers` maps each question to its answer; `null` skips the questions. */
   answerQuestion(requestId: string, answers: Record<string, string> | null): void {
-    const pending = this.pending.get(requestId);
-    if (pending?.kind !== "question") throw new Error(`no pending question ${requestId}`);
-    this.pending.delete(requestId);
-    if (answers) {
-      const clipped = Object.fromEntries(Object.entries(answers).map(([question, answer]) => [question, clip(answer, 2_000)]));
-      pending.resolve({ behavior: "allow", updatedInput: { ...pending.input, answers: clipped } });
-      this.emit({ type: "question_resolved", request_id: requestId, answers: clipped });
-    } else {
-      pending.resolve({ behavior: "deny", message: "The user skipped these questions. Continue with your best judgment, or ask in your reply." });
-      this.emit({ type: "question_resolved", request_id: requestId });
-    }
-    this.refreshStatus();
+    this.requests.answer(requestId, answers);
   }
 
   setPermissionMode(mode: string): void {
@@ -366,8 +333,7 @@ export class ClaudeSession {
   async handoff(): Promise<string[]> {
     if (!this.config.claudeExecutable) throw new Error("claude executable not found on PATH");
     if (!this.meta.handed_off) {
-      // No status in between: the session goes straight to idle.
-      if (this.status !== "idle") this.stopTurn();
+      if (this.status !== "idle") this.interrupt();
       this.detach("Continued in the terminal");
       this.emit({ type: "handoff", in_terminal: true });
       this.updateMeta({ handed_off: true });
@@ -395,7 +361,7 @@ export class ClaudeSession {
   }
 
   private detach(reason: string): void {
-    this.denyPending(reason);
+    this.requests.denyAll(reason);
     this.followUps.reset();
     this.sending.clear();
     this.endTurn();
@@ -445,7 +411,7 @@ export class ClaudeSession {
         permissionMode: this.meta.permission_mode as PermissionMode,
         allowDangerouslySkipPermissions: this.config.yolo,
         ...(this.meta.model ? { model: this.meta.model } : {}),
-        canUseTool: this.canUseTool,
+        canUseTool: this.requests.canUseTool,
         ...(resume ? { resume: this.conversationId } : { sessionId: this.config.id }),
         stderr: (data) => process.stderr.write(data),
       },
@@ -490,13 +456,7 @@ export class ClaudeSession {
     if (message.type === "rate_limit_event") this.onRateLimit(message.rate_limit_info);
     // /clear moves Claude to a new id within the turn; its result already carries it.
     if (message.type === "result") this.follow(message.session_id);
-    const events = translate(message).filter((event) => {
-      if (event.type === "tool" && event.name === ASK_USER_QUESTION) {
-        this.questionCalls.add(event.id);
-        return false;
-      }
-      return !(event.type === "tool_result" && this.questionCalls.delete(event.tool_use_id));
-    });
+    const events = translate(message).filter((event) => !this.requests.hides(event));
     const started = this.followUps.frame(message, events.some((event) => !isEphemeral(event)));
     if (started) this.emit({ type: "turn_start", user_ids: started });
     for (const event of events) this.emit(event);
@@ -561,53 +521,6 @@ export class ClaudeSession {
     this.emit({ type: "meta", meta });
   }
 
-  // AskUserQuestion reaches here even when the mode bypasses permissions; answering it is allowing it with answers.
-  private readonly canUseTool: CanUseTool = (toolName, input, options) =>
-    new Promise<PermissionResult>((resolve) => {
-      const requestId = `permission-${++this.nextPermission}`;
-      const questions = toolName === ASK_USER_QUESTION ? questionsOf(input) : null;
-      const suggestions = options.suggestions ?? [];
-      this.pending.set(requestId, questions ? { kind: "question", input, resolve } : { kind: "permission", suggestions, resolve });
-      options.signal.addEventListener("abort", () => {
-        const pending = this.pending.get(requestId);
-        if (!pending) return;
-        this.pending.delete(requestId);
-        resolve({ behavior: "deny", message: "The request was cancelled." });
-        this.emitResolved(requestId, pending);
-        this.refreshStatus();
-      });
-      if (questions) {
-        this.emit({ type: "question", request_id: requestId, questions });
-        this.refreshStatus();
-        return;
-      }
-      const title = options.title ?? `Claude wants to use ${toolName}`;
-      const rendered = toolInput(toolName, input);
-      this.emit({
-        type: "permission",
-        request_id: requestId,
-        tool: toolName,
-        title,
-        summary: summarizeInput(input),
-        ...(rendered ? { input: rendered } : {}),
-        can_remember: suggestions.length > 0,
-      });
-      this.refreshStatus();
-    });
-
-  private denyPending(message: string): void {
-    for (const [requestId, pending] of this.pending) {
-      pending.resolve({ behavior: "deny", message, interrupt: true });
-      this.emitResolved(requestId, pending);
-    }
-    this.pending.clear();
-  }
-
-  /** A request that ended without the user's answer. */
-  private emitResolved(requestId: string, pending: PendingRequest): void {
-    this.emit(pending.kind === "question" ? { type: "question_resolved", request_id: requestId } : { type: "permission_resolved", request_id: requestId, allowed: false });
-  }
-
   private emit(payload: ChatEvent): void {
     if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
     const event = { seq: ++this.seq, payload };
@@ -625,13 +538,27 @@ export class ClaudeSession {
     if (this.meta.compacting && !this.stopped) this.updateMeta({ compacting: false });
   }
 
+  private get status(): SessionStatus {
+    return statusOf({ sending: this.sending.size, turnRunning: this.turnRunning, holding: this.followUps.holding, pending: this.requests.size });
+  }
+
+  /** Tells the host once per change, so a burst such as a handoff reports only where it lands. */
+  private refreshStatus(): void {
+    if (this.announcing) return;
+    this.announcing = true;
+    queueMicrotask(() => {
+      this.announcing = false;
+      this.announceStatus();
+    });
+  }
+
   /** `force` repeats an unchanged status, for a host that just opened the session. */
-  private refreshStatus(force = false): void {
+  private announceStatus(force = false): void {
     // A stopped session reports nothing more; the host already let it go.
     if (this.stopped) return;
-    const status = statusOf({ sending: this.sending.size, turnRunning: this.turnRunning, holding: this.followUps.holding, pending: this.pending.size });
-    if (this.status === status && !force) return;
-    this.status = status;
+    const status = this.status;
+    if (status === this.announced && !force) return;
+    this.announced = status;
     this.host.status(this.config.id, status);
     // The chat follows the same status the host shows, instead of inferring its own.
     this.emit({ type: "status", status });
