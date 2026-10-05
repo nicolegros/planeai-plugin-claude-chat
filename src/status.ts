@@ -7,7 +7,7 @@ export interface StatusFacts {
   turnRunning: boolean;
   /** A turn ended and Claude goes on to the follow-ups it still holds. */
   holding: boolean;
-  /** Permission prompts and questions waiting on the user. */
+  /** Pending requests waiting on the user. */
   pending: number;
 }
 

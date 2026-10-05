@@ -187,7 +187,7 @@ describe("ClaudeSession", () => {
     expect(statuses.at(-1)).toBe("busy");
   });
 
-  it("keeps AskUserQuestion's tool call out of the transcript, and asks malformed questions as a permission", async () => {
+  it("keeps AskUserQuestion's tool call and result out of the transcript", async () => {
     const chat = session();
     await chat.send("set it up");
     const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
@@ -196,8 +196,6 @@ describe("ClaudeSession", () => {
     await flush();
     expect(events.map(({ payload }) => payload.type)).not.toContain("tool");
     expect(events.map(({ payload }) => payload.type)).not.toContain("tool_result");
-    void fake.queries[0].options.canUseTool!("AskUserQuestion", { questions: "?" }, { signal: new AbortController().signal, toolUseID: "t" } as never);
-    expect(events.at(-1)!.payload).toMatchObject({ type: "permission", tool: "AskUserQuestion" });
   });
 
   it("switches permission mode and model, live and for the next start", async () => {

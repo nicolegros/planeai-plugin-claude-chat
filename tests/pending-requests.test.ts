@@ -84,14 +84,23 @@ describe("PendingRequests", () => {
   });
 
   it("denies every request and stops the turn, each request already gone when its event is emitted", async () => {
+    const events: ChatEvent[] = [];
     const sizes: number[] = [];
-    const requests = new PendingRequests(() => sizes.push(requests.size));
+    const requests = new PendingRequests((event) => {
+      events.push(event);
+      sizes.push(requests.size);
+    });
     const options = { signal: new AbortController().signal, toolUseID: "t", requestId: "r" };
     const permission = requests.canUseTool("Bash", { command: "ls" }, options);
     const question = requests.canUseTool("AskUserQuestion", QUESTIONS, options);
     requests.denyAll("Interrupted by the user");
     await expect(permission).resolves.toEqual({ behavior: "deny", message: "Interrupted by the user", interrupt: true });
     await expect(question).resolves.toEqual({ behavior: "deny", message: "Interrupted by the user", interrupt: true });
+    const [asked, questioned] = events as { request_id: string }[];
+    expect(events.slice(2)).toEqual([
+      { type: "permission_resolved", request_id: asked.request_id, allowed: false },
+      { type: "question_resolved", request_id: questioned.request_id },
+    ]);
     expect(sizes).toEqual([1, 2, 0, 0]);
   });
 

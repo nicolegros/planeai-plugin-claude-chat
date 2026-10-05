@@ -22,7 +22,7 @@ export class PendingRequests {
     return this.pending.size;
   }
 
-  // AskUserQuestion reaches here even when the mode bypasses permissions; answering it is allowing it with answers.
+  /** The SDK's permission hook; AskUserQuestion reaches it even when the mode bypasses permissions, and answering it is allowing it with answers. */
   readonly canUseTool: CanUseTool = (toolName, input, options) =>
     new Promise<PermissionResult>((resolve) => {
       const requestId = `permission-${++this.next}`;

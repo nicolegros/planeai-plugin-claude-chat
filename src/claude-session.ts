@@ -81,7 +81,8 @@ export class ClaudeSession {
   private seq: number;
   /** The status last told to the host. */
   private announced: SessionStatus = "idle";
-  private announcing = false;
+  /** A microtask will announce the status. */
+  private announceQueued = false;
   private readonly requests = new PendingRequests((event) => {
     this.emit(event);
     this.refreshStatus();
@@ -544,10 +545,10 @@ export class ClaudeSession {
 
   /** Tells the host once per change, so a burst such as a handoff reports only where it lands. */
   private refreshStatus(): void {
-    if (this.announcing) return;
-    this.announcing = true;
+    if (this.announceQueued) return;
+    this.announceQueued = true;
     queueMicrotask(() => {
-      this.announcing = false;
+      this.announceQueued = false;
       this.announceStatus();
     });
   }
