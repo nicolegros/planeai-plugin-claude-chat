@@ -119,7 +119,7 @@ const TOOLS: { [K in ToolInput["kind"]]: ToolKind<InputOf<K>> } = {
   // Live chats show questions as their own prompt; this is how a chat rebuilt from Claude Code's transcript shows them.
   questions: {
     steps: ["question", "questions"],
-    view: ({ questions }) => ({ icon: "help", verbs: ["Asking", "Asked"], target: questions[0].question, style: "text", count: questions.length > 1 ? plural(questions.length, "question") : undefined }),
+    view: ({ questions }) => ({ icon: "help", verbs: ["Asking", "Asked"], target: `“${questions[0].question}”`, style: "text", count: questions.length > 1 ? plural(questions.length, "question") : undefined }),
   },
 };
 

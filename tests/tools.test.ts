@@ -67,7 +67,7 @@ describe("viewTool", () => {
 
   it("shows a question from a rebuilt chat by its first question", () => {
     const questions = ["Which platforms?", "Which versions?"].map((question) => ({ question, header: "", options: [{ label: "A", description: "" }], multi_select: false }));
-    expect(viewTool(tool("AskUserQuestion", { kind: "questions", questions }))).toMatchObject({ icon: "help", verbs: ["Asking", "Asked"], target: "Which platforms?", count: "2 questions" });
+    expect(viewTool(tool("AskUserQuestion", { kind: "questions", questions }))).toMatchObject({ icon: "help", verbs: ["Asking", "Asked"], target: "“Which platforms?”", count: "2 questions" });
   });
 
   it("names MCP tools by server and tool, and other tools by name and summary", () => {
