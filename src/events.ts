@@ -14,6 +14,7 @@ export type ToolInput =
   | { kind: "agent"; description: string }
   | { kind: "fetch"; url: string }
   | { kind: "web_search"; query: string }
+  /** Empty when a chat saved by v1 kept too little of them. */
   | { kind: "questions"; questions: Question[] };
 
 export interface Todo {
@@ -247,16 +248,16 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
         ...(typeof fields.description === "string" ? { description: clip(fields.description, 200) } : {}),
       };
     case "Edit":
-      return edit(text(fields.file_path), [{ old_string: text(fields.old_string), new_string: text(fields.new_string) }]);
+      return edit(clip(text(fields.file_path), 500), [{ old_string: text(fields.old_string), new_string: text(fields.new_string) }]);
     case "MultiEdit": {
       const edits = Array.isArray(fields.edits) ? (fields.edits as Record<string, unknown>[]) : [];
       return edit(
-        text(fields.file_path),
+        clip(text(fields.file_path), 500),
         edits.map((entry) => ({ old_string: text(entry?.old_string), new_string: text(entry?.new_string) })),
       );
     }
     case "Read":
-      return { kind: "read", file_path: text(fields.file_path) };
+      return { kind: "read", file_path: clip(text(fields.file_path), 500) };
     case "Grep":
     case "Glob":
       return {
@@ -265,7 +266,7 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
         ...(typeof fields.path === "string" && fields.path ? { path: clip(fields.path, 500) } : {}),
       };
     case "Write":
-      return { kind: "write", file_path: text(fields.file_path), content: clip(text(fields.content), MAX_INPUT_CHARS) };
+      return { kind: "write", file_path: clip(text(fields.file_path), 500), content: clip(text(fields.content), MAX_INPUT_CHARS) };
     case "Skill":
       return {
         kind: "skill",
@@ -290,32 +291,40 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
   }
 }
 
+/** The field v1 kept as the summary of the tools it sent no input for; Grep and Glob kept the path instead when a call had one. */
+const V1_SUMMARY_FIELDS = new Map([
+  ["Read", "file_path"],
+  ["Grep", "pattern"],
+  ["Glob", "pattern"],
+  ["Agent", "description"],
+  ["Task", "description"],
+  ["WebFetch", "url"],
+  ["WebSearch", "query"],
+]);
+
+/** The first `field` string in JSON clipped too early to parse. */
+function clippedField(json: string, field: string): string | undefined {
+  const match = new RegExp(`"${field}":("(?:[^"\\\\]|\\\\.)*")`).exec(json);
+  return match ? JSON.parse(match[1]) : undefined;
+}
+
 /** A stored tool call's input as it was rendered, from what earlier versions kept. */
 function storedToolInput(name: string, summary: string, input: ToolInput | { kind: "search"; pattern: string; path?: string } | undefined): ToolInput | undefined {
   // Builds before Grep and Glob had kinds of their own.
   if (input?.kind === "search") return { ...input, kind: name === "Glob" ? "glob" : "grep" };
   if (input) return input;
-  // v1 kept only the summary: the most descriptive field, or the input as JSON.
-  switch (name) {
-    case "Read":
-      return { kind: "read", file_path: summary };
-    // The summary is the pattern, or the path when the call had one.
-    case "Grep":
-    case "Glob":
-      return { kind: name === "Grep" ? "grep" : "glob", pattern: summary };
-    case "Agent":
-    case "Task":
-      return { kind: "agent", description: summary };
-    case "WebFetch":
-      return { kind: "fetch", url: summary };
-    case "WebSearch":
-      return { kind: "web_search", query: summary };
-    default:
-      try {
-        return toolInput(name, JSON.parse(summary));
-      } catch {
-        return undefined;
-      }
+  const field = V1_SUMMARY_FIELDS.get(name);
+  if (field) return toolInput(name, { [field]: summary });
+  // Other tools kept their input as JSON, clipped to 500 characters.
+  try {
+    return toolInput(name, JSON.parse(summary));
+  } catch {
+    const skill = name === "Skill" ? clippedField(summary, "skill") : undefined;
+    if (skill) return { kind: "skill", skill };
+    if (name === "TodoWrite") return { kind: "todos", todos: [] };
+    if (name !== "AskUserQuestion") return undefined;
+    const question = clippedField(summary, "question");
+    return { kind: "questions", questions: question ? [{ question, header: "", options: [], multi_select: false }] : [] };
   }
 }
 

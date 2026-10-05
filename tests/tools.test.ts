@@ -35,6 +35,8 @@ describe("viewTool", () => {
     expect(viewTool(tool("Skill", { kind: "skill", skill: "review" })).note).toBeUndefined();
     const todos = [{ content: "a", status: "completed" as const }, { content: "b", status: "pending" as const }];
     expect(viewTool(tool("TodoWrite", { kind: "todos", todos }))).toMatchObject({ todos, count: "1 of 2 done" });
+    const unknown = viewTool(tool("TodoWrite", { kind: "todos", todos: [] }));
+    expect([unknown.todos, unknown.count]).toEqual([undefined, undefined]);
   });
 
   it("names what a search looked for and where", () => {
@@ -68,6 +70,16 @@ describe("viewTool", () => {
   it("shows a question from a rebuilt chat by its first question", () => {
     const questions = ["Which platforms?", "Which versions?"].map((question) => ({ question, header: "", options: [{ label: "A", description: "" }], multi_select: false }));
     expect(viewTool(tool("AskUserQuestion", { kind: "questions", questions }))).toMatchObject({ icon: "help", verbs: ["Asking", "Asked"], target: "“Which platforms?”", count: "2 questions" });
+  });
+
+  it("shows a question a saved chat kept too little of as a question", () => {
+    expect(viewTool(tool("AskUserQuestion", { kind: "questions", questions: [] })).target).toBe("a question");
+  });
+
+  it("shows a tool whose input kind it does not know by name and summary", () => {
+    const newer = { kind: "notebook", path: "a.ipynb" } as unknown as ToolInput;
+    expect(viewTool(tool("NotebookEdit", newer))).toMatchObject({ icon: "tool", target: "summary" });
+    expect(previewOf(tool("NotebookEdit", newer))).toBeNull();
   });
 
   it("names MCP tools by server and tool, and other tools by name and summary", () => {

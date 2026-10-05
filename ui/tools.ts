@@ -39,7 +39,7 @@ interface Facts {
 
 type InputOf<K extends ToolInput["kind"]> = Extract<ToolInput, { kind: K }>;
 
-interface ToolKind<Input> {
+interface ToolRenderer<Input> {
   /** How runs of this tool are counted in a folded turn's summary. */
   steps: [string, string];
   view(input: Input, tool: ToolEntry, facts: Facts): Omit<ToolView, "state">;
@@ -59,7 +59,7 @@ function splitPath(path: string, root?: string): { target: string; folder?: stri
 
 const diffPreview = (input: InputOf<"edit" | "write">): Preview => ({ kind: "diff", edits: editsOf(input) });
 
-function search(icon: IconName, verbs: [string, string], count: (facts: Facts) => string | undefined): ToolKind<InputOf<"grep" | "glob">> {
+function search(icon: IconName, verbs: [string, string], count: (facts: Facts) => string | undefined): ToolRenderer<InputOf<"grep" | "glob">> {
   return {
     steps: ["search", "searches"],
     view: (input, _, facts) => ({ icon, verbs, target: input.pattern, style: "code", folder: input.path ? relative(input.path, facts.root) : undefined, count: count(facts) }),
@@ -67,7 +67,7 @@ function search(icon: IconName, verbs: [string, string], count: (facts: Facts) =
 }
 
 /** Every input kind the sidecar sends has a view. */
-const TOOLS: { [K in ToolInput["kind"]]: ToolKind<InputOf<K>> } = {
+const TOOLS: { [K in ToolInput["kind"]]: ToolRenderer<InputOf<K>> } = {
   bash: {
     steps: ["command", "commands"],
     view: (input, _, { lines }) => ({ icon: "terminal", verbs: ["Running", "Ran"], target: input.command, style: "code", lead: input.description, count: lines ? plural(lines, "line") : undefined }),
@@ -100,7 +100,7 @@ const TOOLS: { [K in ToolInput["kind"]]: ToolKind<InputOf<K>> } = {
     steps: ["plan update", "plan updates"],
     view: ({ todos }) => {
       const done = todos.filter((todo) => todo.status === "completed").length;
-      return { icon: "checklist", verbs: ["Updating the plan", "Updated the plan"], target: "", style: "text", todos, count: `${done} of ${todos.length} done` };
+      return { icon: "checklist", verbs: ["Updating the plan", "Updated the plan"], target: "", style: "text", ...(todos.length ? { todos, count: `${done} of ${todos.length} done` } : {}) };
     },
   },
   agent: {
@@ -119,41 +119,43 @@ const TOOLS: { [K in ToolInput["kind"]]: ToolKind<InputOf<K>> } = {
   // Live chats show questions as their own prompt; this is how a chat rebuilt from Claude Code's transcript shows them.
   questions: {
     steps: ["question", "questions"],
-    view: ({ questions }) => ({ icon: "help", verbs: ["Asking", "Asked"], target: `“${questions[0].question}”`, style: "text", count: questions.length > 1 ? plural(questions.length, "question") : undefined }),
+    view: ({ questions }) => ({ icon: "help", verbs: ["Asking", "Asked"], target: questions.length ? `“${questions[0].question}”` : "a question", style: "text", count: questions.length > 1 ? plural(questions.length, "question") : undefined }),
   },
 };
 
 /** A tool without an input kind, named by its MCP server and tool, or by its name, with its summary. */
-function otherTool(name: string): ToolKind<undefined> {
+function otherTool(name: string): ToolRenderer<undefined> {
   const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
   if (mcp) return { steps: ["tool call", "tool calls"], view: () => ({ icon: "plug", verbs: [`Calling ${mcp[1]}`, `Called ${mcp[1]}`], target: mcp[2].replaceAll("_", " "), style: "text" }) };
   return { steps: ["tool call", "tool calls"], view: (_, tool) => ({ icon: "tool", verbs: [`Running ${name}`, `Ran ${name}`], target: tool.summary, style: "code" }) };
 }
 
-/** The tool's kind with its input; the input's kind picks the kind, so they always match. */
-function kindOf(tool: ToolEntry): [ToolKind<ToolInput | undefined>, ToolInput | undefined] {
-  return tool.input ? [TOOLS[tool.input.kind] as ToolKind<ToolInput | undefined>, tool.input] : [otherTool(tool.name), undefined];
+/** The tool's renderer with its input; the input's kind picks the renderer, so they always match. */
+function rendererOf(tool: ToolEntry): [ToolRenderer<ToolInput | undefined>, ToolInput | undefined] {
+  // A kind from a newer version has no renderer here.
+  const renderer = tool.input && (TOOLS[tool.input.kind] as ToolRenderer<ToolInput | undefined> | undefined);
+  return renderer ? [renderer, tool.input] : [otherTool(tool.name), undefined];
 }
 
 export function viewTool(tool: ToolEntry, root?: string): ToolView {
   const state = tool.result === null ? "running" : tool.result.is_error ? "failed" : "done";
   const output = tool.result?.summary ?? "";
   const lines = state === "done" ? (tool.result?.lines ?? lineCount(output)) : 0;
-  const [kind, input] = kindOf(tool);
-  return { ...kind.view(input, tool, { root, output, lines }), state };
+  const [renderer, input] = rendererOf(tool);
+  return { ...renderer.view(input, tool, { root, output, lines }), state };
 }
 
 /** A change's diff, a command's last output, an agent's answer. */
 export function previewOf(tool: ToolEntry): Preview | null {
-  const [kind, input] = kindOf(tool);
-  return kind.preview?.(input, tool) ?? null;
+  const [renderer, input] = rendererOf(tool);
+  return renderer.preview?.(input, tool) ?? null;
 }
 
 /** "3 commands, 2 edits", in the order the steps first happened. */
 export function describeSteps(tools: ToolEntry[]): string {
   const counts = new Map<string, { words: [string, string]; count: number }>();
   for (const tool of tools) {
-    const words = kindOf(tool)[0].steps;
+    const words = rendererOf(tool)[0].steps;
     const slot = counts.get(words[0]) ?? { words, count: 0 };
     slot.count++;
     counts.set(words[0], slot);

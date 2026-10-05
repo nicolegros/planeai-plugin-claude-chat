@@ -66,6 +66,7 @@ describe("translate", () => {
 
   it("keeps what the chat renders of each tool it knows", () => {
     expect(toolInput("Read", { file_path: "a.ts", offset: 4 })).toEqual({ kind: "read", file_path: "a.ts" });
+    for (const tool of ["Read", "Edit", "MultiEdit", "Write"]) expect(JSON.stringify(toolInput(tool, { file_path: "a".repeat(100_000) })).length).toBeLessThan(1_000);
     expect(toolInput("Grep", { pattern: "x", path: "src" })).toEqual({ kind: "grep", pattern: "x", path: "src" });
     expect(toolInput("Glob", { pattern: "**/*.ts" })).toEqual({ kind: "glob", pattern: "**/*.ts" });
     expect(toolInput("Agent", { description: "Find the bug", prompt: "…", subagent_type: "general-purpose" })).toEqual({ kind: "agent", description: "Find the bug" });
@@ -107,6 +108,13 @@ describe("translate", () => {
     expect(stored("AskUserQuestion", JSON.stringify({ questions: [{ question: "Which?", options: [{ label: "A" }] }] }))).toMatchObject({ input: { kind: "questions", questions: [{ question: "Which?" }] } });
     // Builds of this version before Grep and Glob had kinds of their own.
     expect(stored("Glob", "*.ts", { kind: "search", pattern: "*.ts", path: "src" })).toMatchObject({ input: { kind: "glob", pattern: "*.ts", path: "src" } });
+    // v1 clipped long JSON to 500 characters; what it still names is kept.
+    const clipped = (input: unknown) => clip(JSON.stringify(input), 500);
+    const options = Array.from({ length: 6 }, (_, i) => ({ label: `Option ${i}`, description: "A description long enough to clip the summary." }));
+    expect(stored("AskUserQuestion", clipped({ questions: [{ question: 'Which "target"?', options }] }))).toMatchObject({ input: { kind: "questions", questions: [{ question: 'Which "target"?' }] } });
+    expect(stored("AskUserQuestion", clipped({ questions: [{ question: "Which?".repeat(100), options }] }))).toMatchObject({ input: { kind: "questions", questions: [] } });
+    expect(stored("Skill", clipped({ skill: "review", args: "x".repeat(600) }))).toMatchObject({ input: { kind: "skill", skill: "review" } });
+    expect(stored("TodoWrite", clipped({ todos: [...options, ...options].map((option) => ({ content: option.description, status: "pending" })) }))).toMatchObject({ input: { kind: "todos", todos: [] } });
     // What cannot be read keeps showing its summary.
     expect(stored("Skill", '{"skill":"rev… [9 more characters]')).not.toHaveProperty("input");
     expect(stored("mcp__github__get_pull_request", '{"number":3}')).not.toHaveProperty("input");
