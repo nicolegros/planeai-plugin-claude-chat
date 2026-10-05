@@ -16,6 +16,7 @@ _Avoid_: Queued message, mid-turn message
 
 **Held follow-up**:
 A follow-up Claude has not consumed yet.
+Once a turn ends with some held, Claude goes on to them, so the session stays busy.
 _Avoid_: Pending follow-up (pending belongs to permission and question requests)
 
 **Stamp**:

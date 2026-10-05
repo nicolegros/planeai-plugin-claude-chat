@@ -8,20 +8,14 @@ export interface Frame {
 /** Frames that carry a stamp; a conversation reset carries only the singular field. */
 const STAMPED = new Set(["assistant", "stream_event", "result", "conversation_reset"]);
 
-/**
- * Decides which turn each follow-up belongs to. Claude Code folds a follow-up into the running
- * turn, or runs it as a turn of its own when it arrives too late. Claude stamps a turn's frames
- * with the messages it consumed: the batch that started it, then any folded in. A turn whose
- * batch starts with a follow-up gets a `turn_start` naming its follow-ups; follow-ups in a turn
- * some other prompt started were folded into it.
- */
+/** A turn whose stamp starts with a follow-up gets a `turn_start` naming its follow-ups; follow-ups stamped into a turn another prompt started were folded. */
 export class FollowUpTracker {
   /** Oldest first, until Claude consumes them. */
   private held = new Set<string>();
   /** Whether a frame of the running turn named the messages it consumed. */
   private turnStamped = false;
   /** Whether this Claude stamps at all; older versions do not, so follow-ups cannot be tracked. */
-  private stamps = false;
+  private stamping = false;
   /** A turn ended with follow-ups held, so the next turn's content is theirs even before a stamp names them. */
   private betweenTurns = false;
   /** The follow-ups a turn was started for before its stamp confirmed them. */
@@ -39,18 +33,18 @@ export class FollowUpTracker {
    * A turn started on a guess is announced again with the rest of its batch once its stamp names them.
    */
   frame(frame: Frame, content: boolean): string[] | null {
-    const consumed = STAMPED.has(frame.type) ? (frame.user_message_uuids ?? (frame.user_message_uuid ? [frame.user_message_uuid] : [])) : [];
+    const stamp = STAMPED.has(frame.type) ? (frame.user_message_uuids ?? (frame.user_message_uuid ? [frame.user_message_uuid] : [])) : [];
     let started: string[] | null = null;
-    this.stamps ||= consumed.length > 0;
-    if (consumed.length > 0 && !this.turnStamped) {
-      if (this.held.has(consumed[0])) started = this.startTurn(consumed.filter((id) => this.held.has(id)));
+    this.stamping ||= stamp.length > 0;
+    if (stamp.length > 0 && !this.turnStamped) {
+      if (this.held.has(stamp[0])) started = this.startTurn(stamp.filter((id) => this.held.has(id)));
       this.turnStamped = true;
-    } else if (consumed.length > 0 && this.guessed) {
-      const more = consumed.filter((id) => this.held.has(id));
+    } else if (stamp.length > 0 && this.guessed) {
+      const more = stamp.filter((id) => this.held.has(id));
       if (more.length > 0) started = [...this.guessed, ...more];
       this.guessed = null;
     }
-    for (const id of consumed) this.held.delete(id);
+    for (const id of stamp) this.held.delete(id);
     // A local command such as /context stamps only its result; its output already belongs to the follow-up's turn.
     if (this.betweenTurns && !this.turnStamped && this.held.size > 0 && content) {
       this.guessed = [this.held.values().next().value!];
@@ -59,12 +53,12 @@ export class FollowUpTracker {
     if (frame.type === "result") {
       this.turnStamped = false;
       this.guessed = null;
-      this.betweenTurns = this.stamps && this.held.size > 0;
+      this.betweenTurns = this.stamping && this.held.size > 0;
     }
     return started;
   }
 
-  /** A turn ended and Claude goes on to the follow-ups it still holds. */
+  /** Between turns with follow-ups still held: Claude goes on to them. Mid-turn, held follow-ups do not count. */
   get holding(): boolean {
     return this.betweenTurns;
   }
@@ -73,7 +67,7 @@ export class FollowUpTracker {
   reset(): void {
     this.held.clear();
     this.turnStamped = false;
-    this.stamps = false;
+    this.stamping = false;
     this.betweenTurns = false;
     this.guessed = null;
   }

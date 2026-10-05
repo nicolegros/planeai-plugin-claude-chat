@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { FollowUpTracker, type Frame } from "../src/follow-ups";
 
-const stamped = (type: string, ...consumed: string[]): Frame => ({ type, user_message_uuid: consumed.at(-1), user_message_uuids: consumed });
-const assistant = (...consumed: string[]) => stamped("assistant", ...consumed);
-const result = (...consumed: string[]): Frame => (consumed.length > 0 ? stamped("result", ...consumed) : { type: "result" });
+const stamped = (type: string, ...stamp: string[]): Frame => ({ type, user_message_uuid: stamp.at(-1), user_message_uuids: stamp });
+const assistant = (...stamp: string[]) => stamped("assistant", ...stamp);
+const result = (...stamp: string[]): Frame => (stamp.length > 0 ? stamped("result", ...stamp) : { type: "result" });
 const unstamped: Frame = { type: "assistant" };
 
-/** Feeds frames that all render content, returning the turn_start each one announces. */
+/** Feeds frames that render content, except results, returning the turn_start each one announces. */
 function play(tracker: FollowUpTracker, ...frames: Frame[]): (string[] | null)[] {
   return frames.map((frame) => tracker.frame(frame, frame.type !== "result"));
 }
