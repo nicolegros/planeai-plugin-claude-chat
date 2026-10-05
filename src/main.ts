@@ -10,6 +10,13 @@ if (!dataDir) {
   process.exit(1);
 }
 
+// The SDK warns that bypass mode never consults canUseTool, but AskUserQuestion still reaches it there.
+const emitWarning = process.emitWarning.bind(process) as (...args: unknown[]) => void;
+process.emitWarning = ((warning: unknown, options?: unknown, ...rest: unknown[]) => {
+  if ((options as { code?: unknown } | undefined)?.code === "CLAUDE_SDK_CAN_USE_TOOL_SHADOWED") return;
+  emitWarning(warning, options, ...rest);
+}) as typeof process.emitWarning;
+
 let peer: JsonRpcPeer;
 const plugin = new ClaudeChatPlugin(
   new TranscriptStore(join(dataDir, "sessions")),
