@@ -4,7 +4,6 @@ import Chat from "../ui/Chat.svelte";
 import type { CommandOption, Snapshot } from "../ui/host";
 import { COMMANDS, fakeHost, META, settle } from "./fake-host";
 
-
 function button(label: string): HTMLButtonElement {
   const found = [...document.querySelectorAll("button")].find((candidate) => (candidate.getAttribute("aria-label") ?? candidate.textContent?.trim()) === label);
   if (!found) throw new Error(`no button ${label}`);
