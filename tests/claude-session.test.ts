@@ -339,7 +339,7 @@ describe("ClaudeSession", () => {
     expect(statuses.at(-1)).toBe("idle");
     await expect(chat.send("from the chat")).rejects.toThrow("continuing in a terminal");
 
-    await chat.handback();
+    chat.handback();
     expect(chat.snapshot().meta.handed_off).toBe(false);
     expect(chat.snapshot().events.map(({ payload }) => payload.type).filter((type) => type === "handoff")).toHaveLength(2);
     await chat.send("back in the chat");
@@ -374,7 +374,7 @@ describe("ClaudeSession", () => {
     expect(statuses.at(-1)).toBe("idle");
   });
 
-  it("delivers nothing to the Claude a handoff is letting go, and returns to the chat only once it is closed", async () => {
+  it("delivers nothing to the Claude a handoff is letting go, and refuses to return to the chat until the terminal's command is out", async () => {
     fake = fakeQueryFactory({ holdModels: true });
     const chat = session();
     await chat.send("hello");
@@ -387,15 +387,29 @@ describe("ClaudeSession", () => {
     fake.queries[0].releaseModels();
     await expect(switching).rejects.toThrow("no longer drives");
     expect(fake.queries[0].setModel).not.toHaveBeenCalled();
-    const returning = chat.handback();
-    await flush();
+    expect(() => chat.handback()).toThrow("still opening");
     expect(chat.snapshot().meta.handed_off).toBe(true);
     acknowledge();
-    await Promise.all([handingOff, returning]);
+    await handingOff;
     expect(fake.queries[0].close).toHaveBeenCalledOnce();
+    chat.handback();
     expect(chat.snapshot().meta.handed_off).toBe(false);
     await chat.send("back");
     expect(fake.queries).toHaveLength(2);
+  });
+
+  it("writes nothing more for a session stopped while its handoff waits", async () => {
+    const chat = session();
+    await chat.send("edit it");
+    let acknowledge!: () => void;
+    fake.queries[0].interrupt.mockImplementation(() => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))));
+    const handingOff = chat.handoff();
+    await flush();
+    chat.stop();
+    const before = events.length;
+    acknowledge();
+    await expect(handingOff).rejects.toThrow("stopped");
+    expect(events.slice(before)).toEqual([]);
   });
 
   it("marks the handoff after the frames of the turn it interrupted", async () => {

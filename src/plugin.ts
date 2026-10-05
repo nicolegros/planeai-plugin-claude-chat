@@ -96,7 +96,7 @@ export class ClaudeChatPlugin {
       case "provider.session.handoff":
         return { argv: await (await this.session(object(params))).handoff() };
       case "provider.session.handback":
-        await (await this.session(object(params))).handback();
+        (await this.session(object(params))).handback();
         return {};
       case "claude.snapshot": {
         const request = object(params);

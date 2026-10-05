@@ -116,8 +116,8 @@ export class ClaudeSession {
   private readonly sending = new Set<symbol>();
   private turnRunning = false;
   private delivering: Promise<unknown> = Promise.resolve();
-  /** A handoff letting Claude go, which every handoff call waits for before a terminal takes over. */
-  private lettingGo: Promise<void> | null = null;
+  /** A handoff until it returns the terminal's command; returning to the chat is refused meanwhile. */
+  private handingOff: Promise<string[]> | null = null;
   /** Settles once a chat whose own history is gone was rebuilt from Claude's transcript. */
   readonly restored: Promise<void>;
   /** The models of the running Claude process, once listed. */
@@ -344,10 +344,15 @@ export class ClaudeSession {
    * Detach so Claude Code's TUI can continue this conversation, and return the
    * command that does it. Only one side may drive a session at a time.
    */
-  async handoff(): Promise<string[]> {
+  handoff(): Promise<string[]> {
+    this.handingOff ??= this.handOff().finally(() => (this.handingOff = null));
+    return this.handingOff;
+  }
+
+  private async handOff(): Promise<string[]> {
     if (!this.config.claudeExecutable) throw new Error("claude executable not found on PATH");
-    if (!this.meta.handed_off) this.lettingGo = this.letGo();
-    await this.lettingGo;
+    if (!this.meta.handed_off) await this.letGo();
+    if (this.stopped) throw new Error("session is stopped");
     const mode = this.meta.permission_mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : ["--permission-mode", this.meta.permission_mode];
     return [
       this.config.claudeExecutable,
@@ -367,15 +372,17 @@ export class ClaudeSession {
       // Claude records the interruption in its transcript before it is closed, so the terminal resumes a settled conversation.
       await within(running.interrupt().catch(() => {}), INTERRUPT_WAIT_MS, undefined);
     }
+    // A stopped session may have been destroyed meanwhile; writing now would leave its files behind.
+    if (this.stopped) return;
     this.detach("Continued in the terminal");
     // After the interrupted turn's last frames, which belong to the chat.
     this.emit({ type: "handoff", in_terminal: true });
   }
 
   /** The terminal closed; the next prompt resumes the conversation here. */
-  async handback(): Promise<void> {
-    // The chat drives again only once the Claude it let go is closed.
-    await this.lettingGo;
+  handback(): void {
+    // The host opens the terminal once the handoff returns; the chat driving too would make two drivers.
+    if (this.handingOff) throw new Error("The terminal is still opening. Select Return to chat once it is open.");
     if (!this.meta.handed_off) return;
     this.emit({ type: "handoff", in_terminal: false });
     this.updateMeta({ handed_off: false });
