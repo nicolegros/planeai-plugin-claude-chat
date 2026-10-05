@@ -19,6 +19,9 @@ const BASE_MODES: PermissionMode[] = ["default", "acceptEdits", "plan"];
 /** How long a `/model` waits for Claude's model list before handing the text to Claude Code. */
 const MODELS_WAIT_MS = 10_000;
 
+/** How long a handoff waits for Claude to stop its turn before closing it anyway. */
+const INTERRUPT_WAIT_MS = 2_000;
+
 /** `/model <name>` is the header's model switch, typed. */
 const MODEL_COMMAND = /^\/model\s+(\S+)$/;
 
@@ -53,6 +56,17 @@ export interface SessionConfig {
 
 export function errorMessage(error: unknown): string {
   return clip(error instanceof Error ? error.message : String(error), 2_000);
+}
+
+/** `promise`'s value, or `fallback` once `ms` passed without one. */
+async function within<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => (timer = setTimeout(() => resolve(fallback), ms)));
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Index of the first event after `seq`; events are stored in increasing seq order. */
@@ -100,6 +114,8 @@ export class ClaudeSession {
   private readonly sending = new Set<symbol>();
   private turnRunning = false;
   private delivering: Promise<unknown> = Promise.resolve();
+  /** A handoff letting Claude go, which every handoff call waits for before a terminal takes over. */
+  private lettingGo: Promise<void> | null = null;
   /** Settles once a chat whose own history is gone was rebuilt from Claude's transcript. */
   readonly restored: Promise<void>;
   /** The models of the running Claude process, once listed. */
@@ -311,14 +327,8 @@ export class ClaudeSession {
   }
 
   /** A Claude that never finishes starting must not hold up every later send. */
-  private async listedModels(): Promise<ModelOption[]> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<ModelOption[]>((resolve) => (timer = setTimeout(() => resolve([]), MODELS_WAIT_MS)));
-    try {
-      return await Promise.race([this.models, timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
+  private listedModels(): Promise<ModelOption[]> {
+    return within(this.models, MODELS_WAIT_MS, []);
   }
 
   private switchModel(model: string): void {
@@ -333,13 +343,8 @@ export class ClaudeSession {
    */
   async handoff(): Promise<string[]> {
     if (!this.config.claudeExecutable) throw new Error("claude executable not found on PATH");
-    if (!this.meta.handed_off) {
-      if (this.status !== "idle") this.interrupt();
-      this.detach("Continued in the terminal");
-      this.emit({ type: "handoff", in_terminal: true });
-      this.updateMeta({ handed_off: true });
-      this.refreshStatus();
-    }
+    if (!this.meta.handed_off) this.lettingGo = this.letGo();
+    await this.lettingGo;
     const mode = this.meta.permission_mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : ["--permission-mode", this.meta.permission_mode];
     return [
       this.config.claudeExecutable,
@@ -349,11 +354,26 @@ export class ClaudeSession {
     ];
   }
 
+  private async letGo(): Promise<void> {
+    const running = this.status !== "idle" ? this.query : null;
+    // Sends are refused from here, so nothing more reaches this Claude.
+    this.emit({ type: "handoff", in_terminal: true });
+    this.updateMeta({ handed_off: true });
+    this.refreshStatus();
+    if (running) {
+      this.requests.denyAll("Interrupted by the user");
+      // Claude records the interruption in its transcript before it is closed, so the terminal resumes a settled conversation.
+      await within(running.interrupt().catch(() => {}), INTERRUPT_WAIT_MS, undefined);
+    }
+    this.detach("Continued in the terminal");
+  }
+
   /** The terminal closed; the next prompt resumes the conversation here. */
   handback(): void {
     if (!this.meta.handed_off) return;
     this.emit({ type: "handoff", in_terminal: false });
     this.updateMeta({ handed_off: false });
+    this.refreshStatus();
   }
 
   stop(): void {
@@ -540,7 +560,7 @@ export class ClaudeSession {
   }
 
   private get status(): SessionStatus {
-    return statusOf({ sending: this.sending.size, turnRunning: this.turnRunning, holding: this.followUps.holding, pending: this.requests.size });
+    return statusOf({ handedOff: this.meta.handed_off, sending: this.sending.size, turnRunning: this.turnRunning, holding: this.followUps.holding, pending: this.requests.size });
   }
 
   /** Tells the host once per change, so a burst such as a handoff reports only where it lands. */

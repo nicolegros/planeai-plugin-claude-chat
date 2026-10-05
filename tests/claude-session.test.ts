@@ -346,6 +346,38 @@ describe("ClaudeSession", () => {
     expect(fake.queries[1].options).toMatchObject({ resume: SESSION_ID });
   });
 
+  it("lets Claude record the interruption before a handoff closes it, without reporting an error", async () => {
+    const chat = session();
+    await chat.send("edit it");
+    let acknowledge!: () => void;
+    fake.queries[0].interrupt.mockImplementation(() => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))));
+    const handingOff = chat.handoff();
+    await flush();
+    expect(fake.queries[0].close).not.toHaveBeenCalled();
+    await expect(chat.send("too late")).rejects.toThrow("terminal");
+    expect(statuses.at(-1)).toBe("idle");
+    acknowledge();
+    await handingOff;
+    expect(fake.queries[0].close).toHaveBeenCalledOnce();
+    expect(events.map(({ payload }) => payload.type)).not.toContain("error");
+  });
+
+  it("closes Claude for a handoff when its interrupt never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      const chat = session();
+      await chat.send("edit it");
+      fake.queries[0].interrupt.mockImplementation(() => new Promise<undefined>(() => {}));
+      const handingOff = chat.handoff();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await handingOff;
+      expect(fake.queries[0].close).toHaveBeenCalledOnce();
+      expect(statuses.at(-1)).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("hands off a session waiting on the user straight to idle", async () => {
     const chat = session();
     await chat.send("edit it");
