@@ -2,12 +2,8 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Chat from "../ui/Chat.svelte";
 import type { CommandOption, Snapshot } from "../ui/host";
-import { COMMANDS, fakeHost, META } from "./fake-host";
+import { COMMANDS, fakeHost, META, settle } from "./fake-host";
 
-const settle = async () => {
-  for (let i = 0; i < 8; i++) await Promise.resolve();
-  flushSync();
-};
 
 function button(label: string): HTMLButtonElement {
   const found = [...document.querySelectorAll("button")].find((candidate) => (candidate.getAttribute("aria-label") ?? candidate.textContent?.trim()) === label);
@@ -44,6 +40,15 @@ describe("Chat", () => {
     await settle();
     return harness;
   }
+
+  it("keeps a message too long to send in the message box", async () => {
+    const harness = await render();
+    const textarea = document.querySelector("textarea")!;
+    type(textarea, "x".repeat(50 * 1024));
+    press(textarea, "Enter");
+    expect(harness.value.host.data.notify).toHaveBeenCalledWith(expect.stringContaining("too long"));
+    expect(textarea.value).toHaveLength(50 * 1024);
+  });
 
   it("streams Claude's answer as markdown", async () => {
     const harness = await render();

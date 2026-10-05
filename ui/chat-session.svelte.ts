@@ -1,6 +1,6 @@
 import { normalizeAppearance } from "../src/appearance";
 import { CommandCatalog } from "./commands.svelte";
-import type { Appearance, CommandOption, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent } from "./host";
+import type { Appearance, CommandOption, PermissionDecision, ProviderUiContext, SessionStatus, Snapshot, StoredEvent } from "./host";
 import { Transcript, type Entry } from "./transcript.svelte";
 
 /** The provider prompt limit from PlaneAI's plugin guide, measured as JSON-escaped text. */
@@ -35,11 +35,7 @@ export class ChatSession {
     });
   }
 
-  get id(): string {
-    return this.context.session.id;
-  }
-
-  get status() {
+  get status(): SessionStatus {
     return this.transcript.status;
   }
 
@@ -112,6 +108,10 @@ export class ChatSession {
 
   openExternal(url: string): void {
     this.context.host.navigation.openExternal(url);
+  }
+
+  private get id(): string {
+    return this.context.session.id;
   }
 
   private apply(event: StoredEvent): void {

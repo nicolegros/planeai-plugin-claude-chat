@@ -29,8 +29,6 @@
   let disconnect: (() => void) | undefined;
   let stickToBottom = true;
 
-  const status = $derived(session.status);
-  const working = $derived(session.working);
   const conversation = $derived(turns(transcript.entries));
   const root = $derived(transcript.meta.cwd ?? undefined);
 
@@ -98,7 +96,7 @@
   function onWindowKeydown(event: KeyboardEvent): void {
     const target = event.target instanceof Element ? event.target : null;
     if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || target?.closest(TYPING_TARGETS)) return;
-    if (event.key === "Escape" && working) {
+    if (event.key === "Escape" && session.working) {
       event.preventDefault();
       session.interrupt();
     } else if (event.key.length === 1 && !(event.key === " " && target?.closest(PRESSABLE))) {
@@ -172,7 +170,7 @@
     } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       send();
-    } else if (event.key === "Escape" && working) {
+    } else if (event.key === "Escape" && session.working) {
       event.preventDefault();
       session.interrupt();
     }
@@ -184,8 +182,6 @@
   });
 
   onDestroy(() => disconnect?.());
-
-  const openExternal = (url: string) => session.openExternal(url);
 </script>
 
 {#snippet block(item: Block)}
@@ -194,7 +190,7 @@
   {:else if item.entry.kind === "user"}
     <div class="follow-up"><p class="follow-up-label">Your follow-up</p><p class="follow-up-text">{item.entry.text}</p></div>
   {:else if item.entry.kind === "assistant"}
-    <div class="message"><Markdown text={item.entry.text} onLink={openExternal} /></div>
+    <div class="message"><Markdown text={item.entry.text} onLink={(url) => session.openExternal(url)} /></div>
   {:else if item.entry.kind === "question"}
     {#if item.entry.resolved}
       <QuestionAnswers questions={item.entry.questions} answers={item.entry.answers} />
@@ -221,9 +217,9 @@
 
 {#snippet progress()}
   {#if transcript.live}
-    <div class="message"><Markdown text={liveMarkdown || transcript.live} onLink={openExternal} /></div>
-  {:else if working}
-    <p class="working" aria-hidden="true">{status === "needs_attention" ? "Waiting for your answer" : transcript.meta.compacting ? "Compacting the conversation" : "Claude is working"}<span class="ellipsis"></span></p>
+    <div class="message"><Markdown text={liveMarkdown || transcript.live} onLink={(url) => session.openExternal(url)} /></div>
+  {:else if session.working}
+    <p class="working" aria-hidden="true">{session.status === "needs_attention" ? "Waiting for your answer" : transcript.meta.compacting ? "Compacting the conversation" : "Claude is working"}<span class="ellipsis"></span></p>
   {/if}
 {/snippet}
 
@@ -232,7 +228,7 @@
 <main class="chat" style={appearanceStyle(session.appearance)}>
   <div class="log" bind:this={log} onscroll={onScroll} role="log" aria-label="Conversation" aria-busy={!!transcript.live}>
     {#if conversation.length === 0}
-      {#if transcript.live || working}
+      {#if transcript.live || session.working}
         <div class="body">{@render progress()}</div>
       {:else}
         <p class="empty">Send a message to start Claude in this worktree, or type / for commands.</p>
@@ -263,7 +259,7 @@
       </section>
     {/each}
   </div>
-  <p class="visually-hidden" role="status">{status === "needs_attention" ? "Claude is waiting for your answer" : working ? "Claude is working" : ""}</p>
+  <p class="visually-hidden" role="status">{session.status === "needs_attention" ? "Claude is waiting for your answer" : session.working ? "Claude is working" : ""}</p>
   {#if session.dock.kind === "question"}
     {@const question = session.dock.question}
     <div class="dock">
@@ -296,7 +292,7 @@
           oninput={onInput}
           onkeydown={onKeydown}
           rows="1"
-          placeholder={working ? "Queue a follow-up · Esc to stop" : "Message Claude · / for commands"}
+          placeholder={session.working ? "Queue a follow-up · Esc to stop" : "Message Claude · / for commands"}
           aria-label="Message Claude"
           role="combobox"
           aria-autocomplete="list"
@@ -308,10 +304,10 @@
         <div class="bar">
           <ComposerBar meta={transcript.meta} onMode={(mode) => session.setMode(mode)} onModel={(model) => session.setModel(model)} onHandoff={() => session.handoff()}>
             {#snippet actions()}
-              {#if working}
+              {#if session.working}
                 <button type="button" class="icon-control round" onclick={() => session.interrupt()} data-tip="Stop · Esc" data-tip-end aria-label="Stop"><Icon name="stop" size={12} /></button>
               {/if}
-              <button type="submit" class="icon-control round primary" disabled={!draft.trim()} data-tip={working ? "Queue · Enter" : "Send · Enter"} data-tip-end aria-label={working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
+              <button type="submit" class="icon-control round primary" disabled={!draft.trim()} data-tip={session.working ? "Queue · Enter" : "Send · Enter"} data-tip-end aria-label={session.working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
             {/snippet}
           </ComposerBar>
         </div>

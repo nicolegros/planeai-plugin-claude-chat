@@ -1,18 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatSession } from "../ui/chat-session.svelte";
-import { fakeHost, META } from "./fake-host";
-
-const settle = async () => {
-  for (let i = 0; i < 8; i++) await Promise.resolve();
-};
+import { ChatSession, MAX_MESSAGE_BYTES } from "../ui/chat-session.svelte";
+import { fakeHost, META, settle } from "./fake-host";
 
 describe("ChatSession", () => {
   let disconnect: (() => void) | undefined;
   afterEach(() => disconnect?.());
 
-  async function connect(host = fakeHost(), onApplied?: () => void) {
+  async function connect(host = fakeHost()) {
     const session = new ChatSession(host.value);
-    disconnect = session.connect(onApplied);
+    disconnect = session.connect();
     await settle();
     return { host, session };
   }
@@ -53,7 +49,8 @@ describe("ChatSession", () => {
     release();
     await settle();
     expect(session.transcript.entries.map((entry) => (entry.kind === "user" || entry.kind === "assistant" ? entry.text : entry.kind))).toEqual(["in the snapshot", "after it"]);
-    expect(applied).toHaveBeenCalled();
+    // Once per buffered event, then once the replay is done.
+    expect(applied).toHaveBeenCalledTimes(3);
   });
 
   it("tells the user when the transcript or an action fails, and stops following once disconnected", async () => {
@@ -73,7 +70,8 @@ describe("ChatSession", () => {
 
   it("refuses a message that would exceed PlaneAI's prompt limit once escaped", async () => {
     const { host, session } = await connect();
-    expect(session.send(`x${"\n".repeat(30_000)}x`)).toBe(false);
+    // Escaped, each newline takes two bytes.
+    expect(session.send("\n".repeat(MAX_MESSAGE_BYTES / 2))).toBe(false);
     expect(host.value.host.session.send).not.toHaveBeenCalled();
     expect(host.value.host.data.notify).toHaveBeenCalledWith(expect.stringContaining("too long"));
     expect(session.send("hello")).toBe(true);
@@ -83,14 +81,14 @@ describe("ChatSession", () => {
   it("sends the user's actions to the sidecar for this session", async () => {
     const { host, session } = await connect();
     session.respond("permission-1", "deny", "not now");
-    session.answer("permission-2", { "Which?": "A" });
-    session.answer("permission-3", null);
+    session.answer("question-1", { "Which?": "A" });
+    session.answer("question-2", null);
     session.setMode("plan");
     session.setModel(null);
     expect(vi.mocked(host.value.host.call).mock.calls.slice(1)).toEqual([
       ["claude.permission.respond", { session_id: "s1", request_id: "permission-1", decision: "deny", reason: "not now" }],
-      ["claude.question.answer", { session_id: "s1", request_id: "permission-2", answers: { "Which?": "A" } }],
-      ["claude.question.answer", { session_id: "s1", request_id: "permission-3" }],
+      ["claude.question.answer", { session_id: "s1", request_id: "question-1", answers: { "Which?": "A" } }],
+      ["claude.question.answer", { session_id: "s1", request_id: "question-2" }],
       ["claude.mode.set", { session_id: "s1", mode: "plan" }],
       ["claude.model.set", { session_id: "s1", model: null }],
     ]);
@@ -99,12 +97,12 @@ describe("ChatSession", () => {
   it("docks Claude's open question, or the handoff notice over it, in place of the message box", async () => {
     const { host, session } = await connect();
     expect(session.dock.kind).toBe("composer");
-    host.push(1, { type: "question", request_id: "permission-1", questions: [{ question: "Which?", header: "", options: [], multi_select: false }] });
-    expect(session.dock).toMatchObject({ kind: "question", question: { request_id: "permission-1" } });
+    host.push(1, { type: "question", request_id: "question-1", questions: [{ question: "Which?", header: "", options: [], multi_select: false }] });
+    expect(session.dock).toMatchObject({ kind: "question", question: { request_id: "question-1" } });
     host.push(2, { type: "meta", meta: { handed_off: true } });
     expect(session.dock.kind).toBe("handed_off");
     host.push(3, { type: "meta", meta: { handed_off: false } });
-    host.push(4, { type: "question_resolved", request_id: "permission-1" });
+    host.push(4, { type: "question_resolved", request_id: "question-1" });
     expect(session.dock.kind).toBe("composer");
   });
 
@@ -121,16 +119,18 @@ describe("ChatSession", () => {
     expect(session.commands.list?.map((command) => command.name)).toEqual(["deploy"]);
   });
 
-  it("uses the fonts from the plugin's settings, follows changes live, and keeps PlaneAI's when they cannot be read", async () => {
+  it("uses the fonts from the plugin's settings and follows changes live", async () => {
     const { host, session } = await connect(fakeHost({}, undefined, { font_family: "Inter", font_size: 16, ignored: true }));
     expect(session.appearance).toEqual({ font_family: "Inter", font_size: 16 });
     host.push(1, { type: "appearance", appearance: { code_font_family: "Fira Code" } });
     expect(session.appearance).toEqual({ code_font_family: "Fira Code" });
-    disconnect!();
-    const unreadable = fakeHost();
-    vi.mocked(unreadable.value.host.settings.get).mockRejectedValueOnce(new Error("plugin settings capability is not granted"));
-    const { session: fallback } = await connect(unreadable);
-    expect(fallback.appearance).toEqual({});
-    expect(unreadable.value.host.data.notify).not.toHaveBeenCalled();
+  });
+
+  it("keeps PlaneAI's fonts when the settings cannot be read", async () => {
+    const host = fakeHost();
+    vi.mocked(host.value.host.settings.get).mockRejectedValueOnce(new Error("plugin settings capability is not granted"));
+    const { session } = await connect(host);
+    expect(session.appearance).toEqual({});
+    expect(host.value.host.data.notify).not.toHaveBeenCalled();
   });
 });

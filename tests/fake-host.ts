@@ -1,3 +1,4 @@
+import { flushSync } from "svelte";
 import { vi } from "vitest";
 import type { CommandOption, ProviderUiContext, SessionMeta, Snapshot, StoredEvent } from "../ui/host";
 
@@ -55,3 +56,9 @@ export function fakeHost(snapshot: Partial<Snapshot> = {}, commands: CommandOpti
   };
   return { value, pages, catalog, push: (seq: number, payload: StoredEvent["payload"]) => listener?.({ seq, payload }) };
 }
+
+/** Lets the host's promises and the chat's effects run. */
+export const settle = async () => {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  flushSync();
+};
