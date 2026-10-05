@@ -199,8 +199,7 @@ describe("translate", () => {
     const clipped = clip("x".repeat(20), 5);
     expect(clipped.startsWith("xxxxx\n…")).toBe(true);
     expect(clipped).toContain("15 more characters");
-    expect(clip(clipped, 5)).toBe(clipped);
-    expect(clip(clip("x".repeat(20), 10), 5)).toBe(clipped);
-    expect(clip(clipped, 10)).toBe(clipped);
+    // A cut never splits a character in two.
+    expect(clip("xxxx😀yy", 5)).toBe("xxxx\n… [4 more characters]");
   });
 });

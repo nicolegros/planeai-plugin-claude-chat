@@ -215,14 +215,10 @@ export const MAX_TEXT_CHARS = 8_000;
 /** Budget for the strings inside one tool input, so a large edit still fits one frame. */
 const MAX_INPUT_CHARS = 6_000;
 
-const CLIPPED = /\n… \[(\d+) more characters\]$/;
-
-/** Already clipped text, such as a saved summary read back, counts what was cut from the original. */
 export function clip(text: string, limit = MAX_TEXT_CHARS): string {
-  const clipped = CLIPPED.exec(text);
-  if (text.length <= limit || (clipped && clipped.index <= limit)) return text;
-  const length = clipped ? clipped.index + Number(clipped[1]) : text.length;
-  return `${text.slice(0, limit)}\n… [${length - limit} more characters]`;
+  if (text.length <= limit) return text;
+  const cut = safeCut(text, limit);
+  return `${text.slice(0, cut)}\n… [${text.length - cut} more characters]`;
 }
 
 const SUMMARY_FIELDS = ["command", "file_path", "pattern", "path", "url", "query", "description", "skill"];
@@ -321,7 +317,8 @@ function storedToolInput(name: string, summary: string, input: ToolInput | { kin
   if (input?.kind === "search") return { ...input, kind: name === "Glob" ? "glob" : "grep" };
   if (input) return input;
   const field = LEGACY_SUMMARY_FIELDS.get(name);
-  if (field) return toolInput(name, { [field]: summary });
+  // The summary is already clipped; clipping it again would miscount what was cut.
+  if (field) return { ...toolInput(name, {}), [field]: summary } as ToolInput;
   // 0.2.0 and earlier kept other tools' input as JSON, clipped to 500 characters.
   try {
     return toolInput(name, JSON.parse(summary));
