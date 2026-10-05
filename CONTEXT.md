@@ -37,7 +37,7 @@ _Avoid_: Queue manager
 ### Session status
 
 **Session status**:
-What the host shows for a session: needs attention while a pending request waits on the user, busy while Claude works or owes held follow-ups a turn, otherwise idle.
+What the host shows for a session: idle while a terminal drives it, otherwise needs attention while a pending request waits on the user, busy while Claude works or owes held follow-ups a turn, otherwise idle.
 It is derived from facts, never set directly.
 _Avoid_: State, activity
 

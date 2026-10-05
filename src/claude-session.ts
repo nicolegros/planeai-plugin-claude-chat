@@ -14,6 +14,8 @@ const REBUILT: ChatEvent = { type: "notice", text: "Earlier messages were rebuil
 
 const HANDED_OFF = "This session is continuing in a terminal tab. Close it or select Return to chat first.";
 
+const INTERRUPTED = "Interrupted by the user";
+
 const BASE_MODES: PermissionMode[] = ["default", "acceptEdits", "plan"];
 
 /** How long a `/model` waits for Claude's model list before handing the text to Claude Code. */
@@ -252,7 +254,7 @@ export class ClaudeSession {
       throw new Error("request cancelled");
     }
     // Stopping, a handoff or Claude exiting while the models loaded leaves nothing to deliver to.
-    if (this.input !== input) {
+    if (this.input !== input || this.meta.handed_off) {
       if (!this.stopped) this.emit({ type: "error", message: "This message was not sent because the chat stopped driving this session. Send it again." });
       throw new Error("The chat no longer drives this session.");
     }
@@ -273,7 +275,7 @@ export class ClaudeSession {
 
   /** Returns at once; the SDK's control channel can stall while Claude boots. */
   interrupt(): void {
-    this.requests.denyAll("Interrupted by the user");
+    this.requests.denyAll(INTERRUPTED);
     this.control(this.query?.interrupt(), "interrupt");
   }
 
@@ -320,6 +322,7 @@ export class ClaudeSession {
       if (this.meta.handed_off) throw new Error(HANDED_OFF);
       if (!this.config.claudeExecutable) throw new Error("Claude Code was not found on PATH.");
       await this.ensureQuery();
+      if (this.meta.handed_off) throw new Error(HANDED_OFF);
       if (!this.query) throw new Error("Claude stopped before listing its commands.");
       return await this.query.supportedCommands();
     })().finally(() => (this.loadingCommands = null));
@@ -357,19 +360,22 @@ export class ClaudeSession {
   private async letGo(): Promise<void> {
     const running = this.status !== "idle" ? this.query : null;
     // Sends are refused from here, so nothing more reaches this Claude.
-    this.emit({ type: "handoff", in_terminal: true });
     this.updateMeta({ handed_off: true });
     this.refreshStatus();
     if (running) {
-      this.requests.denyAll("Interrupted by the user");
+      this.requests.denyAll(INTERRUPTED);
       // Claude records the interruption in its transcript before it is closed, so the terminal resumes a settled conversation.
       await within(running.interrupt().catch(() => {}), INTERRUPT_WAIT_MS, undefined);
     }
     this.detach("Continued in the terminal");
+    // After the interrupted turn's last frames, which belong to the chat.
+    this.emit({ type: "handoff", in_terminal: true });
   }
 
   /** The terminal closed; the next prompt resumes the conversation here. */
-  handback(): void {
+  async handback(): Promise<void> {
+    // The chat drives again only once the Claude it let go is closed.
+    await this.lettingGo;
     if (!this.meta.handed_off) return;
     this.emit({ type: "handoff", in_terminal: false });
     this.updateMeta({ handed_off: false });
