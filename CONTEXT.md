@@ -44,3 +44,9 @@ _Avoid_: State, activity
 **Pending request**:
 A permission prompt or a question from Claude, waiting on the user.
 _Avoid_: Prompt (that is what the user sends)
+
+### Chat UI
+
+**Chat session**:
+The chat UI's side of one PlaneAI session: its transcript, its status and the user's actions, through the host.
+_Avoid_: Controller, store

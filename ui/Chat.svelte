@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from "svelte";
-  import { appearanceStyle, normalizeAppearance } from "../src/appearance";
+  import { appearanceStyle } from "../src/appearance";
+  import { ChatSession } from "./chat-session.svelte";
   import CommandMenu from "./CommandMenu.svelte";
-  import { CommandCatalog, matchCommands } from "./commands.svelte";
+  import { matchCommands } from "./commands.svelte";
   import ComposerBar from "./ComposerBar.svelte";
   import Icon from "./Icon.svelte";
   import Markdown from "./Markdown.svelte";
@@ -14,42 +15,27 @@
   import { describeSteps } from "./tools";
   import { turns, type Block } from "./turns";
   import UserPrompt from "./UserPrompt.svelte";
-  import type { Appearance, CommandOption, PermissionDecision, ProviderUiContext, Snapshot, StoredEvent } from "./host";
-  import { Transcript } from "./transcript.svelte";
+  import type { CommandOption, ProviderUiContext } from "./host";
 
   let { context }: { context: ProviderUiContext } = $props();
 
-  /** The provider prompt limit from PlaneAI's plugin guide, measured as JSON-escaped text. */
-  const MAX_MESSAGE_BYTES = 48 * 1024;
-
-  const transcript = new Transcript();
-  /** Claude's questions take the composer's place until answered. */
-  const pendingQuestion = $derived(transcript.entries.findLast((entry) => entry.kind === "question" && !entry.resolved));
-  let appearance = $state<Appearance>({});
+  const session = new ChatSession(untrack(() => context));
+  const { transcript, commands } = session;
   let draft = $state("");
   /** Streaming text re-rendered as markdown at most once per frame, not once per delta. */
   let liveMarkdown = $state("");
   let log: HTMLElement | undefined = $state();
   let composer: HTMLTextAreaElement | undefined = $state();
-  let unsubscribe: (() => void) | undefined;
+  let disconnect: (() => void) | undefined;
   let stickToBottom = true;
 
-  const status = $derived(transcript.status);
-  const working = $derived(status === "busy" || status === "needs_attention");
-  const sessionId = $derived(context.session.id);
+  const status = $derived(session.status);
+  const working = $derived(session.working);
   const conversation = $derived(turns(transcript.entries));
   const root = $derived(transcript.meta.cwd ?? undefined);
 
   const uid = $props.id();
   const MENU_ID = `${uid}-commands`;
-  const commands = new CommandCatalog(async () => {
-    const all: CommandOption[] = [];
-    for (;;) {
-      const page = await context.host.call<{ commands: CommandOption[]; more: boolean }>("claude.commands", { session_id: sessionId, offset: all.length });
-      all.push(...page.commands);
-      if (!page.more || page.commands.length === 0) return all;
-    }
-  });
   /** Highlighted menu entry. */
   let active = $state(0);
   /** The draft the menu was dismissed for with Escape; it reopens once the draft changes. */
@@ -74,13 +60,6 @@
     return () => cancelAnimationFrame(frame);
   });
 
-  function apply(event: StoredEvent): void {
-    if (event.payload.type === "commands_changed") commands.invalidate();
-    if (event.payload.type === "appearance") appearance = event.payload.appearance;
-    transcript.apply(event);
-    void scrollToBottom();
-  }
-
   async function scrollToBottom(): Promise<void> {
     if (!stickToBottom) return;
     await tick();
@@ -92,45 +71,12 @@
     stickToBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
   }
 
-  async function run(action: () => Promise<unknown>): Promise<void> {
-    try {
-      await action();
-    } catch (error) {
-      context.host.data.notify(String(error));
-    }
-  }
-
   function send(): void {
     const text = draft.trim();
-    if (!text) return;
-    if (new TextEncoder().encode(JSON.stringify(text)).length > MAX_MESSAGE_BYTES) {
-      context.host.data.notify(`This message is too long to send; keep it under ${MAX_MESSAGE_BYTES / 1024} KB.`);
-      return;
-    }
+    if (!text || !session.send(text)) return;
     draft = "";
     stickToBottom = true;
     void resizeComposer();
-    void run(() => context.host.session.send(text));
-  }
-
-  function interrupt(): void {
-    void run(() => context.host.session.interrupt());
-  }
-
-  function respond(requestId: string, decision: PermissionDecision, reason?: string): void {
-    void run(() => context.host.call("claude.permission.respond", { session_id: sessionId, request_id: requestId, decision, ...(reason ? { reason } : {}) }));
-  }
-
-  function setMode(mode: string): void {
-    void run(() => context.host.call("claude.mode.set", { session_id: sessionId, mode }));
-  }
-
-  function handoff(): void {
-    void run(() => context.host.session.handoff());
-  }
-
-  function handback(): void {
-    void run(() => context.host.session.handback());
   }
 
   /** Where typing goes: Claude's open question, otherwise the message box. */
@@ -154,7 +100,7 @@
     if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || target?.closest(TYPING_TARGETS)) return;
     if (event.key === "Escape" && working) {
       event.preventDefault();
-      interrupt();
+      session.interrupt();
     } else if (event.key.length === 1 && !(event.key === " " && target?.closest(PRESSABLE))) {
       focusInput();
     }
@@ -163,18 +109,10 @@
   // Answering a question or returning from the terminal brings the message box back; typing goes there again.
   let hadPrompt = false;
   $effect(() => {
-    const prompt = !!pendingQuestion || transcript.meta.handed_off;
+    const prompt = session.dock.kind !== "composer";
     if (hadPrompt && !prompt) void tick().then(focusInput);
     hadPrompt = prompt;
   });
-
-  function answerQuestion(requestId: string, answers: Record<string, string> | null): void {
-    void run(() => context.host.call("claude.question.answer", { session_id: sessionId, request_id: requestId, ...(answers ? { answers } : {}) }));
-  }
-
-  function setModel(model: string | null): void {
-    void run(() => context.host.call("claude.model.set", { session_id: sessionId, model }));
-  }
 
   async function resizeComposer(): Promise<void> {
     await tick();
@@ -236,46 +174,18 @@
       send();
     } else if (event.key === "Escape" && working) {
       event.preventDefault();
-      interrupt();
-    }
-  }
-
-  async function loadSnapshot(): Promise<void> {
-    let after = 0;
-    for (;;) {
-      const page = await context.host.call<Snapshot>("claude.snapshot", { session_id: sessionId, ...(after ? { after_seq: after } : {}) });
-      page.events.forEach((event) => transcript.apply(event));
-      transcript.setMeta(page.meta);
-      transcript.status = page.status;
-      const last = page.events.at(-1);
-      if (!page.more || !last) return;
-      after = last.seq;
+      session.interrupt();
     }
   }
 
   onMount(() => {
-    // Subscribe before the snapshot so nothing emitted in between is lost; seq drops duplicates.
-    const buffered: StoredEvent[] = [];
-    let replaying = true;
-    unsubscribe = context.host.session.onEvent((event) => (replaying ? buffered.push(event) : apply(event)));
-    void loadSnapshot()
-      .catch((error) => context.host.data.notify(String(error)))
-      .finally(() => {
-        replaying = false;
-        buffered.splice(0).forEach(apply);
-        void scrollToBottom();
-      });
+    disconnect = session.connect(() => void scrollToBottom());
     composer?.focus();
-    // Without the settings, PlaneAI's own fonts apply.
-    context.host.settings
-      .get()
-      .then((settings) => (appearance = normalizeAppearance(settings)))
-      .catch(() => {});
   });
 
-  onDestroy(() => unsubscribe?.());
+  onDestroy(() => disconnect?.());
 
-  const openExternal = (url: string) => context.host.navigation.openExternal(url);
+  const openExternal = (url: string) => session.openExternal(url);
 </script>
 
 {#snippet block(item: Block)}
@@ -293,7 +203,7 @@
     {/if}
   {:else if item.entry.kind === "permission"}
     {@const permission = item.entry.permission}
-    <PermissionCard {permission} onRespond={(decision, reason) => respond(permission.request_id, decision, reason)} />
+    <PermissionCard {permission} onRespond={(decision, reason) => session.respond(permission.request_id, decision, reason)} />
   {:else if item.entry.kind === "result"}
     <p class="turn-summary" class:failed={item.entry.is_error}>{turnSummary(item.entry)}</p>
   {:else if item.entry.kind === "error"}
@@ -319,7 +229,7 @@
 
 <svelte:window onfocus={onWindowFocus} onkeydown={onWindowKeydown} />
 
-<main class="chat" style={appearanceStyle(appearance)}>
+<main class="chat" style={appearanceStyle(session.appearance)}>
   <div class="log" bind:this={log} onscroll={onScroll} role="log" aria-label="Conversation" aria-busy={!!transcript.live}>
     {#if conversation.length === 0}
       {#if transcript.live || working}
@@ -354,16 +264,16 @@
     {/each}
   </div>
   <p class="visually-hidden" role="status">{status === "needs_attention" ? "Claude is waiting for your answer" : working ? "Claude is working" : ""}</p>
-  {#if pendingQuestion?.kind === "question" && !transcript.meta.handed_off}
-    {@const question = pendingQuestion}
+  {#if session.dock.kind === "question"}
+    {@const question = session.dock.question}
     <div class="dock">
-      {#key question.request_id}<QuestionPrompt questions={question.questions} onAnswer={(answers) => answerQuestion(question.request_id, answers)} />{/key}
+      {#key question.request_id}<QuestionPrompt questions={question.questions} onAnswer={(answers) => session.answer(question.request_id, answers)} />{/key}
     </div>
-  {:else if transcript.meta.handed_off}
+  {:else if session.dock.kind === "handed_off"}
     <div class="dock">
       <div class="handed-off" role="status">
         <p>This conversation is continuing in a terminal tab. Closing that tab brings it back here.</p>
-        <button type="button" class="primary" onclick={handback}>Return to chat</button>
+        <button type="button" class="primary" onclick={() => session.handback()}>Return to chat</button>
       </div>
     </div>
   {:else}
@@ -396,10 +306,10 @@
           aria-activedescendant={menuOpen && matches.length > 0 ? `${MENU_ID}-${activeIndex}` : undefined}
         ></textarea>
         <div class="bar">
-          <ComposerBar meta={transcript.meta} onMode={setMode} onModel={setModel} onHandoff={handoff}>
+          <ComposerBar meta={transcript.meta} onMode={(mode) => session.setMode(mode)} onModel={(model) => session.setModel(model)} onHandoff={() => session.handoff()}>
             {#snippet actions()}
               {#if working}
-                <button type="button" class="icon-control round" onclick={interrupt} data-tip="Stop · Esc" data-tip-end aria-label="Stop"><Icon name="stop" size={12} /></button>
+                <button type="button" class="icon-control round" onclick={() => session.interrupt()} data-tip="Stop · Esc" data-tip-end aria-label="Stop"><Icon name="stop" size={12} /></button>
               {/if}
               <button type="submit" class="icon-control round primary" disabled={!draft.trim()} data-tip={working ? "Queue · Enter" : "Send · Enter"} data-tip-end aria-label={working ? "Queue" : "Send"}><Icon name="arrow-up" /></button>
             {/snippet}

@@ -1,61 +1,8 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Chat from "../ui/Chat.svelte";
-import type { CommandOption, ProviderUiContext, SessionMeta, Snapshot, StoredEvent } from "../ui/host";
-
-const META: SessionMeta = {
-  model: null,
-  active_model: null,
-  compacting: false,
-  cwd: "/work/repo",
-  limits: null,
-  permission_mode: "default",
-  modes: ["default", "acceptEdits", "plan"],
-  models: [{ value: "opus", label: "Opus" }],
-  context: null,
-  handed_off: false,
-};
-
-const COMMANDS: CommandOption[] = [
-  { name: "compact", description: "Free up context by summarizing the conversation so far", argument_hint: "<optional custom summarization instructions>", aliases: [] },
-  { name: "context", description: "Show current context usage", argument_hint: "", aliases: [] },
-  { name: "usage", description: "Show session cost and plan usage", argument_hint: "", aliases: ["cost", "stats"] },
-  { name: "review", description: "Review a pull request", argument_hint: "[<pr>]", aliases: [] },
-];
-
-function context(snapshot: Partial<Snapshot> = {}, commands: CommandOption[] = COMMANDS, settings: Record<string, unknown> = {}) {
-  let listener: ((event: StoredEvent) => void) | null = null;
-  const pages: Snapshot[] = [{ seq: 0, status: "idle", meta: META, events: [], more: false, ...snapshot }];
-  const catalog = { commands };
-  const value: ProviderUiContext = {
-    session: { id: "s1" },
-    host: {
-      call: vi.fn(async (method: string, params?: { offset?: number }) => {
-        if (method === "claude.snapshot") return pages.length > 1 ? pages.shift() : pages[0];
-        // Two commands per page, so the menu has to follow `more`.
-        if (method === "claude.commands") {
-          const offset = params?.offset ?? 0;
-          return { commands: catalog.commands.slice(offset, offset + 2), more: offset + 2 < catalog.commands.length };
-        }
-        return {};
-      }) as ProviderUiContext["host"]["call"],
-      session: {
-        send: vi.fn(async () => {}),
-        interrupt: vi.fn(async () => {}),
-        handoff: vi.fn(async () => {}),
-        handback: vi.fn(async () => {}),
-        onEvent: (next) => {
-          listener = next;
-          return () => (listener = null);
-        },
-      },
-      settings: { get: vi.fn(async () => settings) as ProviderUiContext["host"]["settings"]["get"] },
-      data: { notify: vi.fn() },
-      navigation: { openExternal: vi.fn() },
-    },
-  };
-  return { value, pages, catalog, push: (seq: number, payload: StoredEvent["payload"]) => listener?.({ seq, payload }) };
-}
+import type { CommandOption, Snapshot } from "../ui/host";
+import { COMMANDS, fakeHost, META } from "./fake-host";
 
 const settle = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
@@ -92,29 +39,16 @@ describe("Chat", () => {
   });
 
   async function render(snapshot: Partial<Snapshot> = {}, commands: CommandOption[] = COMMANDS) {
-    const harness = context(snapshot, commands);
+    const harness = fakeHost(snapshot, commands);
     app = mount(Chat, { target: document.body, props: { context: harness.value } });
     await settle();
     return harness;
   }
 
-  it("rebuilds the conversation from every snapshot page, then follows live events", async () => {
-    const harness = context();
-    harness.pages.splice(
-      0,
-      1,
-      { seq: 2, status: "idle", meta: META, events: [{ seq: 1, payload: { type: "user", text: "first page" } }], more: true },
-      { seq: 2, status: "idle", meta: META, events: [{ seq: 2, payload: { type: "assistant", text: "second page" } }], more: false },
-    );
-    app = mount(Chat, { target: document.body, props: { context: harness.value } });
+  it("streams Claude's answer as markdown", async () => {
+    const harness = await render();
+    harness.push(1, { type: "delta", text: "Streaming **bold**" });
     await settle();
-    await settle();
-    expect(harness.value.host.call).toHaveBeenNthCalledWith(2, "claude.snapshot", { session_id: "s1", after_seq: 1 });
-
-    harness.push(2, { type: "assistant", text: "second page" });
-    harness.push(3, { type: "delta", text: "Streaming **bold**" });
-    await settle();
-    expect(document.body.textContent?.match(/second page/g)).toHaveLength(1);
     expect(document.querySelector(".markdown strong")?.textContent).toBe("bold");
   });
 
@@ -273,15 +207,6 @@ describe("Chat", () => {
     expect(document.body.textContent).toContain("1 more edit not shown");
   });
 
-  it("refuses a message that would exceed PlaneAI's prompt limit once escaped", async () => {
-    const harness = await render();
-    const textarea = document.querySelector("textarea")!;
-    type(textarea, `x${"\n".repeat(30_000)}x`);
-    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    expect(harness.value.host.session.send).not.toHaveBeenCalled();
-    expect(harness.value.host.data.notify).toHaveBeenCalledWith(expect.stringContaining("too long"));
-  });
-
   it("offers slash commands as the user types one, loading every page once", async () => {
     const harness = await render();
     const textarea = document.querySelector("textarea")!;
@@ -339,17 +264,6 @@ describe("Chat", () => {
     document.querySelector<HTMLElement>("[role=option]")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
     flushSync();
     expect(textarea.value).toBe("/review ");
-  });
-
-  it("reloads the command list when Claude's commands change", async () => {
-    const harness = await render();
-    const textarea = document.querySelector("textarea")!;
-    type(textarea, "/");
-    await settle();
-    harness.catalog.commands = [{ name: "deploy", description: "Ship it", argument_hint: "", aliases: [] }];
-    harness.push(1, { type: "commands_changed" });
-    await settle();
-    expect(options()).toEqual(["/deploy"]);
   });
 
   it("explains when commands cannot be listed and retries when the menu opens again", async () => {
@@ -422,7 +336,7 @@ describe("Chat", () => {
   });
 
   it("uses the fonts and size from the plugin's settings and follows changes live", async () => {
-    const harness = context({}, COMMANDS, { font_family: "Inter", font_size: 16, ignored: true });
+    const harness = fakeHost({}, COMMANDS, { font_family: "Inter", font_size: 16, ignored: true });
     app = mount(Chat, { target: document.body, props: { context: harness.value } });
     await settle();
     const chat = document.querySelector<HTMLElement>(".chat")!;
@@ -435,15 +349,6 @@ describe("Chat", () => {
     expect(chat.style.getPropertyValue("--chat-font")).toBe("var(--planeai-font-sans)");
     expect(chat.style.getPropertyValue("--chat-code-font")).toBe('"Fira Code", var(--planeai-font-mono)');
     expect(chat.style.getPropertyValue("--chat-size")).toBe("13px");
-  });
-
-  it("keeps PlaneAI's fonts when the settings cannot be read", async () => {
-    const harness = context();
-    vi.mocked(harness.value.host.settings.get).mockRejectedValueOnce(new Error("plugin settings capability is not granted"));
-    app = mount(Chat, { target: document.body, props: { context: harness.value } });
-    await settle();
-    expect(document.querySelector<HTMLElement>(".chat")!.style.getPropertyValue("--chat-size")).toBe("13px");
-    expect(harness.value.host.data.notify).not.toHaveBeenCalled();
   });
 
   it("summarizes each turn with duration, cost and tokens", async () => {
