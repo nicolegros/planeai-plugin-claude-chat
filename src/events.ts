@@ -14,8 +14,8 @@ export type ToolInput =
   | { kind: "agent"; description: string }
   | { kind: "fetch"; url: string }
   | { kind: "web_search"; query: string }
-  /** Empty when a chat saved by v1 kept too little of them. */
-  | { kind: "questions"; questions: Question[] };
+  /** `first` and `count` are absent when a saved chat kept too little of the call. */
+  | { kind: "questions"; first?: string; count?: number };
 
 export interface Todo {
   content: string;
@@ -283,16 +283,17 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
     case "WebSearch":
       return { kind: "web_search", query: clip(text(fields.query), 500) };
     case "AskUserQuestion": {
-      const questions = questionsOf(input);
-      return questions ? { kind: "questions", questions } : undefined;
+      // Lenient, unlike the prompt: the step only names the first question.
+      const asked = Array.isArray(fields.questions) ? fields.questions.filter((question) => typeof question?.question === "string") : [];
+      return { kind: "questions", ...(asked.length ? { first: clip(asked[0].question, 1_000) } : {}), count: asked.length };
     }
     default:
       return undefined;
   }
 }
 
-/** The field v1 kept as the summary of the tools it sent no input for; Grep and Glob kept the path instead when a call had one. */
-const V1_SUMMARY_FIELDS = new Map([
+/** The field chats saved by 0.2.0 and earlier kept as the summary of tools without an input; Grep and Glob kept the path instead when a call had one. */
+const LEGACY_SUMMARY_FIELDS = new Map([
   ["Read", "file_path"],
   ["Grep", "pattern"],
   ["Glob", "pattern"],
@@ -308,14 +309,14 @@ function clippedField(json: string, field: string): string | undefined {
   return match ? JSON.parse(match[1]) : undefined;
 }
 
-/** A stored tool call's input as it was rendered, from what earlier versions kept. */
+/** A stored tool call's input as this version renders it, from what earlier versions kept. */
 function storedToolInput(name: string, summary: string, input: ToolInput | { kind: "search"; pattern: string; path?: string } | undefined): ToolInput | undefined {
-  // Builds before Grep and Glob had kinds of their own.
+  // Unreleased builds before Grep and Glob had kinds of their own.
   if (input?.kind === "search") return { ...input, kind: name === "Glob" ? "glob" : "grep" };
   if (input) return input;
-  const field = V1_SUMMARY_FIELDS.get(name);
+  const field = LEGACY_SUMMARY_FIELDS.get(name);
   if (field) return toolInput(name, { [field]: summary });
-  // Other tools kept their input as JSON, clipped to 500 characters.
+  // 0.2.0 and earlier kept other tools' input as JSON, clipped to 500 characters.
   try {
     return toolInput(name, JSON.parse(summary));
   } catch {
@@ -323,8 +324,8 @@ function storedToolInput(name: string, summary: string, input: ToolInput | { kin
     if (skill) return { kind: "skill", skill };
     if (name === "TodoWrite") return { kind: "todos", todos: [] };
     if (name !== "AskUserQuestion") return undefined;
-    const question = clippedField(summary, "question");
-    return { kind: "questions", questions: question ? [{ question, header: "", options: [], multi_select: false }] : [] };
+    const first = clippedField(summary, "question");
+    return { kind: "questions", ...(first ? { first } : {}) };
   }
 }
 

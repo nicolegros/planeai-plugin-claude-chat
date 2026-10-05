@@ -119,7 +119,7 @@ const TOOLS: { [K in ToolInput["kind"]]: ToolRenderer<InputOf<K>> } = {
   // Live chats show questions as their own prompt; this is how a chat rebuilt from Claude Code's transcript shows them.
   questions: {
     steps: ["question", "questions"],
-    view: ({ questions }) => ({ icon: "help", verbs: ["Asking", "Asked"], target: questions.length ? `“${questions[0].question}”` : "a question", style: "text", count: questions.length > 1 ? plural(questions.length, "question") : undefined }),
+    view: ({ first, count = 0 }) => ({ icon: "help", verbs: ["Asking", "Asked"], target: first ? `“${first}”` : "a question", style: "text", count: count > 1 ? plural(count, "question") : undefined }),
   },
 };
 
@@ -133,7 +133,7 @@ function otherTool(name: string): ToolRenderer<undefined> {
 /** The tool's renderer with its input; the input's kind picks the renderer, so they always match. */
 function rendererOf(tool: ToolEntry): [ToolRenderer<ToolInput | undefined>, ToolInput | undefined] {
   // A kind from a newer version has no renderer here.
-  const renderer = tool.input && (TOOLS[tool.input.kind] as ToolRenderer<ToolInput | undefined> | undefined);
+  const renderer = tool.input && Object.hasOwn(TOOLS, tool.input.kind) ? (TOOLS[tool.input.kind] as ToolRenderer<ToolInput | undefined>) : undefined;
   return renderer ? [renderer, tool.input] : [otherTool(tool.name), undefined];
 }
 

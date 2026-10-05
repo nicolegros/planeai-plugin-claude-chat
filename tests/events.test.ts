@@ -61,7 +61,10 @@ describe("translate", () => {
     const options = ["macOS", "Linux", "Windows", "WebAssembly"].map((label) => ({ label, description: `Build the release for ${label}, signed and packaged the way its users expect to install it.` }));
     const input = { questions: [{ question: "Which deployment target should the release build use?", header: "Target", multiSelect: false, options }] };
     const [event] = translate({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "ask", name: "AskUserQuestion", input }] } } as unknown as SDKMessage);
-    expect(event).toMatchObject({ type: "tool", summary: expect.stringContaining("more characters"), input: { kind: "questions", questions: [{ question: "Which deployment target should the release build use?" }] } });
+    expect(event).toMatchObject({ type: "tool", summary: expect.stringContaining("more characters"), input: { kind: "questions", first: "Which deployment target should the release build use?", count: 1 } });
+    // Only what the step names, whatever the options and previews weigh.
+    const heavy = { questions: Array.from({ length: 4 }, () => ({ question: "Which?", options: Array.from({ length: 4 }, () => ({ label: "A", description: "B", preview: "x".repeat(2_000) })) })) };
+    expect(toolInput("AskUserQuestion", heavy)).toEqual({ kind: "questions", first: "Which?", count: 4 });
   });
 
   it("keeps what the chat renders of each tool it knows", () => {
@@ -73,7 +76,9 @@ describe("translate", () => {
     expect(toolInput("Task", { description: "Find the bug" })).toEqual({ kind: "agent", description: "Find the bug" });
     expect(toolInput("WebFetch", { url: "https://example.com", prompt: "…" })).toEqual({ kind: "fetch", url: "https://example.com" });
     expect(toolInput("WebSearch", { query: "svelte runes" })).toEqual({ kind: "web_search", query: "svelte runes" });
-    expect(toolInput("AskUserQuestion", { questions: [] })).toBeUndefined();
+    // The step still names a call the prompt could not ask.
+    expect(toolInput("AskUserQuestion", { questions: [{ options: [] }, { question: "Second?" }] })).toEqual({ kind: "questions", first: "Second?", count: 1 });
+    expect(toolInput("AskUserQuestion", { questions: "?" })).toEqual({ kind: "questions", count: 0 });
     expect(toolInput("mcp__github__get_pull_request", { number: 3 })).toBeUndefined();
   });
 
@@ -96,7 +101,7 @@ describe("translate", () => {
 
   it("renders chats saved by earlier versions from what they kept of each tool call", () => {
     const stored = (name: string, summary: string, input?: unknown) => upgradeStored({ type: "tool", id: "t", name, summary, ...(input ? { input } : {}) } as ChatEvent);
-    // v1 kept only the summary of tools other than Bash, Edit, MultiEdit and Write.
+    // 0.2.0 and earlier kept only the summary of tools other than Bash, Edit, MultiEdit and Write.
     expect(stored("Read", "/work/a.ts")).toMatchObject({ input: { kind: "read", file_path: "/work/a.ts" } });
     expect(stored("Grep", "TODO")).toMatchObject({ input: { kind: "grep", pattern: "TODO" } });
     expect(stored("Glob", "**/*.ts")).toMatchObject({ input: { kind: "glob", pattern: "**/*.ts" } });
@@ -105,14 +110,14 @@ describe("translate", () => {
     expect(stored("WebSearch", "svelte runes")).toMatchObject({ input: { kind: "web_search", query: "svelte runes" } });
     expect(stored("Skill", '{"skill":"review","args":"42"}')).toMatchObject({ input: { kind: "skill", skill: "review", args: "42" } });
     expect(stored("TodoWrite", '{"todos":[{"content":"a","status":"completed"}]}')).toMatchObject({ input: { kind: "todos", todos: [{ content: "a", status: "completed" }] } });
-    expect(stored("AskUserQuestion", JSON.stringify({ questions: [{ question: "Which?", options: [{ label: "A" }] }] }))).toMatchObject({ input: { kind: "questions", questions: [{ question: "Which?" }] } });
+    expect(stored("AskUserQuestion", JSON.stringify({ questions: [{ question: "Which?", options: [{ label: "A" }] }] }))).toMatchObject({ input: { kind: "questions", first: "Which?", count: 1 } });
     // Builds of this version before Grep and Glob had kinds of their own.
     expect(stored("Glob", "*.ts", { kind: "search", pattern: "*.ts", path: "src" })).toMatchObject({ input: { kind: "glob", pattern: "*.ts", path: "src" } });
-    // v1 clipped long JSON to 500 characters; what it still names is kept.
+    // They clipped long JSON to 500 characters; what it still names is kept.
     const clipped = (input: unknown) => clip(JSON.stringify(input), 500);
     const options = Array.from({ length: 6 }, (_, i) => ({ label: `Option ${i}`, description: "A description long enough to clip the summary." }));
-    expect(stored("AskUserQuestion", clipped({ questions: [{ question: 'Which "target"?', options }] }))).toMatchObject({ input: { kind: "questions", questions: [{ question: 'Which "target"?' }] } });
-    expect(stored("AskUserQuestion", clipped({ questions: [{ question: "Which?".repeat(100), options }] }))).toMatchObject({ input: { kind: "questions", questions: [] } });
+    expect(stored("AskUserQuestion", clipped({ questions: [{ question: 'Which "target"?', options }] }))).toMatchObject({ input: { kind: "questions", first: 'Which "target"?' } });
+    expect((stored("AskUserQuestion", clipped({ questions: [{ question: "Which?".repeat(100), options }] })) as { input: unknown }).input).toEqual({ kind: "questions" });
     expect(stored("Skill", clipped({ skill: "review", args: "x".repeat(600) }))).toMatchObject({ input: { kind: "skill", skill: "review" } });
     expect(stored("TodoWrite", clipped({ todos: [...options, ...options].map((option) => ({ content: option.description, status: "pending" })) }))).toMatchObject({ input: { kind: "todos", todos: [] } });
     // What cannot be read keeps showing its summary.

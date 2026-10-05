@@ -11,9 +11,8 @@ type DiffRow = { kind: "add" | "remove" | "same"; text: string } | { kind: "gap"
 const writes = new WeakMap<ToolInput, Edit[]>();
 
 /** The edits a change makes; a write is one edit from nothing, the same list each time so its diff is cached. */
-export function editsOf(input?: ToolInput): Edit[] {
-  if (input?.kind === "edit") return input.edits;
-  if (input?.kind !== "write") return [];
+export function editsOf(input: Extract<ToolInput, { kind: "edit" | "write" }>): Edit[] {
+  if (input.kind === "edit") return input.edits;
   let edits = writes.get(input);
   if (!edits) writes.set(input, (edits = [{ old_string: "", new_string: input.content }]));
   return edits;

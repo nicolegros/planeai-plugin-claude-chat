@@ -68,18 +68,18 @@ describe("viewTool", () => {
   });
 
   it("shows a question from a rebuilt chat by its first question", () => {
-    const questions = ["Which platforms?", "Which versions?"].map((question) => ({ question, header: "", options: [{ label: "A", description: "" }], multi_select: false }));
-    expect(viewTool(tool("AskUserQuestion", { kind: "questions", questions }))).toMatchObject({ icon: "help", verbs: ["Asking", "Asked"], target: "“Which platforms?”", count: "2 questions" });
+    expect(viewTool(tool("AskUserQuestion", { kind: "questions", first: "Which platforms?", count: 2 }))).toMatchObject({ icon: "help", verbs: ["Asking", "Asked"], target: "“Which platforms?”", count: "2 questions" });
   });
 
   it("shows a question a saved chat kept too little of as a question", () => {
-    expect(viewTool(tool("AskUserQuestion", { kind: "questions", questions: [] })).target).toBe("a question");
+    expect(viewTool(tool("AskUserQuestion", { kind: "questions" }))).toMatchObject({ target: "a question", count: undefined });
   });
 
   it("shows a tool whose input kind it does not know by name and summary", () => {
     const newer = { kind: "notebook", path: "a.ipynb" } as unknown as ToolInput;
     expect(viewTool(tool("NotebookEdit", newer))).toMatchObject({ icon: "tool", target: "summary" });
     expect(previewOf(tool("NotebookEdit", newer))).toBeNull();
+    expect(viewTool(tool("NotebookEdit", { kind: "constructor" } as unknown as ToolInput)).icon).toBe("tool");
   });
 
   it("names MCP tools by server and tool, and other tools by name and summary", () => {
