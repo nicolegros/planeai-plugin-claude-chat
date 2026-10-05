@@ -100,9 +100,8 @@ export class ClaudeSession {
   private readonly followUps = new FollowUpTracker();
   private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
-  /** Sends accepted but not yet handed to Claude or dropped. */
-  private sending = 0;
-  /** A prompt reached Claude or a turn's frame arrived, and its result has not. */
+  /** Sends on their way to the running Claude; once it is gone, they can no longer arrive. */
+  private readonly sending = new Set<symbol>();
   private turnRunning = false;
   private delivering: Promise<unknown> = Promise.resolve();
   /** Settles once a chat whose own history is gone was rebuilt from Claude's transcript. */
@@ -215,12 +214,13 @@ export class ClaudeSession {
     const id = randomUUID();
     const isFollowUp = this.status !== "idle";
     this.emit({ type: "user", text: clip(text), ...(isFollowUp ? { queued: true, id } : {}) });
-    this.sending++;
+    const send = Symbol(id);
+    this.sending.add(send);
     this.refreshStatus();
     try {
       await this.forward(text, id, isFollowUp, signal);
     } finally {
-      this.sending--;
+      this.sending.delete(send);
       this.refreshStatus();
     }
   }
@@ -261,8 +261,12 @@ export class ClaudeSession {
 
   /** Returns at once; the SDK's control channel can stall while Claude boots. */
   interrupt(): void {
-    this.denyPending("Interrupted by the user");
+    this.stopTurn();
     this.refreshStatus();
+  }
+
+  private stopTurn(): void {
+    this.denyPending("Interrupted by the user");
     this.control(this.query?.interrupt(), "interrupt");
   }
 
@@ -362,7 +366,8 @@ export class ClaudeSession {
   async handoff(): Promise<string[]> {
     if (!this.config.claudeExecutable) throw new Error("claude executable not found on PATH");
     if (!this.meta.handed_off) {
-      if (this.status === "busy" || this.status === "needs_attention") this.interrupt();
+      // No status in between: the session goes straight to idle.
+      if (this.status !== "idle") this.stopTurn();
       this.detach("Continued in the terminal");
       this.emit({ type: "handoff", in_terminal: true });
       this.updateMeta({ handed_off: true });
@@ -392,6 +397,7 @@ export class ClaudeSession {
   private detach(reason: string): void {
     this.denyPending(reason);
     this.followUps.reset();
+    this.sending.clear();
     this.endTurn();
     const query = this.query;
     this.query = null;
@@ -459,12 +465,7 @@ export class ClaudeSession {
     } finally {
       if (this.query === query) {
         // The Claude process ended; the next prompt resumes it.
-        this.query = null;
-        this.input?.close();
-        this.input = null;
-        this.denyPending("Claude stopped");
-        this.followUps.reset();
-        this.endTurn();
+        this.detach("Claude stopped");
         this.refreshStatus();
       }
     }
@@ -503,7 +504,7 @@ export class ClaudeSession {
       this.endTurn();
       void this.loadContextUsage(query);
     } else if (message.type === "assistant" || message.type === "stream_event") {
-      // A queued follow-up may start its own turn after the previous result.
+      // Any frame of a turn means one runs, including a held follow-up's turn after the previous result.
       this.turnRunning = true;
     }
     this.refreshStatus();
@@ -618,7 +619,7 @@ export class ClaudeSession {
     this.host.event(this.config.id, event.seq, payload);
   }
 
-  /** Compaction ends with its turn, even one that failed or was interrupted. */
+  /** A turn's result, Claude exiting or a detach ends the turn, and any compaction with it, even one that failed. */
   private endTurn(): void {
     this.turnRunning = false;
     if (this.meta.compacting && !this.stopped) this.updateMeta({ compacting: false });
@@ -628,7 +629,7 @@ export class ClaudeSession {
   private refreshStatus(force = false): void {
     // A stopped session reports nothing more; the host already let it go.
     if (this.stopped) return;
-    const status = statusOf({ sending: this.sending, turnRunning: this.turnRunning, holding: this.followUps.holding, pending: this.pending.size });
+    const status = statusOf({ sending: this.sending.size, turnRunning: this.turnRunning, holding: this.followUps.holding, pending: this.pending.size });
     if (this.status === status && !force) return;
     this.status = status;
     this.host.status(this.config.id, status);

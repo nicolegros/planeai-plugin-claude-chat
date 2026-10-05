@@ -383,6 +383,17 @@ describe("ClaudeSession", () => {
     expect(fake.queries[1].options).toMatchObject({ resume: SESSION_ID });
   });
 
+  it("hands off a session waiting on the user straight to idle", async () => {
+    const chat = session();
+    await chat.send("edit it");
+    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf build" }, { signal: new AbortController().signal, toolUseID: "t" } as never);
+    const before = statuses.length;
+    await chat.handoff();
+    await expect(decision).resolves.toMatchObject({ behavior: "deny", message: "Interrupted by the user" });
+    expect(fake.queries[0].interrupt).toHaveBeenCalledOnce();
+    expect(statuses.slice(before)).toEqual(["idle"]);
+  });
+
   it("starts a new terminal session under the PlaneAI id when Claude never ran", async () => {
     const argv = await session({ yolo: true }).handoff();
     expect(argv).toEqual(["/usr/local/bin/claude", "--session-id", SESSION_ID, "--dangerously-skip-permissions"]);
@@ -771,6 +782,26 @@ describe("ClaudeSession", () => {
     );
     await unreadable.restored;
     expect(unreadable.snapshot().events).toEqual([]);
+  });
+
+  it.each([
+    ["the session is handed off", (chat: ClaudeSession) => void chat.handoff()],
+    ["Claude exits", () => fake.queries[0].finish()],
+  ])("goes idle when %s while a /model waits for the model list", async (_, end) => {
+    fake = fakeQueryFactory({ holdModels: true });
+    const chat = session();
+    await chat.send("hello");
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit(result);
+    const switching = chat.send("/model opus");
+    await flush();
+    expect(statuses.at(-1)).toBe("busy");
+    end(chat);
+    await flush();
+    expect(statuses.at(-1)).toBe("idle");
+    fake.queries[0].releaseModels();
+    await expect(switching).rejects.toThrow("no longer drives");
+    expect(statuses.at(-1)).toBe("idle");
   });
 
   it("goes idle and restarts on the next prompt when Claude exits", async () => {
