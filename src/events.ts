@@ -215,8 +215,14 @@ export const MAX_TEXT_CHARS = 8_000;
 /** Budget for the strings inside one tool input, so a large edit still fits one frame. */
 const MAX_INPUT_CHARS = 6_000;
 
+const CLIPPED = /\n… \[(\d+) more characters\]$/;
+
+/** Already clipped text, such as a saved summary read back, counts what was cut from the original. */
 export function clip(text: string, limit = MAX_TEXT_CHARS): string {
-  return text.length <= limit ? text : `${text.slice(0, limit)}\n… [${text.length - limit} more characters]`;
+  const clipped = CLIPPED.exec(text);
+  if (text.length <= limit || (clipped && clipped.index <= limit)) return text;
+  const length = clipped ? clipped.index + Number(clipped[1]) : text.length;
+  return `${text.slice(0, limit)}\n… [${length - limit} more characters]`;
 }
 
 const SUMMARY_FIELDS = ["command", "file_path", "pattern", "path", "url", "query", "description", "skill"];

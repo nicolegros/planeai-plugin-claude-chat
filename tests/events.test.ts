@@ -107,6 +107,8 @@ describe("translate", () => {
     expect(stored("Glob", "**/*.ts")).toMatchObject({ input: { kind: "glob", pattern: "**/*.ts" } });
     expect(stored("Task", "Find the bug")).toMatchObject({ input: { kind: "agent", description: "Find the bug" } });
     expect(stored("WebFetch", "https://example.com")).toMatchObject({ input: { kind: "fetch", url: "https://example.com" } });
+    const url = clip(`https://example.com/${"q".repeat(800)}`, 500);
+    expect(stored("WebFetch", url)).toMatchObject({ input: { kind: "fetch", url } });
     expect(stored("WebSearch", "svelte runes")).toMatchObject({ input: { kind: "web_search", query: "svelte runes" } });
     expect(stored("Skill", '{"skill":"review","args":"42"}')).toMatchObject({ input: { kind: "skill", skill: "review", args: "42" } });
     expect(stored("TodoWrite", '{"todos":[{"content":"a","status":"completed"}]}')).toMatchObject({ input: { kind: "todos", todos: [{ content: "a", status: "completed" }] } });
@@ -197,5 +199,8 @@ describe("translate", () => {
     const clipped = clip("x".repeat(20), 5);
     expect(clipped.startsWith("xxxxx\n…")).toBe(true);
     expect(clipped).toContain("15 more characters");
+    expect(clip(clipped, 5)).toBe(clipped);
+    expect(clip(clip("x".repeat(20), 10), 5)).toBe(clipped);
+    expect(clip(clipped, 10)).toBe(clipped);
   });
 });
