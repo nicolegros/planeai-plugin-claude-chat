@@ -395,7 +395,7 @@ describe("Chat", () => {
     const harness = await render();
     harness.push(1, { type: "tool", id: "t1", name: "Bash", summary: "npm test", input: { kind: "bash", command: "npm test" } });
     harness.push(2, { type: "tool_result", tool_use_id: "t1", is_error: false, summary: "a\nb\nc\nd\ne" });
-    harness.push(3, { type: "tool", id: "t2", name: "Agent", summary: "Find callers" });
+    harness.push(3, { type: "tool", id: "t2", name: "Agent", summary: "Find callers", input: { kind: "agent", description: "Find callers" } });
     harness.push(4, { type: "tool_result", tool_use_id: "t2", is_error: false, summary: "Two callers." });
     await settle();
     expect(document.querySelector(".output-tail pre")?.textContent).toBe("c\nd\ne");

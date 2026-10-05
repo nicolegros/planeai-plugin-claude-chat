@@ -1,14 +1,20 @@
 import type { SDKMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Appearance } from "./appearance";
 
-/** What the chat needs to render a tool call; anything else falls back to the summary. */
+/** What the chat needs to render a tool call, one kind per way of showing it; a tool without one shows its summary. */
 export type ToolInput =
   | { kind: "bash"; command: string; description?: string }
+  | { kind: "read"; file_path: string }
   | { kind: "edit"; file_path: string; edits: { old_string: string; new_string: string }[]; hidden_edits?: number }
   | { kind: "write"; file_path: string; content: string }
-  | { kind: "search"; pattern: string; path?: string }
+  | { kind: "grep"; pattern: string; path?: string }
+  | { kind: "glob"; pattern: string; path?: string }
   | { kind: "skill"; skill: string; args?: string }
-  | { kind: "todos"; todos: Todo[] };
+  | { kind: "todos"; todos: Todo[] }
+  | { kind: "agent"; description: string }
+  | { kind: "fetch"; url: string }
+  | { kind: "web_search"; query: string }
+  | { kind: "questions"; questions: Question[] };
 
 export interface Todo {
   content: string;
@@ -249,10 +255,12 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
         edits.map((entry) => ({ old_string: text(entry?.old_string), new_string: text(entry?.new_string) })),
       );
     }
+    case "Read":
+      return { kind: "read", file_path: text(fields.file_path) };
     case "Grep":
     case "Glob":
       return {
-        kind: "search",
+        kind: name === "Grep" ? "grep" : "glob",
         pattern: clip(text(fields.pattern), 500),
         ...(typeof fields.path === "string" && fields.path ? { path: clip(fields.path, 500) } : {}),
       };
@@ -266,9 +274,56 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
       };
     case "TodoWrite":
       return { kind: "todos", todos: todos(fields.todos) };
+    case "Agent":
+    case "Task":
+      return { kind: "agent", description: clip(text(fields.description), 500) };
+    case "WebFetch":
+      return { kind: "fetch", url: clip(text(fields.url), 500) };
+    case "WebSearch":
+      return { kind: "web_search", query: clip(text(fields.query), 500) };
+    case "AskUserQuestion": {
+      const questions = questionsOf(input);
+      return questions ? { kind: "questions", questions } : undefined;
+    }
     default:
       return undefined;
   }
+}
+
+/** A stored tool call's input as it was rendered, from what earlier versions kept. */
+function storedToolInput(name: string, summary: string, input: ToolInput | { kind: "search"; pattern: string; path?: string } | undefined): ToolInput | undefined {
+  // Builds before Grep and Glob had kinds of their own.
+  if (input?.kind === "search") return { ...input, kind: name === "Glob" ? "glob" : "grep" };
+  if (input) return input;
+  // v1 kept only the summary: the most descriptive field, or the input as JSON.
+  switch (name) {
+    case "Read":
+      return { kind: "read", file_path: summary };
+    // The summary is the pattern, or the path when the call had one.
+    case "Grep":
+    case "Glob":
+      return { kind: name === "Grep" ? "grep" : "glob", pattern: summary };
+    case "Agent":
+    case "Task":
+      return { kind: "agent", description: summary };
+    case "WebFetch":
+      return { kind: "fetch", url: summary };
+    case "WebSearch":
+      return { kind: "web_search", query: summary };
+    default:
+      try {
+        return toolInput(name, JSON.parse(summary));
+      } catch {
+        return undefined;
+      }
+  }
+}
+
+/** A stored event as this version emits it, so the chat renders saved chats like live ones. */
+export function upgradeStored(event: ChatEvent): ChatEvent {
+  if (event.type !== "tool" && event.type !== "permission") return event;
+  const input = storedToolInput(event.type === "tool" ? event.name : event.tool, event.summary, event.input);
+  return input && input !== event.input ? { ...event, input } : event;
 }
 
 const TODO_STATUSES = new Set<Todo["status"]>(["pending", "in_progress", "completed"]);

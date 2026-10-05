@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { clip, lineCount, planLimits, questionsOf, replay, summarizeInput, toolInput, translate } from "../src/events";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { clip, lineCount, planLimits, questionsOf, replay, summarizeInput, toolInput, translate, upgradeStored, type ChatEvent } from "../src/events";
 import { fixture, history } from "./helpers";
 
 describe("translate", () => {
@@ -56,13 +57,29 @@ describe("translate", () => {
     expect(translate({ ...toolUse, parent_tool_use_id: "toolu_parent" } as typeof toolUse)).toEqual([]);
   });
 
+  it("rebuilds a question Claude asked by its questions, however long their summary", () => {
+    const options = ["macOS", "Linux", "Windows", "WebAssembly"].map((label) => ({ label, description: `Build the release for ${label}, signed and packaged the way its users expect to install it.` }));
+    const input = { questions: [{ question: "Which deployment target should the release build use?", header: "Target", multiSelect: false, options }] };
+    const [event] = translate({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "ask", name: "AskUserQuestion", input }] } } as unknown as SDKMessage);
+    expect(event).toMatchObject({ type: "tool", summary: expect.stringContaining("more characters"), input: { kind: "questions", questions: [{ question: "Which deployment target should the release build use?" }] } });
+  });
+
+  it("keeps what the chat renders of each tool it knows", () => {
+    expect(toolInput("Read", { file_path: "a.ts", offset: 4 })).toEqual({ kind: "read", file_path: "a.ts" });
+    expect(toolInput("Grep", { pattern: "x", path: "src" })).toEqual({ kind: "grep", pattern: "x", path: "src" });
+    expect(toolInput("Glob", { pattern: "**/*.ts" })).toEqual({ kind: "glob", pattern: "**/*.ts" });
+    expect(toolInput("Agent", { description: "Find the bug", prompt: "…", subagent_type: "general-purpose" })).toEqual({ kind: "agent", description: "Find the bug" });
+    expect(toolInput("Task", { description: "Find the bug" })).toEqual({ kind: "agent", description: "Find the bug" });
+    expect(toolInput("WebFetch", { url: "https://example.com", prompt: "…" })).toEqual({ kind: "fetch", url: "https://example.com" });
+    expect(toolInput("WebSearch", { query: "svelte runes" })).toEqual({ kind: "web_search", query: "svelte runes" });
+    expect(toolInput("AskUserQuestion", { questions: [] })).toBeUndefined();
+    expect(toolInput("mcp__github__get_pull_request", { number: 3 })).toBeUndefined();
+  });
+
   it("keeps the edits and file contents the chat renders as diffs", () => {
     expect(toolInput("Edit", { file_path: "a.ts", old_string: "a", new_string: "b", replace_all: false })).toEqual({ kind: "edit", file_path: "a.ts", edits: [{ old_string: "a", new_string: "b" }] });
     expect(toolInput("MultiEdit", { file_path: "a.ts", edits: [{ old_string: "1", new_string: "2" }, { old_string: "3", new_string: "4" }] })).toMatchObject({ edits: [{ new_string: "2" }, { new_string: "4" }] });
     expect(toolInput("Write", { file_path: "b.ts", content: "x" })).toEqual({ kind: "write", file_path: "b.ts", content: "x" });
-    expect(toolInput("Grep", { pattern: "x", path: "src" })).toEqual({ kind: "search", pattern: "x", path: "src" });
-    expect(toolInput("Glob", { pattern: "**/*.ts" })).toEqual({ kind: "search", pattern: "**/*.ts" });
-    expect(toolInput("Read", { file_path: "a.ts" })).toBeUndefined();
     expect(toolInput("Skill", { skill: "review", args: "42" })).toEqual({ kind: "skill", skill: "review", args: "42" });
     expect(toolInput("Skill", { skill: "review" })).toEqual({ kind: "skill", skill: "review" });
     expect(toolInput("TodoWrite", { todos: [{ content: "a", status: "completed", activeForm: "A" }, { content: "b", status: "unknown" }, null] })).toEqual({
@@ -74,6 +91,30 @@ describe("translate", () => {
     expect(many?.kind === "edit" && many.edits).toHaveLength(12);
     const large = toolInput("Edit", { file_path: "a.ts", old_string: "o".repeat(50_000), new_string: "n".repeat(50_000) });
     expect(JSON.stringify(large).length).toBeLessThan(8_000);
+  });
+
+  it("renders chats saved by earlier versions from what they kept of each tool call", () => {
+    const stored = (name: string, summary: string, input?: unknown) => upgradeStored({ type: "tool", id: "t", name, summary, ...(input ? { input } : {}) } as ChatEvent);
+    // v1 kept only the summary of tools other than Bash, Edit, MultiEdit and Write.
+    expect(stored("Read", "/work/a.ts")).toMatchObject({ input: { kind: "read", file_path: "/work/a.ts" } });
+    expect(stored("Grep", "TODO")).toMatchObject({ input: { kind: "grep", pattern: "TODO" } });
+    expect(stored("Glob", "**/*.ts")).toMatchObject({ input: { kind: "glob", pattern: "**/*.ts" } });
+    expect(stored("Task", "Find the bug")).toMatchObject({ input: { kind: "agent", description: "Find the bug" } });
+    expect(stored("WebFetch", "https://example.com")).toMatchObject({ input: { kind: "fetch", url: "https://example.com" } });
+    expect(stored("WebSearch", "svelte runes")).toMatchObject({ input: { kind: "web_search", query: "svelte runes" } });
+    expect(stored("Skill", '{"skill":"review","args":"42"}')).toMatchObject({ input: { kind: "skill", skill: "review", args: "42" } });
+    expect(stored("TodoWrite", '{"todos":[{"content":"a","status":"completed"}]}')).toMatchObject({ input: { kind: "todos", todos: [{ content: "a", status: "completed" }] } });
+    expect(stored("AskUserQuestion", JSON.stringify({ questions: [{ question: "Which?", options: [{ label: "A" }] }] }))).toMatchObject({ input: { kind: "questions", questions: [{ question: "Which?" }] } });
+    // Builds of this version before Grep and Glob had kinds of their own.
+    expect(stored("Glob", "*.ts", { kind: "search", pattern: "*.ts", path: "src" })).toMatchObject({ input: { kind: "glob", pattern: "*.ts", path: "src" } });
+    // What cannot be read keeps showing its summary.
+    expect(stored("Skill", '{"skill":"rev… [9 more characters]')).not.toHaveProperty("input");
+    expect(stored("mcp__github__get_pull_request", '{"number":3}')).not.toHaveProperty("input");
+    const bash: ChatEvent = { type: "tool", id: "t", name: "Bash", summary: "ls", input: { kind: "bash", command: "ls" } };
+    expect(upgradeStored(bash)).toBe(bash);
+    expect(upgradeStored({ type: "permission", request_id: "p", tool: "WebFetch", title: "Fetch?", summary: "https://example.com", can_remember: false })).toMatchObject({ input: { kind: "fetch", url: "https://example.com" } });
+    const user: ChatEvent = { type: "user", text: "{}" };
+    expect(upgradeStored(user)).toBe(user);
   });
 
   it("turns a missing login into guidance instead of a failed turn", () => {

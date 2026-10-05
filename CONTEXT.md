@@ -45,6 +45,17 @@ _Avoid_: State, activity
 A permission prompt or a question from Claude, waiting on the user.
 _Avoid_: Prompt (that is what the user sends)
 
+### Tool calls
+
+**Tool input**:
+What the chat renders of a tool call, as one kind per way of showing it, such as a command, an edit or a search.
+The sidecar reads it from Claude's input, and the UI shows a tool by the kind of its tool input.
+_Avoid_: Tool args, params
+
+**Summary**:
+One line about a tool call's input, kept so a tool without a tool input still shows something.
+The UI shows it as it is and never reads fields out of it.
+
 ### Chat UI
 
 **Chat session**:

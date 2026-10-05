@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { storedPlanLimits, type ChatEvent, type ModelOption, type PlanLimits } from "./events";
+import { storedPlanLimits, upgradeStored, type ChatEvent, type ModelOption, type PlanLimits } from "./events";
 
 export interface StoredEvent {
   seq: number;
@@ -51,7 +51,8 @@ export class TranscriptStore {
     for (const line of readFileSync(path, "utf8").split("\n")) {
       if (!line.trim()) continue;
       try {
-        events.push(JSON.parse(line) as StoredEvent);
+        const event = JSON.parse(line) as StoredEvent;
+        events.push({ seq: event.seq, payload: upgradeStored(event.payload) });
       } catch {
         // A torn final line from a crash loses one event, not the transcript.
       }
