@@ -1,19 +1,28 @@
-import type { CanUseTool, Options, PermissionMode, PermissionResult, PermissionUpdate, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, PermissionMode, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import { randomUUID } from "node:crypto";
 import type { Appearance } from "./appearance";
 import { SlashCommands } from "./commands";
-import { clip, isEphemeral, replay, summarizeInput, toolInput, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
+import { clip, isEphemeral, planLimits, replay, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
+import { FollowUpTracker } from "./follow-ups";
 import { InputQueue } from "./input-queue";
+import { PendingRequests } from "./pending-requests";
 import { page } from "./paging";
+import { statusOf } from "./status";
 import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
 
 const REBUILT: ChatEvent = { type: "notice", text: "Earlier messages were rebuilt from Claude Code's transcript, without turn costs or permission prompts." };
 
 const HANDED_OFF = "This session is continuing in a terminal tab. Close it or select Return to chat first.";
 
+const INTERRUPTED = "Interrupted by the user";
+
 const BASE_MODES: PermissionMode[] = ["default", "acceptEdits", "plan"];
 
 /** How long a `/model` waits for Claude's model list before handing the text to Claude Code. */
 const MODELS_WAIT_MS = 10_000;
+
+/** How long a handoff waits for Claude to stop its turn before closing it anyway. */
+const INTERRUPT_WAIT_MS = 2_000;
 
 /** `/model <name>` is the header's model switch, typed. */
 const MODEL_COMMAND = /^\/model\s+(\S+)$/;
@@ -47,13 +56,19 @@ export interface SessionConfig {
   claudeExecutable: string | null;
 }
 
-interface PendingPermission {
-  suggestions: PermissionUpdate[];
-  resolve(result: PermissionResult): void;
-}
-
 export function errorMessage(error: unknown): string {
   return clip(error instanceof Error ? error.message : String(error), 2_000);
+}
+
+/** `promise`'s value, or `fallback` once `ms` passed without one. */
+async function within<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => (timer = setTimeout(() => resolve(fallback), ms)));
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Index of the first event after `seq`; events are stored in increasing seq order. */
@@ -80,20 +95,29 @@ export class ClaudeSession {
   private starting: Promise<InputQueue<SDKUserMessage>> | null = null;
   private readonly events: StoredEvent[];
   private seq: number;
-  private status: SessionStatus = "idle";
-  private readonly pending = new Map<string, PendingPermission>();
-  private nextPermission = 0;
+  /** The status last told to the host. */
+  private announced: SessionStatus = "idle";
+  /** A microtask will announce the status. */
+  private announceQueued = false;
+  private readonly requests = new PendingRequests((event) => {
+    this.emit(event);
+    this.refreshStatus();
+  });
   private stopped = false;
   private meta: SessionMeta;
   /** Starts as the PlaneAI session id; /clear moves Claude to a new one. */
   private conversationId: string;
   /** Messages compaction kept, which Claude replays after its boundary. */
   private preserved = new Set<string>();
+  private readonly followUps = new FollowUpTracker();
   private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
-  /** Counts status changes, so a send can tell whether anything moved it while it waited. */
-  private statusChanges = 0;
+  /** Sends on their way to the running Claude; once it is gone, they can no longer arrive. */
+  private readonly sending = new Set<symbol>();
+  private turnRunning = false;
   private delivering: Promise<unknown> = Promise.resolve();
+  /** A handoff until it returns the terminal's command; returning to the chat is refused meanwhile. */
+  private handingOff: Promise<string[]> | null = null;
   /** Settles once a chat whose own history is gone was rebuilt from Claude's transcript. */
   readonly restored: Promise<void>;
   /** The models of the running Claude process, once listed. */
@@ -118,10 +142,13 @@ export class ClaudeSession {
       active_model: null,
       permission_mode: config.yolo ? "bypassPermissions" : "default",
       modes,
-      models: [],
+      // Claude lists its models once it starts; until then, the ones it listed last.
+      models: store.models(),
+      limits: store.limits(),
       context: null,
       handed_off: handedOff,
       compacting: false,
+      cwd: config.cwd,
     };
     this.conversationId = store.conversation(config.id) ?? config.id;
     this.slashCommands = new SlashCommands(store);
@@ -168,7 +195,8 @@ export class ClaudeSession {
       seq: event.seq,
       payload: { type: "error", message: `A ${event.payload.type} entry was too large to show.` },
     }));
-    return { seq: this.seq, status: this.status, meta: this.meta, events, more };
+    // Plan limits are the account's; another session may have read newer ones.
+    return { seq: this.seq, status: this.status, meta: { ...this.meta, limits: this.store.limits() ?? this.meta.limits }, events, more };
   }
 
   /** Lets an open chat apply fonts changed in PlaneAI's preferences. */
@@ -177,7 +205,7 @@ export class ClaudeSession {
   }
 
   announce(): void {
-    this.setStatus(this.status, true);
+    this.announceStatus(true);
   }
 
   /**
@@ -197,69 +225,67 @@ export class ClaudeSession {
       this.emit({ type: "error", message: "Claude Code was not found on PATH. Install it, then run `claude` once in a terminal to log in." });
       throw new Error("claude executable not found on PATH");
     }
-    this.emit({ type: "user", text: clip(text) });
-    const before = this.status;
-    this.setStatus("busy");
-    const ours = this.statusChanges;
-    // Puts back the status from before this send, unless a turn changed it meanwhile.
-    const settle = () => {
-      if (this.statusChanges === ours) this.setStatus(before);
-    };
+    const id = randomUUID();
+    const isFollowUp = this.status !== "idle";
+    this.emit({ type: "user", text: clip(text), ...(isFollowUp ? { queued: true, id } : {}) });
+    const send = Symbol(id);
+    this.sending.add(send);
+    this.refreshStatus();
+    try {
+      await this.forward(text, id, isFollowUp, signal);
+    } finally {
+      this.sending.delete(send);
+      this.refreshStatus();
+    }
+  }
+
+  private async forward(text: string, id: string, isFollowUp: boolean, signal?: AbortSignal): Promise<void> {
     let input: InputQueue<SDKUserMessage>;
     try {
       input = await this.ensureQuery();
     } catch (error) {
-      if (!this.stopped) {
-        this.emit({ type: "error", message: errorMessage(error) });
-        this.setStatus("idle");
-      }
+      if (!this.stopped) this.emit({ type: "error", message: errorMessage(error) });
       throw error;
     }
     const model = MODEL_COMMAND.exec(text.trim())?.[1];
     const known = model !== undefined && (model === "default" || (await this.listedModels()).some((option) => option.value === model));
     if (signal?.aborted) {
       this.emit({ type: "error", message: "This message was not sent because PlaneAI stopped waiting for it. Send it again." });
-      settle();
       throw new Error("request cancelled");
     }
     // Stopping, a handoff or Claude exiting while the models loaded leaves nothing to deliver to.
-    if (this.input !== input) {
+    if (this.input !== input || this.meta.handed_off) {
       if (!this.stopped) this.emit({ type: "error", message: "This message was not sent because the chat stopped driving this session. Send it again." });
       throw new Error("The chat no longer drives this session.");
     }
     if (model && known) {
       this.switchModel(model);
-      settle();
       return;
     }
+    this.followUps.sent(id, isFollowUp);
+    this.turnRunning = true;
     input.push({
       type: "user",
       message: { role: "user", content: text },
       parent_tool_use_id: null,
       origin: { kind: "human" },
+      uuid: id as SDKUserMessage["uuid"],
     });
   }
 
   /** Returns at once; the SDK's control channel can stall while Claude boots. */
   interrupt(): void {
-    this.denyPending("Interrupted by the user");
+    this.requests.denyAll(INTERRUPTED);
     this.control(this.query?.interrupt(), "interrupt");
   }
 
   respondToPermission(requestId: string, decision: PermissionDecision, reason?: string): void {
-    const pending = this.pending.get(requestId);
-    if (!pending) throw new Error(`no pending permission request ${requestId}`);
-    this.pending.delete(requestId);
-    const note = reason?.trim() ? clip(reason.trim(), 2_000) : undefined;
-    if (decision === "deny") {
-      pending.resolve({ behavior: "deny", message: note ? `The user denied this action: ${note}` : "The user denied this action." });
-      this.emit({ type: "permission_resolved", request_id: requestId, allowed: false, ...(note ? { reason: note } : {}) });
-    } else {
-      const remembered = decision === "allow_session" && pending.suggestions.length > 0;
-      pending.resolve(remembered ? { behavior: "allow", updatedPermissions: pending.suggestions } : { behavior: "allow" });
-      this.emit({ type: "permission_resolved", request_id: requestId, allowed: true, ...(remembered ? { remembered } : {}) });
-    }
-    this.setStatus(this.pending.size > 0 ? "needs_attention" : "busy");
+    this.requests.respond(requestId, decision, reason);
+  }
+
+  /** `answers` maps each question to its answer; `null` skips the questions. */
+  answerQuestion(requestId: string, answers: Record<string, string> | null): void {
+    this.requests.answer(requestId, answers);
   }
 
   setPermissionMode(mode: string): void {
@@ -296,6 +322,7 @@ export class ClaudeSession {
       if (this.meta.handed_off) throw new Error(HANDED_OFF);
       if (!this.config.claudeExecutable) throw new Error("Claude Code was not found on PATH.");
       await this.ensureQuery();
+      if (this.meta.handed_off) throw new Error(HANDED_OFF);
       if (!this.query) throw new Error("Claude stopped before listing its commands.");
       return await this.query.supportedCommands();
     })().finally(() => (this.loadingCommands = null));
@@ -303,14 +330,8 @@ export class ClaudeSession {
   }
 
   /** A Claude that never finishes starting must not hold up every later send. */
-  private async listedModels(): Promise<ModelOption[]> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<ModelOption[]>((resolve) => (timer = setTimeout(() => resolve([]), MODELS_WAIT_MS)));
-    try {
-      return await Promise.race([this.models, timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
+  private listedModels(): Promise<ModelOption[]> {
+    return within(this.models, MODELS_WAIT_MS, []);
   }
 
   private switchModel(model: string): void {
@@ -323,15 +344,15 @@ export class ClaudeSession {
    * Detach so Claude Code's TUI can continue this conversation, and return the
    * command that does it. Only one side may drive a session at a time.
    */
-  async handoff(): Promise<string[]> {
+  handoff(): Promise<string[]> {
+    this.handingOff ??= this.handOff().finally(() => (this.handingOff = null));
+    return this.handingOff;
+  }
+
+  private async handOff(): Promise<string[]> {
     if (!this.config.claudeExecutable) throw new Error("claude executable not found on PATH");
-    if (!this.meta.handed_off) {
-      if (this.status === "busy" || this.status === "needs_attention") this.interrupt();
-      this.detach("Continued in the terminal");
-      this.emit({ type: "handoff", in_terminal: true });
-      this.updateMeta({ handed_off: true });
-      this.setStatus("idle");
-    }
+    if (!this.meta.handed_off) await this.letGo();
+    if (this.stopped) throw new Error("session is stopped");
     const mode = this.meta.permission_mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : ["--permission-mode", this.meta.permission_mode];
     return [
       this.config.claudeExecutable,
@@ -341,11 +362,31 @@ export class ClaudeSession {
     ];
   }
 
+  private async letGo(): Promise<void> {
+    const running = this.status !== "idle" ? this.query : null;
+    // Sends are refused from here, so nothing more reaches this Claude.
+    this.updateMeta({ handed_off: true });
+    this.refreshStatus();
+    if (running) {
+      this.requests.denyAll(INTERRUPTED);
+      // Claude records the interruption in its transcript before it is closed, so the terminal resumes a settled conversation.
+      await within(running.interrupt().catch(() => {}), INTERRUPT_WAIT_MS, undefined);
+    }
+    // A stopped session may have been destroyed meanwhile; writing now would leave its files behind.
+    if (this.stopped) return;
+    this.detach("Continued in the terminal");
+    // After the interrupted turn's last frames, which belong to the chat.
+    this.emit({ type: "handoff", in_terminal: true });
+  }
+
   /** The terminal closed; the next prompt resumes the conversation here. */
   handback(): void {
+    // The host opens the terminal once the handoff returns; the chat driving too would make two drivers.
+    if (this.handingOff) throw new Error("The terminal is still opening. Select Return to chat once it is open.");
     if (!this.meta.handed_off) return;
     this.emit({ type: "handoff", in_terminal: false });
     this.updateMeta({ handed_off: false });
+    this.refreshStatus();
   }
 
   stop(): void {
@@ -354,7 +395,10 @@ export class ClaudeSession {
   }
 
   private detach(reason: string): void {
-    this.denyPending(reason);
+    this.requests.denyAll(reason);
+    this.followUps.reset();
+    this.sending.clear();
+    this.endTurn();
     const query = this.query;
     this.query = null;
     this.input?.close();
@@ -401,7 +445,7 @@ export class ClaudeSession {
         permissionMode: this.meta.permission_mode as PermissionMode,
         allowDangerouslySkipPermissions: this.config.yolo,
         ...(this.meta.model ? { model: this.meta.model } : {}),
-        canUseTool: this.canUseTool,
+        canUseTool: this.requests.canUseTool,
         ...(resume ? { resume: this.conversationId } : { sessionId: this.config.id }),
         stderr: (data) => process.stderr.write(data),
       },
@@ -421,11 +465,8 @@ export class ClaudeSession {
     } finally {
       if (this.query === query) {
         // The Claude process ended; the next prompt resumes it.
-        this.query = null;
-        this.input?.close();
-        this.input = null;
-        this.denyPending("Claude stopped");
-        if (!this.stopped) this.setStatus("idle");
+        this.detach("Claude stopped");
+        this.refreshStatus();
       }
     }
   }
@@ -446,16 +487,21 @@ export class ClaudeSession {
           break;
       }
     }
+    if (message.type === "rate_limit_event") this.onRateLimit(message.rate_limit_info);
     // /clear moves Claude to a new id within the turn; its result already carries it.
     if (message.type === "result") this.follow(message.session_id);
-    for (const event of translate(message)) this.emit(event);
+    const events = translate(message).filter((event) => !this.requests.hides(event));
+    const started = this.followUps.frame(message, events.some((event) => !isEphemeral(event)));
+    if (started) this.emit({ type: "turn_start", user_ids: started });
+    for (const event of events) this.emit(event);
     if (message.type === "result") {
-      this.setStatus(this.pending.size > 0 ? "needs_attention" : "idle");
+      this.endTurn();
       void this.loadContextUsage(query);
-    } else if (this.status === "idle" && (message.type === "assistant" || message.type === "stream_event")) {
-      // A queued follow-up started its own turn after the previous result.
-      this.setStatus("busy");
+    } else if (message.type === "assistant" || message.type === "stream_event") {
+      // Any frame of a turn means one runs, including a held follow-up's turn after the previous result.
+      this.turnRunning = true;
     }
+    this.refreshStatus();
   }
 
   /** Each turn's init: marks the session started, follows /clear's new id, refreshes terminal-only commands. */
@@ -463,6 +509,15 @@ export class ClaudeSession {
     if (!this.store.hasStarted(this.config.id)) this.store.markStarted(this.config.id);
     this.follow(sessionId);
     if (this.slashCommands.setTerminalOnly(terminalOnly)) this.emit({ type: "commands_changed" });
+  }
+
+  /** Each window updates on its own, as an event may describe only one; others come from the shared file, which other sessions update too. */
+  private onRateLimit(info: unknown): void {
+    const reported = planLimits(info);
+    if (!reported) return;
+    const limits = { ...this.store.limits(), ...reported };
+    this.store.setLimits(limits);
+    this.updateMeta({ limits });
   }
 
   private follow(sessionId: string): void {
@@ -479,6 +534,7 @@ export class ClaudeSession {
       // The header offers Claude Code's default itself.
       const choices = models.filter((model) => model.value !== "default").map((model) => ({ value: model.value, label: model.displayName }));
       this.updateMeta({ models: choices });
+      this.store.setModels(choices);
       return choices;
     } catch (error) {
       console.error(`failed to list models: ${String(error)}`);
@@ -499,38 +555,6 @@ export class ClaudeSession {
     this.emit({ type: "meta", meta });
   }
 
-  private readonly canUseTool: CanUseTool = (toolName, input, options) =>
-    new Promise<PermissionResult>((resolve) => {
-      const requestId = `permission-${++this.nextPermission}`;
-      const title = options.title ?? `Claude wants to use ${toolName}`;
-      const suggestions = options.suggestions ?? [];
-      this.pending.set(requestId, { suggestions, resolve });
-      options.signal.addEventListener("abort", () => {
-        if (!this.pending.delete(requestId)) return;
-        resolve({ behavior: "deny", message: "The request was cancelled." });
-        this.emit({ type: "permission_resolved", request_id: requestId, allowed: false });
-      });
-      const rendered = toolInput(toolName, input);
-      this.emit({
-        type: "permission",
-        request_id: requestId,
-        tool: toolName,
-        title,
-        summary: summarizeInput(input),
-        ...(rendered ? { input: rendered } : {}),
-        can_remember: suggestions.length > 0,
-      });
-      this.setStatus("needs_attention");
-    });
-
-  private denyPending(message: string): void {
-    for (const [requestId, pending] of this.pending) {
-      pending.resolve({ behavior: "deny", message, interrupt: true });
-      this.emit({ type: "permission_resolved", request_id: requestId, allowed: false });
-    }
-    this.pending.clear();
-  }
-
   private emit(payload: ChatEvent): void {
     if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
     const event = { seq: ++this.seq, payload };
@@ -542,12 +566,33 @@ export class ClaudeSession {
     this.host.event(this.config.id, event.seq, payload);
   }
 
-  private setStatus(status: SessionStatus, force = false): void {
-    // Compaction ends with its turn, even one that failed or was interrupted.
-    if (status !== "busy" && this.meta.compacting) this.updateMeta({ compacting: false });
-    if (this.status === status && !force) return;
-    this.statusChanges++;
-    this.status = status;
+  /** A turn's result, Claude exiting or a detach ends the turn, and any compaction with it, even one that failed. */
+  private endTurn(): void {
+    this.turnRunning = false;
+    if (this.meta.compacting && !this.stopped) this.updateMeta({ compacting: false });
+  }
+
+  private get status(): SessionStatus {
+    return statusOf({ handedOff: this.meta.handed_off, sending: this.sending.size, turnRunning: this.turnRunning, holding: this.followUps.holding, pending: this.requests.size });
+  }
+
+  /** Tells the host once per change, so a burst such as a handoff reports only where it lands. */
+  private refreshStatus(): void {
+    if (this.announceQueued) return;
+    this.announceQueued = true;
+    queueMicrotask(() => {
+      this.announceQueued = false;
+      this.announceStatus();
+    });
+  }
+
+  /** `force` repeats an unchanged status, for a host that just opened the session. */
+  private announceStatus(force = false): void {
+    // A stopped session reports nothing more; the host already let it go.
+    if (this.stopped) return;
+    const status = this.status;
+    if (status === this.announced && !force) return;
+    this.announced = status;
     this.host.status(this.config.id, status);
     // The chat follows the same status the host shows, instead of inferring its own.
     this.emit({ type: "status", status });

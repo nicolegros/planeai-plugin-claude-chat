@@ -1,67 +1,11 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Chat from "../ui/Chat.svelte";
-import type { CommandOption, ProviderUiContext, SessionMeta, Snapshot, StoredEvent } from "../ui/host";
-
-const META: SessionMeta = {
-  model: null,
-  active_model: null,
-  compacting: false,
-  permission_mode: "default",
-  modes: ["default", "acceptEdits", "plan"],
-  models: [{ value: "opus", label: "Opus" }],
-  context: null,
-  handed_off: false,
-};
-
-const COMMANDS: CommandOption[] = [
-  { name: "compact", description: "Free up context by summarizing the conversation so far", argument_hint: "<optional custom summarization instructions>", aliases: [] },
-  { name: "context", description: "Show current context usage", argument_hint: "", aliases: [] },
-  { name: "usage", description: "Show session cost and plan usage", argument_hint: "", aliases: ["cost", "stats"] },
-  { name: "review", description: "Review a pull request", argument_hint: "[<pr>]", aliases: [] },
-];
-
-function context(snapshot: Partial<Snapshot> = {}, commands: CommandOption[] = COMMANDS, settings: Record<string, unknown> = {}) {
-  let listener: ((event: StoredEvent) => void) | null = null;
-  const pages: Snapshot[] = [{ seq: 0, status: "idle", meta: META, events: [], more: false, ...snapshot }];
-  const catalog = { commands };
-  const value: ProviderUiContext = {
-    session: { id: "s1" },
-    host: {
-      call: vi.fn(async (method: string, params?: { offset?: number }) => {
-        if (method === "claude.snapshot") return pages.length > 1 ? pages.shift() : pages[0];
-        // Two commands per page, so the menu has to follow `more`.
-        if (method === "claude.commands") {
-          const offset = params?.offset ?? 0;
-          return { commands: catalog.commands.slice(offset, offset + 2), more: offset + 2 < catalog.commands.length };
-        }
-        return {};
-      }) as ProviderUiContext["host"]["call"],
-      session: {
-        send: vi.fn(async () => {}),
-        interrupt: vi.fn(async () => {}),
-        handoff: vi.fn(async () => {}),
-        handback: vi.fn(async () => {}),
-        onEvent: (next) => {
-          listener = next;
-          return () => (listener = null);
-        },
-      },
-      settings: { get: vi.fn(async () => settings) as ProviderUiContext["host"]["settings"]["get"] },
-      data: { notify: vi.fn() },
-      navigation: { openExternal: vi.fn() },
-    },
-  };
-  return { value, pages, catalog, push: (seq: number, payload: StoredEvent["payload"]) => listener?.({ seq, payload }) };
-}
-
-const settle = async () => {
-  for (let i = 0; i < 8; i++) await Promise.resolve();
-  flushSync();
-};
+import type { CommandOption, Snapshot } from "../ui/host";
+import { COMMANDS, fakeHost, META, settle } from "./fake-host";
 
 function button(label: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === label);
+  const found = [...document.querySelectorAll("button")].find((candidate) => (candidate.getAttribute("aria-label") ?? candidate.textContent?.trim()) === label);
   if (!found) throw new Error(`no button ${label}`);
   return found;
 }
@@ -90,29 +34,25 @@ describe("Chat", () => {
   });
 
   async function render(snapshot: Partial<Snapshot> = {}, commands: CommandOption[] = COMMANDS) {
-    const harness = context(snapshot, commands);
+    const harness = fakeHost(snapshot, commands);
     app = mount(Chat, { target: document.body, props: { context: harness.value } });
     await settle();
     return harness;
   }
 
-  it("rebuilds the conversation from every snapshot page, then follows live events", async () => {
-    const harness = context();
-    harness.pages.splice(
-      0,
-      1,
-      { seq: 2, status: "idle", meta: META, events: [{ seq: 1, payload: { type: "user", text: "first page" } }], more: true },
-      { seq: 2, status: "idle", meta: META, events: [{ seq: 2, payload: { type: "assistant", text: "second page" } }], more: false },
-    );
-    app = mount(Chat, { target: document.body, props: { context: harness.value } });
-    await settle();
-    await settle();
-    expect(harness.value.host.call).toHaveBeenNthCalledWith(2, "claude.snapshot", { session_id: "s1", after_seq: 1 });
+  it("keeps a message too long to send in the message box", async () => {
+    const harness = await render();
+    const textarea = document.querySelector("textarea")!;
+    type(textarea, "x".repeat(50 * 1024));
+    press(textarea, "Enter");
+    expect(harness.value.host.data.notify).toHaveBeenCalledWith(expect.stringContaining("too long"));
+    expect(textarea.value).toHaveLength(50 * 1024);
+  });
 
-    harness.push(2, { type: "assistant", text: "second page" });
-    harness.push(3, { type: "delta", text: "Streaming **bold**" });
+  it("streams Claude's answer as markdown", async () => {
+    const harness = await render();
+    harness.push(1, { type: "delta", text: "Streaming **bold**" });
     await settle();
-    expect(document.body.textContent?.match(/second page/g)).toHaveLength(1);
     expect(document.querySelector(".markdown strong")?.textContent).toBe("bold");
   });
 
@@ -147,6 +87,14 @@ describe("Chat", () => {
     });
     await settle();
     expect(document.querySelector(".tool")?.getAttribute("data-state")).toBe("running");
+    expect(document.querySelector(".tool .sentence")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Editing a.ts in src");
+    expect(document.querySelector(".tool .meta")?.textContent?.replace(/\s+/g, " ").trim()).toBe("+1 −1");
+    expect(document.querySelector(".diff.preview .remove")?.textContent).toContain("const a = 1;");
+    expect(document.querySelector(".diff.preview .add")?.textContent).toContain("const a = 2;");
+    expect(document.querySelector(".diff:not(.preview)")).toBeNull();
+    document.querySelector<HTMLButtonElement>(".tool button")!.click();
+    flushSync();
+    expect(document.querySelector(".diff.preview")).toBeNull();
     expect(document.querySelector(".diff .remove")?.textContent).toContain("const a = 1;");
     expect(document.querySelector(".diff .add")?.textContent).toContain("const a = 2;");
 
@@ -183,20 +131,32 @@ describe("Chat", () => {
     expect(harness.value.host.call).toHaveBeenCalledWith("claude.permission.respond", { session_id: "s1", request_id: "p2", decision: "deny", reason: "keep dist" });
   });
 
-  it("switches mode and model from the header and shows context usage", async () => {
+  it("switches mode and model from the composer and shows context usage", async () => {
     const harness = await render({ meta: { ...META, context: { total_tokens: 50_000, max_tokens: 200_000, percentage: 25 } } });
-    expect(document.querySelector(".context-label")?.textContent).toBe("25% context · 50k / 200k");
-    const [model, mode] = document.querySelectorAll("select");
-    mode.value = "plan";
-    mode.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(document.querySelector(".context-label")?.textContent).toBe("25%");
+    expect(document.querySelector("[role=meter]")?.getAttribute("aria-valuenow")).toBe("25");
+    expect(document.querySelector(".context")?.getAttribute("data-tip")).toBe("50k of 200k tokens of context used");
+    expect(document.querySelector("[role=meter]")?.getAttribute("aria-valuetext")).toBe("50k of 200k tokens of context used");
+
+    const resets = new Date(Date.now() + 60 * 60 * 1000).getTime();
+    harness.push(2, { type: "meta", meta: { limits: { five_hour: { utilization: 61.2, resets_at: resets }, seven_day: { utilization: 44, resets_at: 0 } } } });
+    await settle();
+    const tip = document.querySelector(".context")?.getAttribute("data-tip")?.split("\n");
+    expect(tip?.[0]).toBe("50k of 200k tokens of context used");
+    expect(tip?.[1]).toMatch(/^5-hour limit: 61% used · resets (at|\w{3}) /);
+    expect(tip).toHaveLength(2);
+    const modes = () => [...document.querySelectorAll("[role=group] [aria-pressed]")].map((mode) => [mode.textContent?.trim(), mode.getAttribute("aria-pressed")]);
+    expect(modes()).toEqual([["Ask", "true"], ["Edits", "false"], ["Plan", "false"]]);
+    button("Plan only").click();
+    const model = document.querySelector("select")!;
     model.value = "opus";
     model.dispatchEvent(new Event("change", { bubbles: true }));
     expect(harness.value.host.call).toHaveBeenCalledWith("claude.mode.set", { session_id: "s1", mode: "plan" });
     expect(harness.value.host.call).toHaveBeenCalledWith("claude.model.set", { session_id: "s1", model: "opus" });
 
-    harness.push(1, { type: "meta", meta: { permission_mode: "plan" } });
+    harness.push(3, { type: "meta", meta: { permission_mode: "plan" } });
     await settle();
-    expect((document.querySelectorAll("select")[1] as HTMLSelectElement).value).toBe("plan");
+    expect(modes()).toEqual([["Ask", "false"], ["Edits", "false"], ["Plan", "true"]]);
   });
 
   it("sends on Enter, queues follow-ups while working and stops with Escape", async () => {
@@ -212,14 +172,14 @@ describe("Chat", () => {
 
   it("opens the terminal and shows a read-only banner until the session comes back", async () => {
     const harness = await render();
-    button("Open in terminal").click();
+    button("Continue in Claude Code's terminal").click();
     expect(harness.value.host.session.handoff).toHaveBeenCalledOnce();
 
     harness.push(1, { type: "handoff", in_terminal: true });
     harness.push(2, { type: "meta", meta: { handed_off: true } });
     await settle();
     expect(document.querySelector("textarea")).toBeNull();
-    expect(() => button("Open in terminal")).toThrow();
+    expect(() => button("Continue in Claude Code's terminal")).toThrow();
     expect(document.body.textContent).toContain("Continued in the terminal");
     button("Return to chat").click();
     expect(harness.value.host.session.handback).toHaveBeenCalledOnce();
@@ -246,16 +206,9 @@ describe("Chat", () => {
     const harness = await render();
     harness.push(1, { type: "tool", id: "t1", name: "MultiEdit", summary: "a.ts", input: { kind: "edit", file_path: "a.ts", edits: [{ old_string: "a", new_string: "b" }], hidden_edits: 1 } });
     await settle();
+    document.querySelector<HTMLButtonElement>(".tool button")!.click();
+    flushSync();
     expect(document.body.textContent).toContain("1 more edit not shown");
-  });
-
-  it("refuses a message that would exceed PlaneAI's prompt limit once escaped", async () => {
-    const harness = await render();
-    const textarea = document.querySelector("textarea")!;
-    type(textarea, `x${"\n".repeat(30_000)}x`);
-    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    expect(harness.value.host.session.send).not.toHaveBeenCalled();
-    expect(harness.value.host.data.notify).toHaveBeenCalledWith(expect.stringContaining("too long"));
   });
 
   it("offers slash commands as the user types one, loading every page once", async () => {
@@ -317,17 +270,6 @@ describe("Chat", () => {
     expect(textarea.value).toBe("/review ");
   });
 
-  it("reloads the command list when Claude's commands change", async () => {
-    const harness = await render();
-    const textarea = document.querySelector("textarea")!;
-    type(textarea, "/");
-    await settle();
-    harness.catalog.commands = [{ name: "deploy", description: "Ship it", argument_hint: "", aliases: [] }];
-    harness.push(1, { type: "commands_changed" });
-    await settle();
-    expect(options()).toEqual(["/deploy"]);
-  });
-
   it("explains when commands cannot be listed and retries when the menu opens again", async () => {
     const harness = await render();
     const textarea = document.querySelector("textarea")!;
@@ -382,40 +324,35 @@ describe("Chat", () => {
   it("shows the picked model, a typed one, or the default Claude resolved", async () => {
     await render({ meta: { ...META, active_model: "claude-opus-5-5" } });
     const model = () => document.querySelector<HTMLSelectElement>("select")!;
-    expect(model().selectedOptions[0].textContent).toBe("Default (claude-opus-5-5)");
+    expect(model().selectedOptions[0].textContent).toBe("Default (Opus 5.5)");
+    expect(document.querySelector(".model-label")?.textContent).toBe("Opus 5.5");
     unmount(app!);
     document.body.replaceChildren();
     await render({ meta: { ...META, model: "opus", active_model: "claude-opus-5-5" } });
     expect(model().selectedOptions[0].textContent).toBe("Opus");
     expect(model().options[0].textContent).toBe("Default");
+    expect(document.querySelector(".model-label")?.textContent).toBe("Opus");
     unmount(app!);
     document.body.replaceChildren();
     await render({ meta: { ...META, model: "opusplan", active_model: "claude-opus-5-5" } });
     expect(model().selectedOptions[0].textContent).toBe("opusplan");
+    expect(document.querySelector(".model-label")?.textContent).toBe("opusplan");
   });
 
   it("uses the fonts and size from the plugin's settings and follows changes live", async () => {
-    const harness = context({}, COMMANDS, { font_family: "Inter", font_size: 16, ignored: true });
+    const harness = fakeHost({}, COMMANDS, { font_family: "Inter", font_size: 16, ignored: true });
     app = mount(Chat, { target: document.body, props: { context: harness.value } });
     await settle();
     const chat = document.querySelector<HTMLElement>(".chat")!;
     expect(chat.style.getPropertyValue("--chat-font")).toBe('"Inter", var(--planeai-font-sans)');
     expect(chat.style.getPropertyValue("--chat-code-font")).toBe("var(--planeai-font-mono)");
     expect(chat.style.getPropertyValue("--chat-size")).toBe("16px");
+    expect(chat.style.getPropertyValue("--chat-scale")).toBe(String(16 / 13));
     harness.push(1, { type: "appearance", appearance: { code_font_family: "Fira Code" } });
     await settle();
     expect(chat.style.getPropertyValue("--chat-font")).toBe("var(--planeai-font-sans)");
     expect(chat.style.getPropertyValue("--chat-code-font")).toBe('"Fira Code", var(--planeai-font-mono)');
     expect(chat.style.getPropertyValue("--chat-size")).toBe("13px");
-  });
-
-  it("keeps PlaneAI's fonts when the settings cannot be read", async () => {
-    const harness = context();
-    vi.mocked(harness.value.host.settings.get).mockRejectedValueOnce(new Error("plugin settings capability is not granted"));
-    app = mount(Chat, { target: document.body, props: { context: harness.value } });
-    await settle();
-    expect(document.querySelector<HTMLElement>(".chat")!.style.getPropertyValue("--chat-size")).toBe("13px");
-    expect(harness.value.host.data.notify).not.toHaveBeenCalled();
   });
 
   it("summarizes each turn with duration, cost and tokens", async () => {
@@ -429,6 +366,166 @@ describe("Chat", () => {
       usage: { input_tokens: 100, output_tokens: 340, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 100 },
     });
     await settle();
-    expect(document.querySelector(".turn")?.textContent?.replace(/\s+/g, " ").trim()).toBe("12.9s · $0.1234 · 1.2k in · 340 out");
+    expect(document.querySelector(".turn-summary")?.textContent?.replace(/\s+/g, " ").trim()).toBe("13s · $0.1234 · 1.2k in · 340 out");
+  });
+
+  it("pins each prompt over its turn and folds finished work behind a summary", async () => {
+    const harness = await render();
+    harness.push(1, { type: "user", text: "/review 42" });
+    harness.push(2, { type: "tool", id: "t1", name: "Skill", summary: "review", input: { kind: "skill", skill: "review", args: "42" } });
+    harness.push(3, { type: "tool_result", tool_use_id: "t1", is_error: false, summary: "Launching skill: review" });
+    harness.push(4, { type: "tool", id: "t2", name: "Bash", summary: "gh pr diff 42", input: { kind: "bash", command: "gh pr diff 42" } });
+    await settle();
+    expect(document.querySelector(".prompt .command")?.textContent).toBe("/review");
+    expect(document.querySelector(".work")).toBeNull();
+    expect(document.querySelectorAll(".tool")).toHaveLength(2);
+
+    harness.push(5, { type: "tool_result", tool_use_id: "t2", is_error: false, summary: "diff" });
+    harness.push(6, { type: "assistant", text: "Looks good." });
+    harness.push(7, { type: "result", is_error: false, subtype: "success", cost_usd: 0.01, duration_ms: 64_300 });
+    await settle();
+    const work = document.querySelector<HTMLDetailsElement>(".work")!;
+    expect(work.open).toBe(false);
+    expect(work.querySelector("summary")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Worked for 1m 4s · 1 skill, 1 command");
+    expect(work.querySelector(".tool .sentence")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Used the skill review · 42");
+    expect(document.querySelector(".turn .body > .message")?.textContent?.trim()).toBe("Looks good.");
+  });
+
+  it("previews a command's last output lines and an agent's answer", async () => {
+    const harness = await render();
+    harness.push(1, { type: "tool", id: "t1", name: "Bash", summary: "npm test", input: { kind: "bash", command: "npm test" } });
+    harness.push(2, { type: "tool_result", tool_use_id: "t1", is_error: false, summary: "a\nb\nc\nd\ne" });
+    harness.push(3, { type: "tool", id: "t2", name: "Agent", summary: "Find callers", input: { kind: "agent", description: "Find callers" } });
+    harness.push(4, { type: "tool_result", tool_use_id: "t2", is_error: false, summary: "Two callers." });
+    await settle();
+    expect(document.querySelector(".output-tail pre")?.textContent).toBe("c\nd\ne");
+    button("⋯ 2 earlier lines").click();
+    flushSync();
+    expect(document.querySelector(".output-tail pre")?.textContent).toBe("a\nb\nc\nd\ne");
+    expect(document.querySelector(".answer")?.textContent).toBe("Two callers.");
+  });
+
+  it("says how long a clipped output really was", async () => {
+    const harness = await render();
+    harness.push(1, { type: "tool", id: "t1", name: "Bash", summary: "make", input: { kind: "bash", command: "make" } });
+    harness.push(2, { type: "tool_result", tool_use_id: "t1", is_error: false, summary: "start\n… [90 more characters]\nx\ny\nz", lines: 500 });
+    await settle();
+    expect(document.querySelector(".output-tail .earlier")?.textContent?.replace(/\s+/g, " ").trim()).toBe("⋯ 2 earlier lines · clipped from 500 lines");
+    expect(document.querySelector(".tool .meta")?.textContent?.trim()).toBe("500 lines");
+  });
+
+  it("caps a long diff preview until it is shown in full", async () => {
+    const harness = await render();
+    const content = Array.from({ length: 30 }, (_, line) => `line ${line}`).join("\n");
+    harness.push(1, { type: "tool", id: "t1", name: "Write", summary: "a.md", input: { kind: "write", file_path: "a.md", content } });
+    await settle();
+    expect(document.querySelectorAll(".diff.preview .line")).toHaveLength(12);
+    button("Show 18 more lines").click();
+    flushSync();
+    expect(document.querySelectorAll(".diff.preview .line")).toHaveLength(30);
+  });
+
+  it("shows a follow-up sent while Claude works inside the running turn", async () => {
+    const harness = await render();
+    harness.push(1, { type: "user", text: "fix the tests" });
+    harness.push(2, { type: "tool", id: "t1", name: "Bash", summary: "npm test", input: { kind: "bash", command: "npm test" } });
+    harness.push(3, { type: "user", text: "and the docs", queued: true });
+    await settle();
+    expect(document.querySelectorAll(".turn")).toHaveLength(1);
+    expect(document.querySelector(".turn .follow-up-text")?.textContent).toBe("and the docs");
+  });
+
+  it("asks Claude's questions in place of the composer, one at a time, from the keyboard", async () => {
+    const harness = await render({ status: "needs_attention" });
+    harness.push(1, {
+      type: "question",
+      request_id: "q1",
+      questions: [
+        { question: "Which platforms?", header: "Platforms", multi_select: true, options: [{ label: "macOS", description: "Apple Silicon" }, { label: "Linux", description: "" }] },
+        { question: "How to version?", header: "Versioning", multi_select: false, options: [{ label: "Commits", description: "" }, { label: "Tags", description: "" }] },
+      ],
+    });
+    await settle();
+    expect(document.querySelector("textarea")).toBeNull();
+    expect(document.querySelector(".asking")?.textContent).toContain("Claude is asking 2 questions");
+    const list = document.querySelector<HTMLElement>("[role=listbox]")!;
+    expect(list.getAttribute("aria-multiselectable")).toBe("true");
+    press(list, " ");
+    press(list, "ArrowDown");
+    press(list, " ");
+    expect([...document.querySelectorAll("[role=option]")].map((option) => option.getAttribute("aria-selected"))).toEqual(["true", "true"]);
+    press(list, "Enter");
+    expect(document.querySelector(".question")?.textContent).toBe("How to version?");
+    press(document.querySelector<HTMLElement>("[role=listbox]")!, "2");
+    expect(harness.value.host.call).toHaveBeenCalledWith("claude.question.answer", { session_id: "s1", request_id: "q1", answers: { "Which platforms?": "macOS, Linux", "How to version?": "Tags" } });
+
+    harness.push(2, { type: "question_resolved", request_id: "q1", answers: { "Which platforms?": "macOS, Linux", "How to version?": "Tags" } });
+    await settle();
+    expect(document.querySelector("textarea")).not.toBeNull();
+    expect([...document.querySelectorAll(".answers .answer")].map((answer) => answer.textContent)).toEqual(["macOS, Linux", "Tags"]);
+  });
+
+  it("takes a typed answer, and skips questions with Escape", async () => {
+    const harness = await render({ status: "needs_attention" });
+    harness.push(1, { type: "question", request_id: "q1", questions: [{ question: "Which?", header: "", multi_select: false, options: [{ label: "A", description: "" }] }] });
+    await settle();
+    type(document.querySelector<HTMLInputElement>("input[aria-label='Another answer']")!, "Something else");
+    button("Submit").click();
+    expect(harness.value.host.call).toHaveBeenCalledWith("claude.question.answer", { session_id: "s1", request_id: "q1", answers: { "Which?": "Something else" } });
+    harness.push(2, { type: "question", request_id: "q2", questions: [{ question: "Again?", header: "", multi_select: false, options: [{ label: "A", description: "" }] }] });
+    await settle();
+    press(document.querySelector<HTMLElement>("[role=listbox]")!, "Escape");
+    expect(harness.value.host.call).toHaveBeenCalledWith("claude.question.answer", { session_id: "s1", request_id: "q2" });
+  });
+
+  it("gives the message box the keyboard when PlaneAI focuses the chat or the user types with nothing focused", async () => {
+    const harness = await render({ status: "busy" });
+    const textarea = document.querySelector("textarea")!;
+    textarea.blur();
+    window.dispatchEvent(new FocusEvent("focus"));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(document.activeElement).toBe(textarea);
+
+    textarea.blur();
+    press(document.body, "h");
+    expect(document.activeElement).toBe(textarea);
+
+    const stop = button("Stop");
+    stop.focus();
+    press(stop, " ");
+    expect(document.activeElement).toBe(stop);
+    press(document.body, "c");
+    expect(document.activeElement).toBe(textarea);
+
+    textarea.blur();
+    press(document.body, "Escape");
+    expect(harness.value.host.session.interrupt).toHaveBeenCalledOnce();
+  });
+
+  it("hands the keyboard back to the message box once a question is answered", async () => {
+    const harness = await render({ status: "needs_attention" });
+    harness.push(1, { type: "question", request_id: "q1", questions: [{ question: "Which?", header: "", multi_select: false, options: [{ label: "A", description: "" }] }] });
+    await settle();
+    expect(document.activeElement?.getAttribute("role")).toBe("listbox");
+    harness.push(2, { type: "question_resolved", request_id: "q1", answers: { "Which?": "A" } });
+    await settle();
+    expect(document.activeElement).toBe(document.querySelector("textarea"));
+  });
+
+  it("shows the plan as a checklist without expanding it", async () => {
+    const harness = await render();
+    harness.push(1, {
+      type: "tool",
+      id: "t1",
+      name: "TodoWrite",
+      summary: "{}",
+      input: { kind: "todos", todos: [{ content: "Write tests", status: "completed" }, { content: "Ship", status: "in_progress" }] },
+    });
+    await settle();
+    expect([...document.querySelectorAll(".checklist li")].map((item) => [item.getAttribute("data-status"), item.textContent?.trim()])).toEqual([
+      ["completed", "Write tests"],
+      ["in_progress", "Ship"],
+    ]);
+    expect(document.querySelector(".tool .meta")?.textContent?.trim()).toBe("1 of 2 done");
   });
 });

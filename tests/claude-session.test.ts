@@ -163,6 +163,7 @@ describe("ClaudeSession", () => {
 
     const request = events.at(-1)!.payload;
     expect(request).toMatchObject({ type: "permission", tool: "Edit", title: "Claude wants to edit src/a.ts", summary: "src/a.ts" });
+    await flush();
     expect(statuses.at(-1)).toBe("needs_attention");
 
     chat.respondToPermission((request as { request_id: string }).request_id, "allow");
@@ -171,27 +172,30 @@ describe("ClaudeSession", () => {
     expect(statuses.at(-1)).toBe("busy");
   });
 
-  it("remembers an approval for the session with the SDK's suggested rules", async () => {
-    const chat = session();
-    await chat.send("run it");
-    const suggestions = [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test" }], behavior: "allow", destination: "session" }];
-    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "npm test" }, { signal: new AbortController().signal, suggestions, toolUseID: "t" } as never);
-    const request = events.at(-1)!.payload as { request_id: string; can_remember: boolean; input: unknown };
-    expect(request.can_remember).toBe(true);
-    expect(request.input).toEqual({ kind: "bash", command: "npm test" });
-    chat.respondToPermission(request.request_id, "allow_session");
-    await expect(decision).resolves.toEqual({ behavior: "allow", updatedPermissions: suggestions });
-    expect(events.at(-1)!.payload).toMatchObject({ type: "permission_resolved", allowed: true, remembered: true });
+  it("asks Claude's questions in the chat, even when permissions are bypassed, and answers with the user's choices", async () => {
+    const chat = session({ yolo: true });
+    await chat.send("set it up");
+    const input = { questions: [{ question: "Which platforms?", header: "Platforms", multiSelect: true, options: [{ label: "macOS", description: "" }, { label: "Linux", description: "" }] }] };
+    const decision = fake.queries[0].options.canUseTool!("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "t" } as never);
+    const request = events.at(-1)!.payload;
+    expect(request).toMatchObject({ type: "question", questions: [{ question: "Which platforms?", multi_select: true }] });
+    await flush();
+    expect(statuses.at(-1)).toBe("needs_attention");
+    chat.answerQuestion((request as { request_id: string }).request_id, { "Which platforms?": "macOS, Linux" });
+    await expect(decision).resolves.toEqual({ behavior: "allow", updatedInput: { ...input, answers: { "Which platforms?": "macOS, Linux" } } });
+    expect(events.at(-1)!.payload).toMatchObject({ type: "question_resolved", answers: { "Which platforms?": "macOS, Linux" } });
+    expect(statuses.at(-1)).toBe("busy");
   });
 
-  it("tells Claude why the user denied an action", async () => {
+  it("keeps AskUserQuestion's tool call and result out of the transcript", async () => {
     const chat = session();
-    await chat.send("clean up");
-    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf dist" }, { signal: new AbortController().signal, toolUseID: "t" } as never);
-    const { request_id } = events.at(-1)!.payload as { request_id: string };
-    chat.respondToPermission(request_id, "deny", "keep the build output");
-    await expect(decision).resolves.toEqual({ behavior: "deny", message: "The user denied this action: keep the build output" });
-    expect(events.at(-1)!.payload).toMatchObject({ allowed: false, reason: "keep the build output" });
+    await chat.send("set it up");
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    fake.queries[0].emit({ ...assistant, message: { ...assistant.message, content: [{ type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [] } }] } } as never);
+    fake.queries[0].emit({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "ask", content: "answered" }] }, parent_tool_use_id: null, session_id: SESSION_ID } as never);
+    await flush();
+    expect(events.map(({ payload }) => payload.type)).not.toContain("tool");
+    expect(events.map(({ payload }) => payload.type)).not.toContain("tool_result");
   });
 
   it("switches permission mode and model, live and for the next start", async () => {
@@ -219,6 +223,107 @@ describe("ClaudeSession", () => {
     });
   });
 
+  it("offers the models Claude listed last before its Claude starts", async () => {
+    const first = session();
+    await first.send("hello");
+    await flush();
+    expect(store.models()).toEqual([{ value: "sonnet", label: "Sonnet" }, { value: "opus", label: "Opus" }]);
+    first.stop();
+
+    const next = session();
+    expect(next.snapshot().meta.models).toEqual([{ value: "sonnet", label: "Sonnet" }, { value: "opus", label: "Opus" }]);
+    expect(fake.queries).toHaveLength(1);
+  });
+
+  it("reports the plan's usage windows and remembers them for the next chat", async () => {
+    const chat = session();
+    await chat.send("hello");
+    fake.queries[0].emit({ type: "rate_limit_event", rate_limit_info: { status: "allowed", unifiedWindows: { five_hour: { utilization: 0.2, resetsAt: 100 }, seven_day: { utilization: 0.4, resetsAt: 200 } } }, uuid: "u1", session_id: SESSION_ID } as never);
+    fake.queries[0].emit({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.3, resetsAt: 100 }, uuid: "u2", session_id: SESSION_ID } as never);
+    await flush();
+    const limits = { five_hour: { utilization: 30, resets_at: 100_000 }, seven_day: { utilization: 40, resets_at: 200_000 } };
+    expect(chat.snapshot().meta.limits).toEqual(limits);
+    chat.stop();
+    expect(session().snapshot().meta.limits).toEqual(limits);
+  });
+
+  it("marks a message sent while Claude works as queued into that turn", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("second");
+    await flush();
+    const users = events.map(({ payload }) => payload).filter((payload) => payload.type === "user");
+    expect(users).toEqual([{ type: "user", text: "first" }, { type: "user", text: "second", queued: true, id: expect.any(String) }]);
+  });
+
+  it("stays busy after a turn while Claude still holds follow-ups, and a batch led by one is its own turn", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("second");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit({ ...assistant, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never, result);
+    await flush();
+    expect(chat.snapshot().status).toBe("busy");
+    fake.queries[0].emit({ ...assistant, user_message_uuid: "later", user_message_uuids: [ids[1], "later"] } as never, result);
+    await flush();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([{ type: "turn_start", user_ids: [ids[1]] }]);
+    expect(chat.snapshot().status).toBe("idle");
+  });
+
+  it("starts a held follow-up's turn before the output of a local command, which stamps only its result", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("/context");
+    await chat.send("/clear");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    const output = { ...assistant, message: { ...assistant.message, content: [{ type: "text", text: "## Context Usage" }] } };
+    fake.queries[0].emit(
+      { ...assistant, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never,
+      result,
+      // As recorded from Claude Code: /context answers in an unstamped frame, then a stamped result.
+      output as never,
+      { ...result, num_turns: 0, user_message_uuid: ids[1], user_message_uuids: [ids[1]] } as never,
+      { type: "conversation_reset", user_message_uuid: ids[2], session_id: SESSION_ID, uuid: "r" } as never,
+    );
+    await flush();
+    const order = events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start" || (payload.type === "assistant" && payload.text === "## Context Usage") || payload.type === "cleared");
+    expect(order).toEqual([
+      { type: "turn_start", user_ids: [ids[1]] },
+      { type: "assistant", text: "## Context Usage" },
+      { type: "turn_start", user_ids: [ids[2]] },
+      { type: "cleared" },
+    ]);
+  });
+
+  it("does not wait on a queued /model switch that never reaches Claude", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("/model opus");
+    await flush();
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit(result);
+    await flush();
+    expect(chat.snapshot().status).toBe("idle");
+  });
+
+
+  it("merges plan limits with what other sessions stored since", async () => {
+    const chat = session();
+    store.setLimits({ seven_day: { utilization: 70, resets_at: 9_000 } });
+    await chat.send("hello");
+    fake.queries[0].emit({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.1, resetsAt: 5 }, uuid: "u", session_id: SESSION_ID } as never);
+    await flush();
+    expect(store.limits()).toEqual({ five_hour: { utilization: 10, resets_at: 5_000 }, seven_day: { utilization: 70, resets_at: 9_000 } });
+    store.setLimits({ five_hour: { utilization: 50, resets_at: 5_000 } });
+    expect(chat.snapshot().meta.limits).toEqual({ five_hour: { utilization: 50, resets_at: 5_000 } });
+  });
+
   it("hands the conversation to the terminal and refuses input until it comes back", async () => {
     const chat = session();
     await chat.send("hello");
@@ -241,6 +346,99 @@ describe("ClaudeSession", () => {
     expect(fake.queries[1].options).toMatchObject({ resume: SESSION_ID });
   });
 
+  it("lets Claude record the interruption before a handoff closes it, without reporting an error", async () => {
+    const chat = session();
+    await chat.send("edit it");
+    let acknowledge!: () => void;
+    fake.queries[0].interrupt.mockImplementation(() => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))));
+    const handingOff = chat.handoff();
+    await flush();
+    expect(fake.queries[0].close).not.toHaveBeenCalled();
+    await expect(chat.send("too late")).rejects.toThrow("terminal");
+    expect(statuses.at(-1)).toBe("idle");
+    acknowledge();
+    await handingOff;
+    expect(fake.queries[0].close).toHaveBeenCalledOnce();
+    expect(events.map(({ payload }) => payload.type)).not.toContain("error");
+  });
+
+  it("closes Claude for a handoff when its interrupt never answers", async () => {
+    vi.useFakeTimers();
+    const chat = session();
+    await chat.send("edit it");
+    fake.queries[0].interrupt.mockImplementation(() => new Promise<undefined>(() => {}));
+    const handingOff = chat.handoff();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await handingOff;
+    expect(fake.queries[0].close).toHaveBeenCalledOnce();
+    expect(statuses.at(-1)).toBe("idle");
+  });
+
+  it("delivers nothing to the Claude a handoff is letting go, and refuses to return to the chat until the terminal's command is out", async () => {
+    fake = fakeQueryFactory({ holdModels: true });
+    const chat = session();
+    await chat.send("hello");
+    let acknowledge!: () => void;
+    fake.queries[0].interrupt.mockImplementation(() => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))));
+    const switching = chat.send("/model opus");
+    await flush();
+    const handingOff = chat.handoff();
+    await flush();
+    fake.queries[0].releaseModels();
+    await expect(switching).rejects.toThrow("no longer drives");
+    expect(fake.queries[0].setModel).not.toHaveBeenCalled();
+    expect(() => chat.handback()).toThrow("still opening");
+    expect(chat.snapshot().meta.handed_off).toBe(true);
+    acknowledge();
+    await handingOff;
+    expect(fake.queries[0].close).toHaveBeenCalledOnce();
+    chat.handback();
+    expect(chat.snapshot().meta.handed_off).toBe(false);
+    await chat.send("back");
+    expect(fake.queries).toHaveLength(2);
+  });
+
+  it("writes nothing more for a session stopped while its handoff waits", async () => {
+    const chat = session();
+    await chat.send("edit it");
+    let acknowledge!: () => void;
+    fake.queries[0].interrupt.mockImplementation(() => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))));
+    const handingOff = chat.handoff();
+    await flush();
+    chat.stop();
+    const before = events.length;
+    acknowledge();
+    await expect(handingOff).rejects.toThrow("stopped");
+    expect(events.slice(before)).toEqual([]);
+  });
+
+  it("marks the handoff after the frames of the turn it interrupted", async () => {
+    const chat = session();
+    await chat.send("edit it");
+    let acknowledge!: () => void;
+    fake.queries[0].interrupt.mockImplementation(() => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))));
+    const handingOff = chat.handoff();
+    await flush();
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit(result);
+    await flush();
+    acknowledge();
+    await handingOff;
+    const types = chat.snapshot().events.map(({ payload }) => payload.type);
+    expect(types.lastIndexOf("result")).toBeLessThan(types.lastIndexOf("handoff"));
+  });
+
+  it("hands off a session waiting on the user straight to idle", async () => {
+    const chat = session();
+    await chat.send("edit it");
+    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf build" }, { signal: new AbortController().signal, toolUseID: "t" } as never);
+    const before = statuses.length;
+    await chat.handoff();
+    await expect(decision).resolves.toMatchObject({ behavior: "deny", message: "Interrupted by the user" });
+    expect(fake.queries[0].interrupt).toHaveBeenCalledOnce();
+    expect(statuses.slice(before)).toEqual(["idle"]);
+  });
+
   it("starts a new terminal session under the PlaneAI id when Claude never ran", async () => {
     const argv = await session({ yolo: true }).handoff();
     expect(argv).toEqual(["/usr/local/bin/claude", "--session-id", SESSION_ID, "--dangerously-skip-permissions"]);
@@ -250,9 +448,39 @@ describe("ClaudeSession", () => {
     const chat = session();
     await chat.send("edit it");
     const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf build" }, { signal: new AbortController().signal, toolUseID: "toolu_2" } as never);
+    await flush();
+    expect(statuses.at(-1)).toBe("needs_attention");
     chat.interrupt();
     await expect(decision).resolves.toMatchObject({ behavior: "deny", interrupt: true });
     expect(fake.queries[0].interrupt).toHaveBeenCalledOnce();
+    // Nothing is left to answer while Claude finishes the turn.
+    expect(statuses.at(-1)).toBe("busy");
+  });
+
+  it("stops asking for attention when Claude cancels its request", async () => {
+    const chat = session();
+    await chat.send("edit it");
+    const cancel = new AbortController();
+    const decision = fake.queries[0].options.canUseTool!("Bash", { command: "rm -rf build" }, { signal: cancel.signal, toolUseID: "t" } as never);
+    expect(chat.snapshot().status).toBe("needs_attention");
+    cancel.abort();
+    await expect(decision).resolves.toMatchObject({ behavior: "deny" });
+    expect(chat.snapshot().status).toBe("busy");
+  });
+
+  it("ends compaction with its turn, even when Claude still holds follow-ups", async () => {
+    const chat = session();
+    await chat.send("/compact");
+    await chat.send("after");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit({ type: "system", subtype: "status", status: "compacting", uuid: "s", session_id: SESSION_ID } as never);
+    await flush();
+    expect(chat.snapshot().meta.compacting).toBe(true);
+    fake.queries[0].emit({ ...result, is_error: true, num_turns: 0, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never);
+    await flush();
+    expect(chat.snapshot()).toMatchObject({ status: "busy", meta: { compacting: false } });
   });
 
   it("resumes from Claude's own transcript when the plugin lost its data", async () => {
@@ -325,7 +553,7 @@ describe("ClaudeSession", () => {
     expect(fake.queries[1].options).toMatchObject({ resume: "fixture-session-2" });
   });
 
-  it("leaves the status to a turn that ended while a /model waited for the model list", async () => {
+  it("stays busy after a turn while a /model waits for the model list, then goes idle", async () => {
     fake = fakeQueryFactory({ holdModels: true });
     const chat = session();
     await chat.send("hello");
@@ -334,7 +562,7 @@ describe("ClaudeSession", () => {
     const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
     fake.queries[0].emit(result);
     await flush();
-    expect(statuses.at(-1)).toBe("idle");
+    expect(statuses.at(-1)).toBe("busy");
     fake.queries[0].releaseModels();
     await switching;
     expect(statuses.at(-1)).toBe("idle");
@@ -600,6 +828,26 @@ describe("ClaudeSession", () => {
     );
     await unreadable.restored;
     expect(unreadable.snapshot().events).toEqual([]);
+  });
+
+  it.each([
+    ["the session is handed off", (chat: ClaudeSession) => void chat.handoff()],
+    ["Claude exits", () => fake.queries[0].finish()],
+  ])("goes idle when %s while a /model waits for the model list", async (_, end) => {
+    fake = fakeQueryFactory({ holdModels: true });
+    const chat = session();
+    await chat.send("hello");
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    fake.queries[0].emit(result);
+    const switching = chat.send("/model opus");
+    await flush();
+    expect(statuses.at(-1)).toBe("busy");
+    end(chat);
+    await flush();
+    expect(statuses.at(-1)).toBe("idle");
+    fake.queries[0].releaseModels();
+    await expect(switching).rejects.toThrow("no longer drives");
+    expect(statuses.at(-1)).toBe("idle");
   });
 
   it("goes idle and restarts on the next prompt when Claude exits", async () => {

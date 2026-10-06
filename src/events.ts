@@ -1,11 +1,26 @@
 import type { SDKMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Appearance } from "./appearance";
 
-/** What the chat needs to render a tool call; anything else falls back to the summary. */
+/** What the chat needs to render a tool call, one kind per way of showing it; a tool without one shows its summary. */
 export type ToolInput =
   | { kind: "bash"; command: string; description?: string }
+  | { kind: "read"; file_path: string }
   | { kind: "edit"; file_path: string; edits: { old_string: string; new_string: string }[]; hidden_edits?: number }
-  | { kind: "write"; file_path: string; content: string };
+  | { kind: "write"; file_path: string; content: string }
+  | { kind: "grep"; pattern: string; path?: string }
+  | { kind: "glob"; pattern: string; path?: string }
+  | { kind: "skill"; skill: string; args?: string }
+  | { kind: "todos"; todos: Todo[] }
+  | { kind: "agent"; description: string }
+  | { kind: "fetch"; url: string }
+  | { kind: "web_search"; query: string }
+  /** `first` and `count` are absent when a saved chat kept too little of the call. */
+  | { kind: "questions"; first?: string; count?: number };
+
+export interface Todo {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
 
 export interface TokenUsage {
   input_tokens: number;
@@ -21,6 +36,66 @@ export type PermissionDecision = "allow" | "allow_session" | "deny";
 export interface ModelOption {
   value: string;
   label: string;
+}
+
+/** One plan usage window: the share used, 0 to 100, and when it resets, in epoch ms. */
+export interface LimitWindow {
+  utilization: number;
+  resets_at: number;
+}
+
+/** The claude.ai plan's usage windows; absent for API key, Bedrock and Vertex sessions. */
+export interface PlanLimits {
+  five_hour?: LimitWindow;
+  seven_day?: LimitWindow;
+}
+
+const LIMIT_WINDOWS = ["five_hour", "seven_day"] as const;
+
+function isLimitWindowName(name: unknown): name is (typeof LIMIT_WINDOWS)[number] {
+  return LIMIT_WINDOWS.includes(name as (typeof LIMIT_WINDOWS)[number]);
+}
+
+/** A window as Claude Code reports it: utilization as a fraction, reset in epoch seconds. */
+function reportedWindow(utilization: unknown, resetsAt: unknown): LimitWindow | undefined {
+  if (typeof utilization !== "number" || typeof resetsAt !== "number" || !Number.isFinite(utilization) || !Number.isFinite(resetsAt)) return undefined;
+  return { utilization: Math.min(100, Math.max(0, utilization * 100)), resets_at: resetsAt * 1000 };
+}
+
+/** Plan limits as stored by `TranscriptStore`, keeping only well-formed windows. */
+export function storedPlanLimits(value: unknown): PlanLimits | null {
+  if (!value || typeof value !== "object") return null;
+  const limits: PlanLimits = {};
+  for (const name of LIMIT_WINDOWS) {
+    const window = (value as Record<string, unknown>)[name] as Record<string, unknown> | undefined;
+    if (window && typeof window.utilization === "number" && typeof window.resets_at === "number") limits[name] = { utilization: window.utilization, resets_at: window.resets_at };
+  }
+  return Object.keys(limits).length > 0 ? limits : null;
+}
+
+/**
+ * The windows a `rate_limit_event` reports. Claude Code sends every window in `unifiedWindows`
+ * (utilization as a fraction, reset in epoch seconds), which the SDK does not type yet; the typed
+ * fields describe only the window that set the status, and are the fallback.
+ */
+export function planLimits(info: unknown): PlanLimits | null {
+  if (!info || typeof info !== "object") return null;
+  const fields = info as Record<string, unknown>;
+  const limits: PlanLimits = {};
+  const unified = fields.unifiedWindows;
+  if (unified && typeof unified === "object") {
+    for (const name of LIMIT_WINDOWS) {
+      const window = (unified as Record<string, unknown>)[name] as Record<string, unknown> | undefined;
+      const parsed = window && typeof window === "object" ? reportedWindow(window.utilization, window.resetsAt) : undefined;
+      if (parsed) limits[name] = parsed;
+    }
+  }
+  const type = fields.rateLimitType;
+  if (isLimitWindowName(type) && !limits[type]) {
+    const parsed = reportedWindow(fields.utilization, fields.resetsAt);
+    if (parsed) limits[type] = parsed;
+  }
+  return Object.keys(limits).length > 0 ? limits : null;
 }
 
 export interface ContextUsage {
@@ -44,12 +119,46 @@ export interface SessionMeta {
   context: ContextUsage | null;
   /** Claude is summarizing the conversation, from /compact or automatically. */
   compacting: boolean;
+  /** The session's worktree, so the chat can show paths relative to it. */
+  cwd: string | null;
+  /** The plan's usage windows Claude Code last reported, shared by every session. */
+  limits: PlanLimits | null;
 }
 
 export interface Compaction {
   trigger: "manual" | "auto";
   pre_tokens: number;
   post_tokens?: number;
+}
+
+/** A question Claude asks with AskUserQuestion; the chat adds a free-text "Other" answer itself. */
+export interface Question {
+  question: string;
+  /** A short chip label, at most about 12 characters. */
+  header: string;
+  options: { label: string; description: string; preview?: string }[];
+  multi_select: boolean;
+}
+
+/** AskUserQuestion's input as the chat renders it, or `null` when it is not one it can ask. */
+export function questionsOf(input: unknown): Question[] | null {
+  const raw = input && typeof input === "object" ? (input as { questions?: unknown }).questions : undefined;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const questions = raw.map((item): Question | null => {
+    const fields = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+    const options = Array.isArray(fields.options) ? fields.options : [];
+    if (typeof fields.question !== "string" || options.length === 0) return null;
+    return {
+      question: clip(fields.question, 1_000),
+      header: clip(text(fields.header), 40),
+      multi_select: fields.multiSelect === true,
+      options: options.map((option) => {
+        const { label, description, preview } = option && typeof option === "object" ? (option as Record<string, unknown>) : {};
+        return { label: clip(text(label), 200), description: clip(text(description), 500), ...(typeof preview === "string" && preview ? { preview: clip(preview, 2_000) } : {}) };
+      }),
+    };
+  });
+  return questions.every((question) => question !== null) ? (questions as Question[]) : null;
 }
 
 /** A slash command as the chat's menu lists it. */
@@ -66,13 +175,24 @@ export interface CommandOption {
  * everything else is part of the transcript.
  */
 export type ChatEvent =
-  | { type: "user"; text: string }
+  /** `queued`: sent while a turn ran; Claude Code folds it into that turn unless a `turn_start` names its `id`. */
+  | { type: "user"; text: string; queued?: boolean; id?: string }
+  /**
+   * Claude started a turn for these queued follow-ups, in the order it took them, rather than folding them into the turn that was running.
+   * One naming the current turn's prompt first adds the others to that turn.
+   */
+  | { type: "turn_start"; user_ids: string[] }
   | { type: "delta"; text: string }
   | { type: "assistant"; text: string }
   | { type: "tool"; id: string; name: string; summary: string; input?: ToolInput }
-  | { type: "tool_result"; tool_use_id: string; is_error: boolean; summary: string }
+  /** `lines`: the output's line count, when `summary` had to be clipped. */
+  | { type: "tool_result"; tool_use_id: string; is_error: boolean; summary: string; lines?: number }
   | { type: "permission"; request_id: string; tool: string; title: string; summary: string; input?: ToolInput; can_remember: boolean }
   | { type: "permission_resolved"; request_id: string; allowed: boolean; remembered?: boolean; reason?: string }
+  /** Claude asks the user; answering resolves the AskUserQuestion call. */
+  | { type: "question"; request_id: string; questions: Question[] }
+  /** `answers` maps each question to its answer, multi-select answers comma-separated; absent when the user skipped. */
+  | { type: "question_resolved"; request_id: string; answers?: Record<string, string> }
   | { type: "result"; is_error: boolean; subtype: string; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { type: "error"; message: string }
   | { type: "handoff"; in_terminal: boolean }
@@ -96,10 +216,12 @@ export const MAX_TEXT_CHARS = 8_000;
 const MAX_INPUT_CHARS = 6_000;
 
 export function clip(text: string, limit = MAX_TEXT_CHARS): string {
-  return text.length <= limit ? text : `${text.slice(0, limit)}\n… [${text.length - limit} more characters]`;
+  if (text.length <= limit) return text;
+  const cut = safeCut(text, limit);
+  return `${text.slice(0, cut)}\n… [${text.length - cut} more characters]`;
 }
 
-const SUMMARY_FIELDS = ["command", "file_path", "path", "pattern", "url", "query", "description"];
+const SUMMARY_FIELDS = ["command", "file_path", "pattern", "path", "url", "query", "description", "skill"];
 
 /** One line describing what a tool call does, for compact rendering. */
 export function summarizeInput(input: unknown): string {
@@ -128,19 +250,106 @@ export function toolInput(name: string, input: unknown): ToolInput | undefined {
         ...(typeof fields.description === "string" ? { description: clip(fields.description, 200) } : {}),
       };
     case "Edit":
-      return edit(text(fields.file_path), [{ old_string: text(fields.old_string), new_string: text(fields.new_string) }]);
+      return edit(clip(text(fields.file_path), 500), [{ old_string: text(fields.old_string), new_string: text(fields.new_string) }]);
     case "MultiEdit": {
       const edits = Array.isArray(fields.edits) ? (fields.edits as Record<string, unknown>[]) : [];
       return edit(
-        text(fields.file_path),
+        clip(text(fields.file_path), 500),
         edits.map((entry) => ({ old_string: text(entry?.old_string), new_string: text(entry?.new_string) })),
       );
     }
+    case "Read":
+      return { kind: "read", file_path: clip(text(fields.file_path), 500) };
+    case "Grep":
+    case "Glob":
+      return {
+        kind: name === "Grep" ? "grep" : "glob",
+        pattern: clip(text(fields.pattern), 500),
+        ...(typeof fields.path === "string" && fields.path ? { path: clip(fields.path, 500) } : {}),
+      };
     case "Write":
-      return { kind: "write", file_path: text(fields.file_path), content: clip(text(fields.content), MAX_INPUT_CHARS) };
+      return { kind: "write", file_path: clip(text(fields.file_path), 500), content: clip(text(fields.content), MAX_INPUT_CHARS) };
+    case "Skill":
+      return {
+        kind: "skill",
+        skill: clip(text(fields.skill), 200),
+        ...(typeof fields.args === "string" && fields.args ? { args: clip(fields.args, 1_000) } : {}),
+      };
+    case "TodoWrite":
+      return { kind: "todos", todos: todos(fields.todos) };
+    case "Agent":
+    case "Task":
+      return { kind: "agent", description: clip(text(fields.description), 500) };
+    case "WebFetch":
+      return { kind: "fetch", url: clip(text(fields.url), 500) };
+    case "WebSearch":
+      return { kind: "web_search", query: clip(text(fields.query), 500) };
+    case "AskUserQuestion": {
+      // Lenient, unlike the prompt: the step only names the first question.
+      const asked = Array.isArray(fields.questions) ? fields.questions.filter((question) => typeof question?.question === "string") : [];
+      return { kind: "questions", ...(asked.length ? { first: clip(asked[0].question, 1_000) } : {}), count: asked.length };
+    }
     default:
       return undefined;
   }
+}
+
+/** Rebuilds the input of a tool that chats saved by 0.2.0 and earlier kept only as its summary; Grep and Glob kept the path when a call had one. */
+const LEGACY_SUMMARY_INPUTS = new Map<string, (summary: string) => ToolInput>([
+  ["Read", (file_path) => ({ kind: "read", file_path })],
+  ["Grep", (pattern) => ({ kind: "grep", pattern })],
+  ["Glob", (pattern) => ({ kind: "glob", pattern })],
+  ["Agent", (description) => ({ kind: "agent", description })],
+  ["Task", (description) => ({ kind: "agent", description })],
+  ["WebFetch", (url) => ({ kind: "fetch", url })],
+  ["WebSearch", (query) => ({ kind: "web_search", query })],
+]);
+
+/** The first `field` string in JSON clipped too early to parse. */
+function clippedField(json: string, field: string): string | undefined {
+  const match = new RegExp(`"${field}":("(?:[^"\\\\]|\\\\.)*")`).exec(json);
+  return match ? JSON.parse(match[1]) : undefined;
+}
+
+/** A stored tool call's input as this version renders it, from what earlier versions kept. */
+function storedToolInput(name: string, summary: string, input: ToolInput | { kind: "search"; pattern: string; path?: string } | undefined): ToolInput | undefined {
+  // Unreleased builds before Grep and Glob had kinds of their own.
+  if (input?.kind === "search") return { ...input, kind: name === "Glob" ? "glob" : "grep" };
+  if (input) return input;
+  // Taken as saved: the summary is already clipped, and clipping it again would miscount what was cut.
+  const legacy = LEGACY_SUMMARY_INPUTS.get(name);
+  if (legacy) return legacy(summary);
+  // 0.2.0 and earlier kept other tools' input as JSON, clipped to 500 characters.
+  try {
+    return toolInput(name, JSON.parse(summary));
+  } catch {
+    const skill = name === "Skill" ? clippedField(summary, "skill") : undefined;
+    if (skill) return { kind: "skill", skill };
+    if (name === "TodoWrite") return { kind: "todos", todos: [] };
+    if (name !== "AskUserQuestion") return undefined;
+    const first = clippedField(summary, "question");
+    return { kind: "questions", ...(first ? { first } : {}) };
+  }
+}
+
+/** A stored event as this version emits it, so the chat renders saved chats like live ones. */
+export function upgradeStored(event: ChatEvent): ChatEvent {
+  if (event.type !== "tool" && event.type !== "permission") return event;
+  const input = storedToolInput(event.type === "tool" ? event.name : event.tool, event.summary, event.input);
+  return input && input !== event.input ? { ...event, input } : event;
+}
+
+const TODO_STATUSES = new Set<Todo["status"]>(["pending", "in_progress", "completed"]);
+const MAX_TODOS = 50;
+
+function todos(value: unknown): Todo[] {
+  if (!Array.isArray(value)) return [];
+  const all = value.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object");
+  const budget = Math.floor(MAX_INPUT_CHARS / Math.max(1, Math.min(all.length, MAX_TODOS)));
+  return all.slice(0, MAX_TODOS).map((entry) => ({
+    content: clip(text(entry.content), budget),
+    status: TODO_STATUSES.has(entry.status as Todo["status"]) ? (entry.status as Todo["status"]) : "pending",
+  }));
 }
 
 /** Edits shown in full; the rest of a large MultiEdit is summarized so the event fits one frame. */
@@ -167,6 +376,37 @@ function toolResultText(content: unknown): string {
       .join("\n");
   }
   return "";
+}
+
+const MAX_RESULT_CHARS = 6_000;
+
+/** Lines of output, not counting trailing newlines. */
+export function lineCount(text: string): number {
+  const trimmed = text.replace(/\n+$/, "");
+  return trimmed ? trimmed.split("\n").length : 0;
+}
+
+/** Moves a cut off the middle of a surrogate pair. */
+function safeCut(text: string, at: number): number {
+  const code = text.charCodeAt(at - 1);
+  return code >= 0xd800 && code <= 0xdbff ? at - 1 : at;
+}
+
+/** Output keeps its start and its end, where a command's outcome usually is, each cut on a line boundary near the cut. */
+function toolResult(toolUseId: string, isError: boolean, output: string): ChatEvent {
+  if (output.length <= MAX_RESULT_CHARS) return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary: output };
+  const headCut = MAX_RESULT_CHARS / 3;
+  const tailCut = output.length - (MAX_RESULT_CHARS * 2) / 3;
+  // A far newline would waste the budget around one very long line.
+  const reach = MAX_RESULT_CHARS / 10;
+  const lastHeadNewline = output.lastIndexOf("\n", headCut);
+  const headEnd = lastHeadNewline > headCut - reach ? lastHeadNewline : safeCut(output, headCut);
+  const firstTailNewline = output.indexOf("\n", tailCut);
+  const tailStart = firstTailNewline >= 0 && firstTailNewline < tailCut + reach && firstTailNewline < output.length - 1 ? firstTailNewline + 1 : safeCut(output, tailCut);
+  const head = output.slice(0, headEnd);
+  const tail = output.slice(tailStart);
+  const summary = `${head}\n… [${tailStart - headEnd} more characters]\n${tail}`;
+  return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary, lines: lineCount(output) };
 }
 
 function usage(raw: unknown): TokenUsage | undefined {
@@ -264,7 +504,7 @@ export function translate(message: SDKMessage): ChatEvent[] {
       if (!Array.isArray(content)) return [];
       return content.flatMap((block): ChatEvent[] =>
         block.type === "tool_result"
-          ? [{ type: "tool_result", tool_use_id: block.tool_use_id, is_error: block.is_error === true, summary: clip(toolResultText(block.content), 6_000) }]
+          ? [toolResult(block.tool_use_id, block.is_error === true, toolResultText(block.content))]
           : [],
       );
     }

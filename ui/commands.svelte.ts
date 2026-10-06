@@ -56,3 +56,9 @@ export function matchCommands(commands: CommandOption[], query: string): Command
     .sort((a, b) => a.rank - b.rank || a.command.name.localeCompare(b.command.name))
     .map(({ command }) => command);
 }
+
+/** `/name args` as typed by the user. */
+export function slashCommand(text: string): { name: string; args: string } | null {
+  const match = /^\/([\w:.-]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  return match ? { name: match[1], args: match[2]?.trim() ?? "" } : null;
+}

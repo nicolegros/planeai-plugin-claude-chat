@@ -7,6 +7,9 @@ It has its own worktree, branch, linked task, sidebar status and lifecycle.
 Only its primary tab differs: PlaneAI mounts this plugin's chat UI where the terminal would be.
 
 The chat renders markdown, tool calls with diffs, and permission prompts that can be allowed once, for the session, or denied with a reason.
+When Claude asks questions, they take the message box's place, one at a time: pick with the arrow keys or a number, type another answer, or press Esc to skip; this works in every permission mode, including Bypass.
+Each prompt starts a turn and stays pinned while you read its answer; once the turn ends, the steps Claude took fold behind a "Worked for 1m 4s · 3 commands, 2 edits" summary, each step reading as one line.
+Edits and new files show their changed lines, commands their last lines of output, and agents their answer, without expanding the step.
 Slash commands and skills run as in the terminal, with a `/` menu, and the chat's fonts and size are set in PlaneAI's preferences.
 
 ## Requirements
@@ -31,10 +34,12 @@ Confirm your use is covered before relying on subscription login for this plugin
 - **Status.** The plugin reports `busy`, `idle` and `needs_attention` to PlaneAI, which drives the sidebar and notifications.
   A pending permission prompt is `needs_attention`.
 - **Auto-approve.** PlaneAI's auto-approve maps to `bypassPermissions`; otherwise Claude asks in the chat.
-- **Controls.** The header switches model and permission mode (Ask before acting, Accept edits, Plan only, and Bypass for auto-approve sessions) and shows context usage.
+- **Controls.** The message box toggles the permission mode (Ask before acting, Accept edits, Plan only, and Bypass for auto-approve sessions), picks the model, shows context usage, and opens the conversation in a terminal.
+  The model list is the one Claude Code last reported, remembered across sessions, so it is complete before a chat's Claude starts.
+  Hovering the context meter also shows the claude.ai plan's 5-hour and weekly usage, as Claude Code last reported it, with when each window resets.
 - **Slash commands.** Type `/` for a menu of Claude Code's commands and your skills, listed by Claude itself; Tab completes the highlighted one and Enter runs it.
   Commands run exactly as in the terminal: `/context` and `/usage` answer in the chat, and `/compact` and `/clear` mark the conversation where they happened.
-  `/model <name>` with a model from the header's list switches the header itself; other names go to Claude Code, which validates them and applies them to the running Claude process only, so the header and the next start keep the header's model.
+  `/model <name>` with a model from the model list switches that list itself; other names go to Claude Code, which validates them and applies them to the running Claude process only, so the list and the next start keep the listed model.
   Terminal-only commands such as `/color` are left out once Claude Code has named them, which it does at the start of every turn; the plugin remembers them across sessions.
 - **Fonts.** **Preferences → Plugins → Claude Chat** sets the chat's font, code font and size; open chats follow changes live.
   Empty fields keep PlaneAI's fonts, which also stand in for a font that is not installed.

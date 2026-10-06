@@ -1,4 +1,4 @@
-import type { ChatEvent, Compaction, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput } from "./host";
+import type { ChatEvent, Compaction, Question, SessionMeta, SessionStatus, StoredEvent, TokenUsage, ToolInput } from "./host";
 
 export interface PermissionEntry {
   request_id: string;
@@ -13,10 +13,13 @@ export interface PermissionEntry {
 }
 
 export type Entry =
-  | { kind: "user"; seq: number; text: string }
+  | { kind: "user"; seq: number; text: string; queued?: boolean; id?: string }
+  | { kind: "turn_start"; seq: number; user_ids: string[] }
   | { kind: "assistant"; seq: number; text: string }
-  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string } | null }
+  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string; lines?: number } | null }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
+  /** `answers` is null until answered, and stays null when the user skipped (`resolved`). */
+  | { kind: "question"; seq: number; request_id: string; questions: Question[]; answers: Record<string, string> | null; resolved: boolean }
   | { kind: "result"; seq: number; is_error: boolean; cost_usd: number; duration_ms: number; usage?: TokenUsage; text?: string }
   | { kind: "error"; seq: number; message: string }
   | { kind: "handoff"; seq: number; in_terminal: boolean }
@@ -24,7 +27,11 @@ export type Entry =
   | { kind: "cleared"; seq: number }
   | { kind: "notice"; seq: number; text: string };
 
-const EMPTY_META: SessionMeta = { model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false };
+export type ToolEntry = Extract<Entry, { kind: "tool" }>;
+export type UserEntry = Extract<Entry, { kind: "user" }>;
+export type ResultEntry = Extract<Entry, { kind: "result" }>;
+
+const EMPTY_META: SessionMeta = { model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false, cwd: null, limits: null };
 
 /** Folds the ordered event stream into renderable entries; events at or below `seq` are ignored. */
 export class Transcript {
@@ -57,7 +64,7 @@ export class Transcript {
         this.status = event.status;
         return;
       case "user":
-        this.entries.push({ kind: "user", seq, text: event.text });
+        this.entries.push({ kind: "user", seq, text: event.text, ...(event.queued ? { queued: true } : {}), ...(event.id ? { id: event.id } : {}) });
         return;
       case "assistant":
         this.live = "";
@@ -69,7 +76,7 @@ export class Transcript {
         return;
       case "tool_result": {
         const tool = this.entries.findLast((entry) => entry.kind === "tool" && entry.id === event.tool_use_id);
-        if (tool?.kind === "tool") tool.result = { is_error: event.is_error, summary: event.summary };
+        if (tool?.kind === "tool") tool.result = { is_error: event.is_error, summary: event.summary, ...(event.lines === undefined ? {} : { lines: event.lines }) };
         return;
       }
       case "permission": {
@@ -80,6 +87,14 @@ export class Transcript {
       case "permission_resolved": {
         const entry = this.entries.findLast((candidate) => candidate.kind === "permission" && candidate.permission.request_id === event.request_id);
         if (entry?.kind === "permission") Object.assign(entry.permission, { resolved: event.allowed, remembered: event.remembered, reason: event.reason });
+        return;
+      }
+      case "question":
+        this.entries.push({ kind: "question", seq, request_id: event.request_id, questions: event.questions, answers: null, resolved: false });
+        return;
+      case "question_resolved": {
+        const entry = this.entries.findLast((candidate) => candidate.kind === "question" && candidate.request_id === event.request_id);
+        if (entry?.kind === "question") Object.assign(entry, { answers: event.answers ?? null, resolved: true });
         return;
       }
       case "result":
@@ -104,6 +119,9 @@ export class Transcript {
         return;
       case "notice":
         this.entries.push({ kind: "notice", seq, text: event.text });
+        return;
+      case "turn_start":
+        this.entries.push({ kind: "turn_start", seq, user_ids: event.user_ids });
         return;
       case "commands_changed":
       case "appearance":

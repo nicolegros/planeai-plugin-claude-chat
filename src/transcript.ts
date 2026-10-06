@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ChatEvent } from "./events";
+import { storedPlanLimits, upgradeStored, type ChatEvent, type ModelOption, type PlanLimits } from "./events";
 
 export interface StoredEvent {
   seq: number;
@@ -13,7 +13,7 @@ export const MAX_SNAPSHOT_EVENTS = 2_000;
 /**
  * Per-session event log under the plugin data dir, so a remounted or restarted UI
  * can rebuild the chat, plus a `started` marker and the conversation id /clear moved to.
- * Plugin-wide: Claude Code's terminal-only command names.
+ * Plugin-wide: Claude Code's terminal-only command names, the models it last listed and the plan's usage windows.
  */
 export class TranscriptStore {
   constructor(private readonly root: string) {
@@ -32,6 +32,14 @@ export class TranscriptStore {
     return join(this.root, "terminal-commands.json");
   }
 
+  private get modelsPath(): string {
+    return join(this.root, "models.json");
+  }
+
+  private get limitsPath(): string {
+    return join(this.root, "limits.json");
+  }
+
   private conversationPath(sessionId: string): string {
     return join(this.root, `${sessionId}.conversation`);
   }
@@ -43,7 +51,8 @@ export class TranscriptStore {
     for (const line of readFileSync(path, "utf8").split("\n")) {
       if (!line.trim()) continue;
       try {
-        events.push(JSON.parse(line) as StoredEvent);
+        const event = JSON.parse(line) as StoredEvent;
+        events.push({ seq: event.seq, payload: upgradeStored(event.payload) });
       } catch {
         // A torn final line from a crash loses one event, not the transcript.
       }
@@ -79,6 +88,34 @@ export class TranscriptStore {
 
   setTerminalCommands(names: string[]): void {
     writeFileSync(this.terminalCommandsPath, JSON.stringify(names));
+  }
+
+  /** The models Claude Code last listed, so a chat offers them before its Claude starts. */
+  models(): ModelOption[] {
+    try {
+      const models: unknown = JSON.parse(readFileSync(this.modelsPath, "utf8"));
+      if (!Array.isArray(models)) return [];
+      return models.filter((model): model is ModelOption => typeof model?.value === "string" && typeof model?.label === "string").map(({ value, label }) => ({ value, label }));
+    } catch {
+      return [];
+    }
+  }
+
+  setModels(models: ModelOption[]): void {
+    writeFileSync(this.modelsPath, JSON.stringify(models));
+  }
+
+  /** The plan's usage windows Claude Code last reported; they belong to the account, not a session. */
+  limits(): PlanLimits | null {
+    try {
+      return storedPlanLimits(JSON.parse(readFileSync(this.limitsPath, "utf8")));
+    } catch {
+      return null;
+    }
+  }
+
+  setLimits(limits: PlanLimits): void {
+    writeFileSync(this.limitsPath, JSON.stringify(limits));
   }
 
   /** The Claude session id currently holding this session's conversation, when it is not the PlaneAI id. */
