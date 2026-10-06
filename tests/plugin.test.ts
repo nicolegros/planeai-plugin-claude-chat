@@ -22,7 +22,7 @@ function plugin() {
   return { instance, root, fake, statuses };
 }
 
-const start = (session_id = SESSION_ID) => ({ session_id, provider_id: "claude", cwd: "/workspace", env: {}, yolo: false });
+const start = (session_id = SESSION_ID) => ({ session_id, provider_id: "claude", cwd: "/workspace", env: {}, auto_approve: false });
 
 describe("ClaudeChatPlugin", () => {
   it("handshakes with the identity the manifest declares", async () => {
@@ -44,8 +44,49 @@ describe("ClaudeChatPlugin", () => {
   it("rejects unknown providers and sessions it does not drive", async () => {
     const { instance } = plugin();
     await expect(instance.handle("provider.session.start", { ...start(), provider_id: "codex" })).rejects.toThrow("unknown provider");
-    await expect(instance.handle("provider.session.send", { session_id: "missing", text: "hi" })).rejects.toThrow("not running");
+    // PlaneAI resumes a session the plugin does not know, then retries.
+    await expect(instance.handle("provider.session.send", { session_id: "missing", text: "hi" })).rejects.toMatchObject({ code: -32010 });
     await expect(instance.handle("claude.snapshot", { session_id: "missing" })).rejects.toThrow("not running");
+  });
+
+  it("answers a send the session cannot take with the code PlaneAI acts on", async () => {
+    const { instance } = plugin();
+    await instance.handle("provider.session.resume", { ...start(), handed_off: true });
+    await expect(instance.handle("provider.session.send", { session_id: SESSION_ID, text: "hi" })).rejects.toMatchObject({ code: -32011, message: expect.stringContaining("continuing in a terminal") });
+    const missing = "6f1f3a0e-0000-4000-8000-000000000005";
+    await instance.handle("provider.session.start", { ...start(missing), env: { PATH: "" } });
+    await expect(instance.handle("provider.session.send", { session_id: missing, text: "hi" })).rejects.toMatchObject({ code: -32013, message: "claude executable not found on PATH" });
+  });
+
+  it("stops and hands back idempotently, sessions it never ran included", async () => {
+    const { instance } = plugin();
+    await instance.handle("provider.session.start", start());
+    for (let i = 0; i < 2; i++) await expect(instance.handle("provider.session.handback", { session_id: SESSION_ID })).resolves.toEqual({});
+    for (let i = 0; i < 2; i++) await expect(instance.handle("provider.session.stop", { session_id: SESSION_ID, reason: "archive" })).resolves.toEqual({ stopped: true });
+    await expect(instance.handle("provider.session.stop", { session_id: "never-seen", reason: "destroy" })).resolves.toEqual({ stopped: true });
+    await expect(instance.handle("provider.session.handback", { session_id: "never-seen" })).resolves.toEqual({});
+  });
+
+  it("reconciles away the data of sessions PlaneAI no longer has", async () => {
+    const { instance, root } = plugin();
+    const gone = "6f1f3a0e-0000-4000-8000-000000000003";
+    const kept = "6f1f3a0e-0000-4000-8000-000000000004";
+    for (const id of [gone, kept]) {
+      await instance.handle("provider.session.start", { ...start(id), env: { PATH: "" } });
+      await instance.handle("provider.session.send", { session_id: id, text: "hi" }).catch(() => {});
+      await instance.handle("provider.session.stop", { session_id: id, reason: "archive" });
+    }
+    await instance.handle("provider.session.start", start());
+    await instance.handle("provider.session.send", { session_id: SESSION_ID, text: "hi" }).catch(() => {});
+    writeFileSync(join(root, "terminal-commands.json"), "[]");
+
+    await expect(instance.handle("provider.sessions.reconcile", { sessions: [{ session_id: kept, provider_id: "claude", status: "archived" }] })).resolves.toEqual({});
+    expect(existsSync(join(root, `${gone}.jsonl`))).toBe(false);
+    expect(existsSync(join(root, `${gone}.seq`))).toBe(false);
+    expect(existsSync(join(root, `${kept}.jsonl`))).toBe(true);
+    // One this sidecar runs stays, and so does plugin-wide data.
+    expect(existsSync(join(root, `${SESSION_ID}.jsonl`))).toBe(true);
+    expect(existsSync(join(root, "terminal-commands.json"))).toBe(true);
   });
 
   it("forgets a destroyed session's transcript but keeps an archived one", async () => {

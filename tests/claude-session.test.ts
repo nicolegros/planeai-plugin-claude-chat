@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClaudeSession, type ClaudeRuntime } from "../src/claude-session";
+import { ClaudeSession, HandedOffError, type ClaudeRuntime } from "../src/claude-session";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ChatEvent, SessionStatus } from "../src/events";
 import { TranscriptStore } from "../src/transcript";
@@ -33,10 +33,10 @@ describe("ClaudeSession", () => {
   };
 
   function session(
-    overrides: { yolo?: boolean; claudeExecutable?: string | null; hasTranscript?: boolean; history?: SessionMessage[]; link?: ClaudeRuntime["link"]; linked?: string } = {},
+    overrides: { autoApprove?: boolean; handedOff?: boolean; claudeExecutable?: string | null; hasTranscript?: boolean; history?: SessionMessage[]; link?: ClaudeRuntime["link"]; linked?: string } = {},
   ): ClaudeSession {
     return new ClaudeSession(
-      { id: SESSION_ID, cwd: "/workspace", env: { PLANEAI_SESSION_ID: SESSION_ID }, yolo: overrides.yolo ?? false, claudeExecutable: overrides.claudeExecutable === undefined ? "/usr/local/bin/claude" : overrides.claudeExecutable },
+      { id: SESSION_ID, cwd: "/workspace", env: { PLANEAI_SESSION_ID: SESSION_ID }, autoApprove: overrides.autoApprove ?? false, handedOff: overrides.handedOff ?? false, claudeExecutable: overrides.claudeExecutable === undefined ? "/usr/local/bin/claude" : overrides.claudeExecutable },
       store,
       { event: record, status: (_, status) => statuses.push(status) },
       { createQuery: fake.factory, hasTranscript: async () => overrides.hasTranscript ?? false, history: async () => overrides.history ?? [], link: overrides.link ?? (async () => {}), linked: async () => overrides.linked ?? null },
@@ -82,8 +82,8 @@ describe("ClaudeSession", () => {
     first.stop();
 
     const resumed = session();
-    const lastStored = events.filter(({ payload }) => !["delta", "meta"].includes(payload.type)).at(-1)!.seq;
-    expect(resumed.snapshot().seq).toBe(lastStored);
+    // Streamed events are not stored, so the seq continues past every one sent, stored or not.
+    expect(resumed.snapshot().seq).toBeGreaterThan(events.at(-1)!.seq);
     expect(resumed.snapshot().events.map(({ payload }) => payload.type)).toEqual(["user", "tool", "tool_result", "assistant", "result"]);
     await resumed.send("again");
     expect(fake.queries[1].options).toMatchObject({ resume: SESSION_ID });
@@ -118,13 +118,48 @@ describe("ClaudeSession", () => {
     expect(page.more).toBe(false);
   });
 
-  it("restores a terminal handoff after the sidecar restarts", async () => {
+  it("takes whether a terminal drives the session from PlaneAI when resumed", async () => {
     const first = session();
     await first.handoff();
     first.stop();
-    const restarted = session();
+    // A sidecar restart while the terminal still runs.
+    const restarted = session({ handedOff: true });
     expect(restarted.snapshot().meta.handed_off).toBe(true);
+    await expect(restarted.send("hello")).rejects.toBeInstanceOf(HandedOffError);
     await expect(restarted.send("hello")).rejects.toThrow("continuing in a terminal");
+    restarted.stop();
+    // An app restart: the terminal is gone, so the chat drives the session again.
+    const reopened = session({ handedOff: false });
+    reopened.announce();
+    expect(reopened.snapshot().meta.handed_off).toBe(false);
+    expect(reopened.snapshot().events.at(-1)?.payload).toEqual({ type: "handoff", in_terminal: false });
+    await reopened.send("hello");
+  });
+
+  it("corrects a transcript that disagrees with PlaneAI only once announced", async () => {
+    const first = session();
+    await first.handoff();
+    first.stop();
+    events = [];
+    const reopened = session({ handedOff: false });
+    expect(events).toEqual([]);
+    expect(reopened.snapshot().events.at(-1)?.payload).toEqual({ type: "handoff", in_terminal: true });
+    reopened.announce();
+    reopened.announce();
+    expect(events.map(({ payload }) => payload)).toEqual([{ type: "handoff", in_terminal: false }]);
+  });
+
+  it("keeps event seqs increasing across restarts, streamed events included", async () => {
+    const first = session();
+    await first.send("hello");
+    fake.queries[0].emit(...fixture("bash-turn", SESSION_ID));
+    await flush();
+    first.stop();
+    const sent = events.at(-1)!.seq;
+    events.length = 0;
+    const restarted = session();
+    await restarted.send("again");
+    expect(events[0].seq).toBeGreaterThan(sent);
   });
 
   it("never delivers a prompt whose request was cancelled while Claude started", async () => {
@@ -142,7 +177,7 @@ describe("ClaudeSession", () => {
   it("does not start Claude when the session stops while it was checking for a transcript", async () => {
     let finishCheck: (value: boolean) => void = () => {};
     const chat = new ClaudeSession(
-      { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: "/usr/local/bin/claude" },
+      { id: SESSION_ID, cwd: "/workspace", env: {}, autoApprove: false, handedOff: false, claudeExecutable: "/usr/local/bin/claude" },
       store,
       { event: record, status: (_, status) => statuses.push(status) },
       { createQuery: fake.factory, hasTranscript: () => new Promise((resolve) => (finishCheck = resolve)), history: async () => [], link: async () => {}, linked: async () => null },
@@ -173,7 +208,7 @@ describe("ClaudeSession", () => {
   });
 
   it("asks Claude's questions in the chat, even when permissions are bypassed, and answers with the user's choices", async () => {
-    const chat = session({ yolo: true });
+    const chat = session({ autoApprove: true });
     await chat.send("set it up");
     const input = { questions: [{ question: "Which platforms?", header: "Platforms", multiSelect: true, options: [{ label: "macOS", description: "" }, { label: "Linux", description: "" }] }] };
     const decision = fake.queries[0].options.canUseTool!("AskUserQuestion", input, { signal: new AbortController().signal, toolUseID: "t" } as never);
@@ -211,7 +246,7 @@ describe("ClaudeSession", () => {
   });
 
   it("reports models after init and context usage after each turn", async () => {
-    const chat = session({ yolo: true });
+    const chat = session({ autoApprove: true });
     await chat.send("hello");
     fake.queries[0].emit(...fixture("bash-turn", SESSION_ID));
     await flush();
@@ -440,7 +475,7 @@ describe("ClaudeSession", () => {
   });
 
   it("starts a new terminal session under the PlaneAI id when Claude never ran", async () => {
-    const argv = await session({ yolo: true }).handoff();
+    const argv = await session({ autoApprove: true }).handoff();
     expect(argv).toEqual(["/usr/local/bin/claude", "--session-id", SESSION_ID, "--dangerously-skip-permissions"]);
   });
 
@@ -499,7 +534,7 @@ describe("ClaudeSession", () => {
 
   it("reports a failed start instead of staying busy", async () => {
     const chat = new ClaudeSession(
-      { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: "/usr/local/bin/claude" },
+      { id: SESSION_ID, cwd: "/workspace", env: {}, autoApprove: false, handedOff: false, claudeExecutable: "/usr/local/bin/claude" },
       store,
       { event: record, status: (_, status) => statuses.push(status) },
       { createQuery: fake.factory, hasTranscript: async () => { throw new Error("transcript unreadable"); }, history: async () => [], link: async () => {}, linked: async () => null },
@@ -510,7 +545,7 @@ describe("ClaudeSession", () => {
   });
 
   it("maps auto-approve to bypassPermissions", async () => {
-    await session({ yolo: true }).send("go");
+    await session({ autoApprove: true }).send("go");
     expect(fake.queries[0].options).toMatchObject({ permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true });
   });
 
@@ -781,7 +816,7 @@ describe("ClaudeSession", () => {
   it("keeps a prompt sent during the rebuild after the rebuilt messages", async () => {
     let release: (messages: SessionMessage[]) => void = () => {};
     const chat = new ClaudeSession(
-      { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: "/usr/local/bin/claude" },
+      { id: SESSION_ID, cwd: "/workspace", env: {}, autoApprove: false, handedOff: false, claudeExecutable: "/usr/local/bin/claude" },
       store,
       { event: record, status: (_, status) => statuses.push(status) },
       { createQuery: fake.factory, hasTranscript: async () => true, history: () => new Promise((resolve) => (release = resolve)), link: async () => {}, linked: async () => null },
@@ -798,7 +833,7 @@ describe("ClaudeSession", () => {
   it("writes nothing from a rebuild that finishes after the session stopped", async () => {
     let release: (messages: SessionMessage[]) => void = () => {};
     const chat = new ClaudeSession(
-      { id: SESSION_ID, cwd: "/workspace", env: {}, yolo: false, claudeExecutable: null },
+      { id: SESSION_ID, cwd: "/workspace", env: {}, autoApprove: false, handedOff: false, claudeExecutable: null },
       store,
       { event: record, status: () => {} },
       { createQuery: fake.factory, hasTranscript: async () => true, history: () => new Promise((resolve) => (release = resolve)), link: async () => {}, linked: async () => "after-clear" },
@@ -821,7 +856,7 @@ describe("ClaudeSession", () => {
     expect(resumed.snapshot().events.map(({ payload }) => payload.type)).toEqual(["user"]);
 
     const unreadable = new ClaudeSession(
-      { id: "other", cwd: "/workspace", env: {}, yolo: false, claudeExecutable: null },
+      { id: "other", cwd: "/workspace", env: {}, autoApprove: false, handedOff: false, claudeExecutable: null },
       store,
       { event: record, status: () => {} },
       { createQuery: fake.factory, hasTranscript: async () => false, history: async () => { throw new Error("corrupt"); }, link: async () => {}, linked: async () => null },

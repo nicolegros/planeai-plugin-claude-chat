@@ -1,8 +1,8 @@
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
 import { normalizeAppearance } from "./appearance";
-import { ClaudeSession, type ClaudeRuntime, type SessionHost } from "./claude-session";
-import { RpcError } from "./rpc";
+import { ClaudeSession, ClaudeUnavailableError, HandedOffError, type ClaudeRuntime, type SessionHost } from "./claude-session";
+import { HANDED_OFF, RpcError, SESSION_NOT_FOUND, UNAVAILABLE } from "./rpc";
 import type { TranscriptStore } from "./transcript";
 
 export const PLUGIN_ID = "claude-chat";
@@ -50,6 +50,13 @@ function environment(params: Record<string, unknown>): Record<string, string> {
   return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
 
+/** Gives the session errors PlaneAI acts on their JSON-RPC codes. */
+function toRpcError(error: unknown): unknown {
+  if (error instanceof HandedOffError) return new RpcError(HANDED_OFF, error.message);
+  if (error instanceof ClaudeUnavailableError) return new RpcError(UNAVAILABLE, error.message);
+  return error;
+}
+
 /** Routes host and UI requests to the sessions this sidecar drives. */
 export class ClaudeChatPlugin {
   private readonly sessions = new Map<string, ClaudeSession>();
@@ -61,6 +68,14 @@ export class ClaudeChatPlugin {
   ) {}
 
   async handle(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
+    try {
+      return await this.dispatch(method, params, signal);
+    } catch (error) {
+      throw toRpcError(error);
+    }
+  }
+
+  private async dispatch(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     switch (method) {
       case "plugin.handshake":
         return {
@@ -85,6 +100,7 @@ export class ClaudeChatPlugin {
       case "provider.session.interrupt":
         (await this.session(object(params))).interrupt();
         return {};
+      // Idempotent, and for sessions this sidecar never ran too: only `destroy` deletes data.
       case "provider.session.stop": {
         const request = object(params);
         const id = string(request, "session_id");
@@ -93,11 +109,17 @@ export class ClaudeChatPlugin {
         if (request.reason === "destroy") this.store.remove(id);
         return { stopped: true };
       }
+      case "provider.sessions.reconcile":
+        this.reconcile(object(params));
+        return {};
       case "provider.session.handoff":
         return { argv: await (await this.session(object(params))).handoff() };
-      case "provider.session.handback":
-        (await this.session(object(params))).handback();
+      case "provider.session.handback": {
+        // Nothing drives a session this sidecar does not run, so there is nothing to hand back.
+        const request = object(params);
+        if (this.sessions.has(string(request, "session_id"))) (await this.session(request)).handback();
         return {};
+      }
       case "claude.snapshot": {
         const request = object(params);
         const after = typeof request.after_seq === "number" ? request.after_seq : 0;
@@ -162,7 +184,8 @@ export class ClaudeChatPlugin {
         id,
         cwd: string(params, "cwd"),
         env,
-        yolo: params.yolo === true,
+        autoApprove: params.auto_approve === true,
+        handedOff: !isNew && params.handed_off === true,
         claudeExecutable: findExecutable("claude", env.PATH ?? process.env.PATH),
       },
       this.store,
@@ -186,11 +209,22 @@ export class ClaudeChatPlugin {
     return {};
   }
 
+  /** Deletes the data of sessions PlaneAI no longer has, except those this sidecar runs. */
+  private reconcile(params: Record<string, unknown>): void {
+    if (!Array.isArray(params.sessions)) throw new RpcError(INVALID_PARAMS, "sessions must be an array");
+    const kept = new Set(this.sessions.keys());
+    for (const session of params.sessions) {
+      const id = (session as { session_id?: unknown } | null)?.session_id;
+      if (typeof id === "string") kept.add(id);
+    }
+    for (const id of this.store.sessionIds()) if (!kept.has(id)) this.store.remove(id);
+  }
+
   /** A running session, once any rebuild of its chat finished, so nothing lands before the rebuilt messages. */
   private async session(params: Record<string, unknown>): Promise<ClaudeSession> {
     const id = string(params, "session_id");
     const session = this.sessions.get(id);
-    if (!session) throw new RpcError(INVALID_PARAMS, `session ${id} is not running in this plugin`);
+    if (!session) throw new RpcError(SESSION_NOT_FOUND, `session ${id} is not running in this plugin`);
     await session.restored;
     return session;
   }

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { storedPlanLimits, upgradeStored, type ChatEvent, type ModelOption, type PlanLimits } from "./events";
 
@@ -12,7 +12,8 @@ export const MAX_SNAPSHOT_EVENTS = 2_000;
 
 /**
  * Per-session event log under the plugin data dir, so a remounted or restarted UI
- * can rebuild the chat, plus a `started` marker and the conversation id /clear moved to.
+ * can rebuild the chat, plus a `started` marker, the conversation id /clear moved to,
+ * and the highest event seq reserved.
  * Plugin-wide: Claude Code's terminal-only command names, the models it last listed and the plan's usage windows.
  */
 export class TranscriptStore {
@@ -42,6 +43,10 @@ export class TranscriptStore {
 
   private conversationPath(sessionId: string): string {
     return join(this.root, `${sessionId}.conversation`);
+  }
+
+  private seqPath(sessionId: string): string {
+    return join(this.root, `${sessionId}.seq`);
   }
 
   load(sessionId: string): StoredEvent[] {
@@ -128,9 +133,34 @@ export class TranscriptStore {
     writeFileSync(this.conversationPath(sessionId), conversationId);
   }
 
+  /** The highest event seq reserved for this session, which events not stored may have used. */
+  reservedSeq(sessionId: string): number {
+    try {
+      const seq = Number(readFileSync(this.seqPath(sessionId), "utf8"));
+      return Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  reserveSeq(sessionId: string, seq: number): void {
+    writeFileSync(this.seqPath(sessionId), String(seq));
+  }
+
+  /** Every session with data here. */
+  sessionIds(): string[] {
+    const ids = new Set<string>();
+    for (const name of readdirSync(this.root)) {
+      const match = /^(.+)\.(jsonl|started|conversation|seq)$/.exec(name);
+      if (match) ids.add(match[1]);
+    }
+    return [...ids];
+  }
+
   remove(sessionId: string): void {
     rmSync(this.eventsPath(sessionId), { force: true });
     rmSync(this.startedPath(sessionId), { force: true });
     rmSync(this.conversationPath(sessionId), { force: true });
+    rmSync(this.seqPath(sessionId), { force: true });
   }
 }
