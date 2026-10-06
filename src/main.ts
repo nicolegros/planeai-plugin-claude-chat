@@ -21,8 +21,8 @@ let peer: JsonRpcPeer;
 const plugin = new ClaudeChatPlugin(
   new TranscriptStore(join(dataDir, "sessions")),
   {
-    event: (session_id, seq, payload) => peer.notify("host.session.event", { session_id, seq, payload }),
-    status: (session_id, status) => peer.notify("host.session.status", { session_id, status }),
+    event: (session_id, seq, payload) => peer.notify("host.providerSession.event", { session_id, seq, payload }),
+    status: (session_id, status) => peer.notify("host.providerSession.status", { session_id, status }),
   },
   {
     createQuery: query,

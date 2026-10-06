@@ -5,6 +5,11 @@ import type { Readable, Writable } from "node:stream";
 export const MAX_FRAME_BYTES = 64 * 1024;
 export const CANCELLED = -32800;
 
+/** Provider error codes PlaneAI acts on. */
+export const SESSION_NOT_FOUND = -32010;
+export const HANDED_OFF = -32011;
+export const UNAVAILABLE = -32013;
+
 export class RpcError extends Error {
   constructor(
     readonly code: number,

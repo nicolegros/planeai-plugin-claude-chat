@@ -5,7 +5,7 @@
   import { modelLabel, modelName } from "./models";
   import { usageTip } from "./usage";
 
-  let { meta, onMode, onModel, onHandoff, actions }: { meta: SessionMeta; onMode: (mode: string) => void; onModel: (model: string | null) => void; onHandoff: () => void; actions: Snippet } = $props();
+  let { meta, onMode, onModel, onHandoff, actions }: { meta: SessionMeta; onMode: (mode: string) => void; onModel: (model: string | null) => void; onHandoff?: () => void; actions: Snippet } = $props();
 
   const MODES: Record<string, { short: string; label: string }> = {
     default: { short: "Ask", label: "Ask before acting" },
@@ -79,7 +79,9 @@
       <span class="context-label">{percent}%</span>
     </span>
   {/if}
-  <button type="button" class="icon-control quiet" onclick={onHandoff} data-tip="Continue in Claude Code's terminal" data-tip-end aria-label="Continue in Claude Code's terminal"><Icon name="terminal" /></button>
+  {#if onHandoff}
+    <button type="button" class="icon-control quiet" onclick={onHandoff} data-tip="Continue in Claude Code's terminal" data-tip-end aria-label="Continue in Claude Code's terminal"><Icon name="terminal" /></button>
+  {/if}
   {@render actions()}
 </div>
 

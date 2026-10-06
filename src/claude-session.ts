@@ -12,11 +12,25 @@ import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./t
 
 const REBUILT: ChatEvent = { type: "notice", text: "Earlier messages were rebuilt from Claude Code's transcript, without turn costs or permission prompts." };
 
-const HANDED_OFF = "This session is continuing in a terminal tab. Close it or select Return to chat first.";
+/** A terminal drives the session, so the chat may not. */
+export class HandedOffError extends Error {
+  constructor() {
+    super("This session is continuing in a terminal tab. Close it or select Return to chat first.");
+  }
+}
+
+/** Claude Code is not installed where the session can find it. */
+export class ClaudeUnavailableError extends Error {}
 
 const INTERRUPTED = "Interrupted by the user";
 
 const BASE_MODES: PermissionMode[] = ["default", "acceptEdits", "plan"];
+
+/**
+ * Event seqs must keep increasing across sidecar restarts, but streamed events are not stored.
+ * Seqs are reserved on disk this many at a time, and a restart continues past the reservation.
+ */
+const SEQ_RESERVATION = 1_000;
 
 /** How long a `/model` waits for Claude's model list before handing the text to Claude Code. */
 const MODELS_WAIT_MS = 10_000;
@@ -51,7 +65,9 @@ export interface SessionConfig {
   cwd: string;
   /** Host-supplied environment (PLANEAI_SESSION_ID, PATH, PLANEAI_SOCKET), layered over ours. */
   env: Record<string, string>;
-  yolo: boolean;
+  autoApprove: boolean;
+  /** Whether a terminal drives the session, as PlaneAI says; it never outlives the app. */
+  handedOff: boolean;
   /** The user's own `claude`, so headless sessions share their install and login. */
   claudeExecutable: string | null;
 }
@@ -103,6 +119,7 @@ export class ClaudeSession {
     this.emit(event);
     this.refreshStatus();
   });
+  private reservedSeq: number;
   private stopped = false;
   private meta: SessionMeta;
   /** Starts as the PlaneAI session id; /clear moves Claude to a new one. */
@@ -122,6 +139,8 @@ export class ClaudeSession {
   readonly restored: Promise<void>;
   /** The models of the running Claude process, once listed. */
   private models: Promise<ModelOption[]> = Promise.resolve([]);
+  /** Set when the transcript disagrees with PlaneAI on who drives the session; `announce` records it. */
+  private handoffCorrection: boolean | null = null;
 
   constructor(
     private readonly config: SessionConfig,
@@ -130,26 +149,29 @@ export class ClaudeSession {
     private readonly runtime: ClaudeRuntime,
   ) {
     this.events = store.load(config.id);
-    this.seq = this.events.at(-1)?.seq ?? 0;
+    this.seq = Math.max(this.events.at(-1)?.seq ?? 0, store.reservedSeq(config.id));
+    this.reservedSeq = this.seq;
     // Bypass is offered only to sessions created with auto-approve, which is the only
     // way the SDK lets a session drop permission prompts later.
-    const modes = config.yolo ? [...BASE_MODES, "bypassPermissions"] : BASE_MODES;
-    // A terminal may still be driving the session after a sidecar restart.
-    const lastHandoff = this.events.findLast((event) => event.payload.type === "handoff")?.payload;
-    const handedOff = lastHandoff?.type === "handoff" && lastHandoff.in_terminal;
+    const modes = config.autoApprove ? [...BASE_MODES, "bypassPermissions"] : BASE_MODES;
     this.meta = {
       model: null,
       active_model: null,
-      permission_mode: config.yolo ? "bypassPermissions" : "default",
+      permission_mode: config.autoApprove ? "bypassPermissions" : "default",
       modes,
       // Claude lists its models once it starts; until then, the ones it listed last.
       models: store.models(),
       limits: store.limits(),
       context: null,
-      handed_off: handedOff,
+      handed_off: config.handedOff,
       compacting: false,
       cwd: config.cwd,
     };
+    // The transcript may say otherwise, as when the app quit while a terminal drove the session.
+    const lastHandoff = this.events.findLast((event) => event.payload.type === "handoff")?.payload;
+    const inTerminal = lastHandoff?.type === "handoff" && lastHandoff.in_terminal;
+    // An empty chat has nothing to correct; it is rebuilt from Claude's transcript instead.
+    if (this.events.length > 0 && inTerminal !== config.handedOff) this.handoffCorrection = config.handedOff;
     this.conversationId = store.conversation(config.id) ?? config.id;
     this.slashCommands = new SlashCommands(store);
     this.restored = this.events.length > 0 ? Promise.resolve() : this.restore();
@@ -180,7 +202,7 @@ export class ClaudeSession {
     const replayed = replay(messages);
     if (replayed.length === 0) return;
     // Every request waits for this, so the UI has not loaded a snapshot and nothing is sent live.
-    const rebuilt = [...replayed.slice(-(MAX_SNAPSHOT_EVENTS - 1)), REBUILT].map((payload) => ({ seq: ++this.seq, payload }));
+    const rebuilt = [...replayed.slice(-(MAX_SNAPSHOT_EVENTS - 1)), REBUILT].map((payload) => ({ seq: this.nextSeq(), payload }));
     this.events.push(...rebuilt);
     this.store.appendAll(this.config.id, rebuilt);
   }
@@ -205,6 +227,10 @@ export class ClaudeSession {
   }
 
   announce(): void {
+    if (this.handoffCorrection !== null) {
+      this.emit({ type: "handoff", in_terminal: this.handoffCorrection });
+      this.handoffCorrection = null;
+    }
     this.announceStatus(true);
   }
 
@@ -220,10 +246,10 @@ export class ClaudeSession {
 
   private async deliver(text: string, signal?: AbortSignal): Promise<void> {
     if (this.stopped) throw new Error("session is stopped");
-    if (this.meta.handed_off) throw new Error(HANDED_OFF);
+    if (this.meta.handed_off) throw new HandedOffError();
     if (!this.config.claudeExecutable) {
       this.emit({ type: "error", message: "Claude Code was not found on PATH. Install it, then run `claude` once in a terminal to log in." });
-      throw new Error("claude executable not found on PATH");
+      throw new ClaudeUnavailableError("claude executable not found on PATH");
     }
     const id = randomUUID();
     const isFollowUp = this.status !== "idle";
@@ -319,10 +345,10 @@ export class ClaudeSession {
 
   private loadCommands(): Promise<SlashCommand[]> {
     this.loadingCommands ??= (async () => {
-      if (this.meta.handed_off) throw new Error(HANDED_OFF);
-      if (!this.config.claudeExecutable) throw new Error("Claude Code was not found on PATH.");
+      if (this.meta.handed_off) throw new HandedOffError();
+      if (!this.config.claudeExecutable) throw new ClaudeUnavailableError("Claude Code was not found on PATH.");
       await this.ensureQuery();
-      if (this.meta.handed_off) throw new Error(HANDED_OFF);
+      if (this.meta.handed_off) throw new HandedOffError();
       if (!this.query) throw new Error("Claude stopped before listing its commands.");
       return await this.query.supportedCommands();
     })().finally(() => (this.loadingCommands = null));
@@ -350,7 +376,7 @@ export class ClaudeSession {
   }
 
   private async handOff(): Promise<string[]> {
-    if (!this.config.claudeExecutable) throw new Error("claude executable not found on PATH");
+    if (!this.config.claudeExecutable) throw new ClaudeUnavailableError("claude executable not found on PATH");
     if (!this.meta.handed_off) await this.letGo();
     if (this.stopped) throw new Error("session is stopped");
     const mode = this.meta.permission_mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : ["--permission-mode", this.meta.permission_mode];
@@ -443,7 +469,7 @@ export class ClaudeSession {
         systemPrompt: { type: "preset", preset: "claude_code" },
         includePartialMessages: true,
         permissionMode: this.meta.permission_mode as PermissionMode,
-        allowDangerouslySkipPermissions: this.config.yolo,
+        allowDangerouslySkipPermissions: this.config.autoApprove,
         ...(this.meta.model ? { model: this.meta.model } : {}),
         canUseTool: this.requests.canUseTool,
         ...(resume ? { resume: this.conversationId } : { sessionId: this.config.id }),
@@ -557,13 +583,22 @@ export class ClaudeSession {
 
   private emit(payload: ChatEvent): void {
     if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
-    const event = { seq: ++this.seq, payload };
+    const event = { seq: this.nextSeq(), payload };
     if (!isEphemeral(payload)) {
       this.events.push(event);
       if (this.events.length > MAX_SNAPSHOT_EVENTS) this.events.splice(0, this.events.length - MAX_SNAPSHOT_EVENTS);
       this.store.append(this.config.id, event);
     }
     this.host.event(this.config.id, event.seq, payload);
+  }
+
+  private nextSeq(): number {
+    this.seq++;
+    if (this.seq > this.reservedSeq) {
+      this.reservedSeq = this.seq + SEQ_RESERVATION;
+      this.store.reserveSeq(this.config.id, this.reservedSeq);
+    }
+    return this.seq;
   }
 
   /** A turn's result, Claude exiting or a detach ends the turn, and any compaction with it, even one that failed. */

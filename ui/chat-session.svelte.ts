@@ -53,7 +53,7 @@ export class ChatSession {
     };
     const unsubscribe = this.context.host.session.onEvent((event) => (replaying ? buffered.push(event) : apply(event)));
     void this.loadSnapshot()
-      .catch((error) => this.context.host.data.notify(String(error)))
+      .catch((error) => this.notifyError(error))
       .finally(() => {
         replaying = false;
         buffered.splice(0).forEach(apply);
@@ -98,12 +98,17 @@ export class ChatSession {
     void this.run(() => this.context.host.call("claude.model.set", { session_id: this.id, model }));
   }
 
+  /** Whether the host lets this session continue in a terminal. */
+  get canHandOff(): boolean {
+    return this.context.host.session.handoff !== undefined;
+  }
+
   handoff(): void {
-    void this.run(() => this.context.host.session.handoff());
+    void this.run(() => this.context.host.session.handoff?.() ?? Promise.resolve());
   }
 
   handback(): void {
-    void this.run(() => this.context.host.session.handback());
+    void this.run(() => this.context.host.session.handback?.() ?? Promise.resolve());
   }
 
   openExternal(url: string): void {
@@ -137,7 +142,12 @@ export class ChatSession {
     try {
       await action();
     } catch (error) {
-      this.context.host.data.notify(String(error));
+      this.notifyError(error);
     }
+  }
+
+  /** Shows why something failed, without the error's type. */
+  private notifyError(error: unknown): void {
+    this.context.host.data.notify(error instanceof Error ? error.message : String(error));
   }
 }

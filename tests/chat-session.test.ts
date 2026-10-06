@@ -57,11 +57,11 @@ describe("ChatSession", () => {
     const host = fakeHost();
     vi.mocked(host.value.host.call).mockRejectedValueOnce(new Error("session s1 is not running in this plugin"));
     const { session } = await connect(host);
-    expect(host.value.host.data.notify).toHaveBeenCalledWith("Error: session s1 is not running in this plugin");
+    expect(host.value.host.data.notify).toHaveBeenCalledWith("session s1 is not running in this plugin");
     vi.mocked(host.value.host.session.interrupt).mockRejectedValueOnce(new Error("no Claude to stop"));
     session.interrupt();
     await settle();
-    expect(host.value.host.data.notify).toHaveBeenLastCalledWith("Error: no Claude to stop");
+    expect(host.value.host.data.notify).toHaveBeenLastCalledWith("no Claude to stop");
     disconnect!();
     disconnect = undefined;
     host.push(1, { type: "user", text: "too late" });

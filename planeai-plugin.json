@@ -20,7 +20,7 @@
       "label": "Claude (chat)",
       "entrypoint": "ui/chat.js",
       "supports": [
-        "yolo",
+        "auto_approve",
         "handoff"
       ]
     }

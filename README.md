@@ -45,9 +45,11 @@ Confirm your use is covered before relying on subscription login for this plugin
   Empty fields keep PlaneAI's fonts, which also stand in for a font that is not installed.
 - **Open in terminal.** Continues the conversation in Claude Code's own UI in a terminal tab of the same session, with the current mode and model.
   The chat stays read-only until that tab closes or Return to chat is selected.
+  PlaneAI keeps track of the handoff, so quitting the app with the terminal open returns the session to the chat.
   A `/clear` typed in that terminal is not seen by the plugin, so returning to the chat resumes the conversation from before it.
 - **Transcript.** Chat events are stored under the plugin data directory so the chat rebuilds after remounts and restarts.
   Destroying a session deletes them; archiving keeps them.
+  When PlaneAI starts the plugin, it lists the sessions that still exist, and the plugin deletes the events of any other, such as one deleted while the plugin was not running.
   When they are gone, for example after the plugin is removed and installed again, the chat is rebuilt once from Claude Code's own transcript, without turn costs or permission prompts.
 
 ## Install
@@ -78,10 +80,10 @@ Install the staged `dist/planeai-plugin-claude-chat` directory into a PlaneAI de
 | --- | --- |
 | `src/main.ts` | Sidecar entrypoint: JSON-RPC over stdio. |
 | `src/rpc.ts` | Newline-framed JSON-RPC 2.0 peer with `$/cancelRequest` and the 64 KiB frame limit. |
-| `src/plugin.ts` | Routes `provider.session.*` and the UI's `claude.*` calls to sessions. |
+| `src/plugin.ts` | Routes `provider.session.*`, `provider.sessions.reconcile` and the UI's `claude.*` calls to sessions. |
 | `src/claude-session.ts` | One PlaneAI session driven by an Agent SDK streaming-input query. |
 | `src/events.ts` | Translates SDK messages into the plugin's chat events. |
-| `src/transcript.ts` | Per-session event log for reattach and the Claude session id `/clear` moved to; the plugin-wide terminal-only command names. |
+| `src/transcript.ts` | Per-session event log for reattach, the Claude session id `/clear` moved to and the reserved event seq; the plugin-wide terminal-only command names. |
 | `src/appearance.ts` | Font settings validation and the CSS variables the chat reads. |
 | `ui/` | Svelte 5 UIs, each built into one self-contained ESM bundle PlaneAI mounts: `ui/chat.js` for sessions and `ui/preferences.js` for the preferences pane. |
 

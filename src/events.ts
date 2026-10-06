@@ -170,7 +170,7 @@ export interface CommandOption {
 }
 
 /**
- * Plugin-owned event vocabulary sent to the chat UI as opaque `host.session.event`
+ * Plugin-owned event vocabulary sent to the chat UI as opaque `host.providerSession.event`
  * payloads. `delta`, `meta`, `status`, `commands_changed` and `appearance` are ephemeral;
  * everything else is part of the transcript.
  */

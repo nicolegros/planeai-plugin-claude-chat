@@ -302,7 +302,7 @@
           aria-activedescendant={menuOpen && matches.length > 0 ? `${MENU_ID}-${activeIndex}` : undefined}
         ></textarea>
         <div class="bar">
-          <ComposerBar meta={transcript.meta} onMode={(mode) => session.setMode(mode)} onModel={(model) => session.setModel(model)} onHandoff={() => session.handoff()}>
+          <ComposerBar meta={transcript.meta} onMode={(mode) => session.setMode(mode)} onModel={(model) => session.setModel(model)} onHandoff={session.canHandOff ? () => session.handoff() : undefined}>
             {#snippet actions()}
               {#if session.working}
                 <button type="button" class="icon-control round" onclick={() => session.interrupt()} data-tip="Stop · Esc" data-tip-end aria-label="Stop"><Icon name="stop" size={12} /></button>

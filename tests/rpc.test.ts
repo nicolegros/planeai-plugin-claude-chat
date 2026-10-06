@@ -67,9 +67,9 @@ describe("JsonRpcPeer", () => {
 
   it("sends notifications and drops frames over the host limit", async () => {
     const { peer, frames } = harness(async () => null);
-    peer.notify("host.session.status", { session_id: "s", status: "idle" });
-    peer.notify("host.session.event", { text: "x".repeat(70_000) });
+    peer.notify("host.providerSession.status", { session_id: "s", status: "idle" });
+    peer.notify("host.providerSession.event", { text: "x".repeat(70_000) });
     await until(() => frames.length === 1);
-    expect(frames).toEqual([{ jsonrpc: "2.0", method: "host.session.status", params: { session_id: "s", status: "idle" } }]);
+    expect(frames).toEqual([{ jsonrpc: "2.0", method: "host.providerSession.status", params: { session_id: "s", status: "idle" } }]);
   });
 });

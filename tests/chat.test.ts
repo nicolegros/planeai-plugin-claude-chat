@@ -170,6 +170,25 @@ describe("Chat", () => {
     expect(harness.value.host.session.interrupt).toHaveBeenCalledOnce();
   });
 
+  it("offers the terminal only when the provider can hand off", async () => {
+    const harness = fakeHost();
+    delete harness.value.host.session.handoff;
+    delete harness.value.host.session.handback;
+    app = mount(Chat, { target: document.body, props: { context: harness.value } });
+    await settle();
+    expect(() => button("Continue in Claude Code's terminal")).toThrow();
+  });
+
+  it("shows a refusal's message, not its error type", async () => {
+    const harness = await render();
+    vi.mocked(harness.value.host.session.send).mockRejectedValueOnce(Object.assign(new Error("The session continues in a terminal."), { code: "handed_off" }));
+    const textarea = document.querySelector("textarea")!;
+    type(textarea, "hi");
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    expect(harness.value.host.data.notify).toHaveBeenCalledWith("The session continues in a terminal.");
+  });
+
   it("opens the terminal and shows a read-only banner until the session comes back", async () => {
     const harness = await render();
     button("Continue in Claude Code's terminal").click();
