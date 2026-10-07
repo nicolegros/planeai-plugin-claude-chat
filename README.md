@@ -102,4 +102,6 @@ Review the fixture before committing it.
 ## Release
 
 Conventional commits on `main` drive `auto` versioning.
-The release workflow cross-compiles the sidecar with Bun for `macos-arm64`, `linux-x64` and `windows-x64`, and publishes one archive per platform, each declaring only its own entrypoint.
+The release workflow builds the sidecar with Bun on a native `macos-arm64`, `linux-x64` and `windows-x64` runner, injects the version into the manifest and the handshake, and runs the tests and `make verify-package` against each platform's own binary.
+Only when every platform passes does it tag the commit and publish one archive per platform, each declaring only its own entrypoint, after approval in the `release` environment.
+CI runs the same checks on the three platforms for every pull request.
