@@ -51,13 +51,18 @@ export class JsonRpcPeer {
   }
 
   private dispatch(line: string): void {
-    let message: { id?: Id; method?: unknown; params?: unknown };
+    let parsed: unknown;
     try {
-      message = JSON.parse(line);
+      parsed = JSON.parse(line);
     } catch (error) {
       console.error(`ignored malformed JSON-RPC frame: ${String(error)}`);
       return;
     }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      console.error(`ignored JSON-RPC frame that is not an object: ${line.trim()}`);
+      return;
+    }
+    const message: { id?: Id; method?: unknown; params?: unknown } = parsed;
     if (message.method === "$/cancelRequest") {
       const id = (message.params as { id?: Id } | undefined)?.id;
       const controller = id === undefined ? undefined : this.inFlight.get(id);
