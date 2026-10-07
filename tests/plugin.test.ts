@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ClaudeChatPlugin, findExecutable, HOST_API_VERSION, PLUGIN_ID, PLUGIN_NAME } from "../src/plugin";
 import { TranscriptStore } from "../src/transcript";
@@ -20,6 +20,16 @@ function plugin() {
     { createQuery: fake.factory, hasTranscript: async () => false, history: async () => [], link: async () => {}, linked: async () => null },
   );
   return { instance, root, fake, statuses };
+}
+
+/** The names an installed Claude Code goes by: the native binary, plus npm's shim on Windows. */
+const CLAUDE_NAMES = process.platform === "win32" ? ["claude.exe", "claude.cmd"] : ["claude"];
+
+function fakeClaudeBin(name = CLAUDE_NAMES[0]): string {
+  const bin = mkdtempSync(join(tmpdir(), "claude-chat-bin-"));
+  writeFileSync(join(bin, name), "");
+  chmodSync(join(bin, name), 0o755);
+  return bin;
 }
 
 const start = (session_id = SESSION_ID) => ({ session_id, provider_id: "claude", cwd: "/workspace", env: {}, auto_approve: false });
@@ -112,9 +122,7 @@ describe("ClaudeChatPlugin", () => {
 
   it("lists a session's slash commands for the chat's menu", async () => {
     const { instance, fake } = plugin();
-    const bin = mkdtempSync(join(tmpdir(), "claude-chat-bin-"));
-    writeFileSync(join(bin, "claude"), "#!/bin/sh\n");
-    chmodSync(join(bin, "claude"), 0o755);
+    const bin = fakeClaudeBin();
     await instance.handle("provider.session.start", { ...start(), env: { PATH: bin } });
     const listing = instance.handle("claude.commands", { session_id: SESSION_ID });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -138,9 +146,7 @@ describe("ClaudeChatPlugin", () => {
       { event: () => {}, status: () => {} },
       { createQuery: fakeQueryFactory().factory, hasTranscript: async () => true, history: () => new Promise((resolve) => (release = resolve)), link: async () => {}, linked: async () => null },
     );
-    const bin = mkdtempSync(join(tmpdir(), "claude-chat-bin-"));
-    writeFileSync(join(bin, "claude"), "#!/bin/sh\n");
-    chmodSync(join(bin, "claude"), 0o755);
+    const bin = fakeClaudeBin();
     await instance.handle("provider.session.resume", { ...start(), env: { PATH: bin } });
     const handoff = instance.handle("provider.session.handoff", { session_id: SESSION_ID });
     release(history(SESSION_ID));
@@ -166,12 +172,10 @@ describe("ClaudeChatPlugin", () => {
     ]);
   });
 
-  it("finds claude on the PATH the host provides", () => {
-    const bin = mkdtempSync(join(tmpdir(), "claude-chat-bin-"));
-    mkdirSync(join(bin, "empty"));
-    writeFileSync(join(bin, "claude"), "#!/bin/sh\n");
-    chmodSync(join(bin, "claude"), 0o755);
-    expect(findExecutable("claude", `${join(bin, "empty")}:${bin}`, "darwin")).toBe(join(bin, "claude"));
-    expect(findExecutable("claude", join(bin, "empty"), "darwin")).toBeNull();
+  it.each(CLAUDE_NAMES)("finds %s on the PATH the host provides", (name) => {
+    const bin = fakeClaudeBin(name);
+    const empty = mkdtempSync(join(tmpdir(), "claude-chat-empty-"));
+    expect(findExecutable("claude", [empty, bin].join(delimiter))).toBe(join(bin, name));
+    expect(findExecutable("claude", empty)).toBeNull();
   });
 });
