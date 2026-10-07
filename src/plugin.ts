@@ -16,9 +16,9 @@ const INVALID_PARAMS = -32602;
 const METHOD_NOT_FOUND = -32601;
 
 /** Locate `claude` on the PATH PlaneAI hands the session (it includes the user's extra_path_dirs). */
-export function findExecutable(name: string, path: string | undefined, platform = process.platform): string | null {
-  const names = platform === "win32" ? [`${name}.exe`, `${name}.cmd`] : [name];
-  for (const directory of (path ?? "").split(platform === "win32" ? ";" : delimiter)) {
+export function findExecutable(name: string, path: string | undefined): string | null {
+  const names = process.platform === "win32" ? [`${name}.exe`, `${name}.cmd`] : [name];
+  for (const directory of (path ?? "").split(delimiter)) {
     if (!directory) continue;
     for (const candidate of names) {
       const full = join(directory, candidate);
