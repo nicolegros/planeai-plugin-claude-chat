@@ -33,8 +33,10 @@ Confirm your use is covered before relying on subscription login for this plugin
 - **Lazy start.** Starting or resuming a session spawns nothing; Claude starts on the first prompt or when the `/` menu first opens.
 - **Status.** The plugin reports `busy`, `idle` and `needs_attention` to PlaneAI, which drives the sidebar and notifications.
   A pending permission prompt is `needs_attention`.
-- **Auto-approve.** PlaneAI's auto-approve maps to `bypassPermissions`; otherwise Claude asks in the chat.
-- **Controls.** The message box's chips pick the permission mode (Ask before acting, Accept edits, Plan only, and Bypass permissions for auto-approve sessions) and the model; it also shows context usage and opens the conversation in a terminal.
+- **Auto mode.** Every session starts in Claude Code's auto mode, where a classifier approves or blocks each action instead of a permission prompt.
+  When auto mode is not available, as with a model that lacks it, Claude Code starts in Ask before acting and the chat says so.
+  PlaneAI's auto-approve does not change the starting mode; it adds Bypass permissions to the modes the chat offers.
+- **Controls.** The message box's chips pick the permission mode (Auto, Ask before acting, Accept edits, Plan only, and Bypass permissions for auto-approve sessions) and the model; it also shows context usage and opens the conversation in a terminal.
   The model list is the one Claude Code last reported, remembered across sessions, so it is complete before a chat's Claude starts.
   Hovering the context meter also shows the claude.ai plan's 5-hour and weekly usage, as Claude Code last reported it, with when each window resets.
 - **Slash commands.** Type `/` for a menu of Claude Code's commands and your skills, listed by Claude itself; Tab completes the highlighted one and Enter runs it.
