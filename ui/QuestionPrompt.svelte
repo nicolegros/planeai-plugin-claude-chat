@@ -134,8 +134,8 @@
 </section>
 
 <style>
-  .prompt { display: grid; gap: var(--chat-space-2); padding: var(--chat-space-3) var(--chat-space-4); border: 1px solid var(--planeai-border-strong); border-radius: 12px; background: var(--planeai-surface); }
-  .prompt:focus-within { border-color: color-mix(in srgb, var(--planeai-text) 32%, transparent); }
+  .prompt { display: grid; gap: var(--chat-space-2); padding: var(--chat-space-3) var(--chat-space-4); border-radius: var(--chat-card-radius); background: var(--chat-card-background); -webkit-backdrop-filter: var(--chat-card-blur); backdrop-filter: var(--chat-card-blur); box-shadow: var(--chat-card-shadow); }
+  .prompt:focus-within { box-shadow: var(--chat-card-shadow-focus); }
   .top { display: flex; align-items: center; gap: var(--chat-space-2); }
   .top:empty { display: none; }
   .chip { padding: 0 var(--chat-space-2); border-radius: var(--chat-radius-sm); background: var(--planeai-surface-raised); color: var(--planeai-text-muted); font-size: var(--chat-size-xs); }
