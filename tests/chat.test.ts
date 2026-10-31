@@ -146,8 +146,8 @@ describe("Chat", () => {
     expect(tip?.[1]).toMatch(/^5-hour limit: 61% used · resets (at|\w{3}) /);
     expect(tip).toHaveLength(2);
     const mode = () => document.querySelector<HTMLSelectElement>("select[aria-label='Permission mode']")!;
-    expect([...mode().options].map((option) => option.textContent)).toEqual(["Ask before acting", "Accept edits", "Plan only"]);
-    expect(mode().value).toBe("default");
+    expect([...mode().options].map((option) => option.textContent)).toEqual(["Auto", "Ask before acting", "Accept edits", "Plan only"]);
+    expect(mode().value).toBe("auto");
     mode().value = "plan";
     mode().dispatchEvent(new Event("change", { bubbles: true }));
     const model = document.querySelector<HTMLSelectElement>("select[aria-label=Model]")!;

@@ -7,7 +7,7 @@ describe("translate", () => {
   it("turns a recorded Bash turn into a raw transcript", () => {
     const events = fixture("bash-turn").flatMap(translate);
     expect(events.map((event) => event.type)).toEqual(["meta", "tool", "tool_result", "delta", "assistant", "result"]);
-    expect(events[0]).toEqual({ type: "meta", meta: { active_model: "claude-opus-5-5", permission_mode: "default" } });
+    expect(events[0]).toEqual({ type: "meta", meta: { active_model: "claude-opus-5-5", permission_mode: "auto" } });
     expect(events[1]).toMatchObject({ type: "tool", name: "Bash", summary: "echo planeai-fixture", input: { kind: "bash", command: "echo planeai-fixture" } });
     expect(events[2]).toMatchObject({ type: "tool_result", is_error: false, summary: "planeai-fixture" });
     expect(events[4]).toEqual({ type: "assistant", text: "done" });

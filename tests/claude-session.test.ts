@@ -59,7 +59,7 @@ describe("ClaudeSession", () => {
       settingSources: ["user", "project", "local"],
       systemPrompt: { type: "preset", preset: "claude_code" },
       includePartialMessages: true,
-      permissionMode: "default",
+      permissionMode: "auto",
       sessionId: SESSION_ID,
     });
     expect(query.options.resume).toBeUndefined();
@@ -242,7 +242,7 @@ describe("ClaudeSession", () => {
     expect(fake.queries[0].options).toMatchObject({ permissionMode: "plan", model: "opus" });
     chat.setPermissionMode("acceptEdits");
     expect(fake.queries[0].setPermissionMode).toHaveBeenCalledWith("acceptEdits");
-    expect(chat.snapshot().meta).toMatchObject({ permission_mode: "acceptEdits", model: "opus", modes: ["default", "acceptEdits", "plan"] });
+    expect(chat.snapshot().meta).toMatchObject({ permission_mode: "acceptEdits", model: "opus", modes: ["auto", "default", "acceptEdits", "plan"] });
   });
 
   it("reports models after init and context usage after each turn", async () => {
@@ -252,7 +252,7 @@ describe("ClaudeSession", () => {
     await flush();
     await flush();
     expect(chat.snapshot().meta).toMatchObject({
-      modes: ["default", "acceptEdits", "plan", "bypassPermissions"],
+      modes: ["auto", "default", "acceptEdits", "plan", "bypassPermissions"],
       models: [{ value: "sonnet", label: "Sonnet" }, { value: "opus", label: "Opus" }],
       context: { total_tokens: 12_000, max_tokens: 200_000, percentage: 6 },
     });
@@ -475,8 +475,14 @@ describe("ClaudeSession", () => {
   });
 
   it("starts a new terminal session under the PlaneAI id when Claude never ran", async () => {
-    const argv = await session({ autoApprove: true }).handoff();
-    expect(argv).toEqual(["/usr/local/bin/claude", "--session-id", SESSION_ID, "--dangerously-skip-permissions"]);
+    const argv = await session().handoff();
+    expect(argv).toEqual(["/usr/local/bin/claude", "--session-id", SESSION_ID, "--permission-mode", "auto"]);
+  });
+
+  it("hands a bypassing session to the terminal with permission checks skipped", async () => {
+    const chat = session({ autoApprove: true });
+    chat.setPermissionMode("bypassPermissions");
+    expect(await chat.handoff()).toEqual(["/usr/local/bin/claude", "--session-id", SESSION_ID, "--dangerously-skip-permissions"]);
   });
 
   it("denies outstanding permission requests when interrupted", async () => {
@@ -544,9 +550,19 @@ describe("ClaudeSession", () => {
     expect(statuses).toEqual(["busy", "idle"]);
   });
 
-  it("maps auto-approve to bypassPermissions", async () => {
+  it("starts auto-approve sessions in auto mode, with bypass allowed", async () => {
     await session({ autoApprove: true }).send("go");
-    expect(fake.queries[0].options).toMatchObject({ permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true });
+    expect(fake.queries[0].options).toMatchObject({ permissionMode: "auto", allowDangerouslySkipPermissions: true });
+  });
+
+  it("follows Claude Code to Ask when auto mode is unavailable, and says so once", async () => {
+    const chat = session();
+    await chat.send("go");
+    const init = { type: "system", subtype: "init", session_id: SESSION_ID, model: "claude-haiku-4-5-20251001", permissionMode: "default" } as never;
+    fake.queries[0].emit(init, init);
+    await flush();
+    expect(chat.snapshot().meta.permission_mode).toBe("default");
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "notice")).toEqual([{ type: "notice", text: "Auto mode is not available here, so Claude asks before acting." }]);
   });
 
   it("explains a missing claude install in the transcript", async () => {
@@ -569,7 +585,7 @@ describe("ClaudeSession", () => {
     await restarted.send("hello");
     expect(fake.queries[1].options).toMatchObject({ resume: "fixture-session-2" });
     await flush();
-    expect(await restarted.handoff()).toEqual(["/usr/local/bin/claude", "--resume", "fixture-session-2", "--permission-mode", "default"]);
+    expect(await restarted.handoff()).toEqual(["/usr/local/bin/claude", "--resume", "fixture-session-2", "--permission-mode", "auto"]);
   });
 
   it("links the conversation /clear moved to in Claude's store, so a wiped plugin still finds it", async () => {
