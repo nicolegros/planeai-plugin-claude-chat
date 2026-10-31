@@ -349,7 +349,7 @@
     --chat-gutter: max(var(--chat-space-5), (100% - var(--chat-lane)) / 2);
     /* The frosted card every dock occupant sits in. */
     --chat-card-radius: calc(16 * var(--chat-unit));
-    --chat-card-background: color-mix(in srgb, var(--planeai-surface) 80%, transparent);
+    --chat-card-background: color-mix(in srgb, var(--planeai-surface) 92%, transparent);
     --chat-card-blur: blur(12px) saturate(1.14);
     --chat-card-shadow: 0 0 0 1px color-mix(in srgb, var(--planeai-text) 9%, transparent), 0 1px 2px rgb(0 0 0 / 5%), 0 8px 24px -12px rgb(0 0 0 / 12%);
     --chat-card-shadow-focus: 0 0 0 1px color-mix(in srgb, var(--planeai-text) 22%, transparent), 0 1px 2px rgb(0 0 0 / 5%), 0 8px 24px -12px rgb(0 0 0 / 16%);
@@ -413,8 +413,8 @@
   .round.primary { box-shadow: inset 0 1px 0 rgb(255 255 255 / 16%), 0 1px 2px rgb(0 0 0 / 10%); transition: transform 120ms; }
   .round.primary:hover:not(:disabled) { transform: scale(1.05); background: var(--planeai-accent); }
   /* Dimmed by color rather than opacity, which would fade its tooltip too. */
-  .round.primary:disabled { opacity: 1; background: color-mix(in srgb, var(--planeai-text) 12%, transparent); color: var(--planeai-main); box-shadow: none; }
-  .stop, .stop:hover:not(:disabled) { background: var(--planeai-danger); color: white; }
+  .round.primary:disabled { opacity: 1; background: color-mix(in srgb, var(--planeai-text) 12%, transparent); color: color-mix(in srgb, var(--planeai-text) 45%, transparent); box-shadow: none; }
+  .stop, .stop:hover:not(:disabled) { background: var(--planeai-danger); color: var(--planeai-main); }
   .asking { display: flex; align-items: center; gap: var(--chat-space-2); color: var(--planeai-text-muted); font-size: var(--chat-size-sm); }
   .asking-dot { flex: none; width: calc(8 * var(--chat-unit)); height: calc(8 * var(--chat-unit)); border-radius: 50%; background: var(--planeai-warning); }
   .follow-up { align-self: flex-end; max-width: 80%; padding: var(--chat-space-3); border-radius: calc(16 * var(--chat-unit)); background: var(--planeai-surface-raised); }
