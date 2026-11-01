@@ -24,7 +24,7 @@ export class ClaudeUnavailableError extends Error {}
 
 const INTERRUPTED = "Interrupted by the user";
 
-const BASE_MODES: PermissionMode[] = ["default", "acceptEdits", "plan"];
+const BASE_MODES: PermissionMode[] = ["auto", "default", "acceptEdits", "plan"];
 
 /**
  * Event seqs must keep increasing across sidecar restarts, but streamed events are not stored.
@@ -157,7 +157,8 @@ export class ClaudeSession {
     this.meta = {
       model: null,
       active_model: null,
-      permission_mode: config.autoApprove ? "bypassPermissions" : "default",
+      // Auto-approve sessions too: Bypass stays one pick away, never the default.
+      permission_mode: "auto",
       modes,
       // Claude lists its models once it starts; until then, the ones it listed last.
       models: store.models(),
@@ -519,7 +520,10 @@ export class ClaudeSession {
     const events = translate(message).filter((event) => !this.requests.hides(event));
     const started = this.followUps.frame(message, events.some((event) => !isEphemeral(event)));
     if (started) this.emit({ type: "turn_start", user_ids: started });
+    // Claude Code starts in Ask instead when auto mode is unavailable, as for a model without it.
+    const noAuto = message.type === "system" && message.subtype === "init" && message.permissionMode === "default" && this.meta.permission_mode === "auto";
     for (const event of events) this.emit(event);
+    if (noAuto) this.emit({ type: "notice", text: "Auto mode is not available here, so Claude asks before acting." });
     if (message.type === "result") {
       this.endTurn();
       void this.loadContextUsage(query);

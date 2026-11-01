@@ -62,7 +62,7 @@
 
 <style>
   .steps { display: grid; grid-template-columns: minmax(0, 1fr); gap: calc(2 * var(--chat-unit)); margin: 0; padding: 0; list-style: none; }
-  .step { display: flex; align-items: center; gap: var(--chat-space-2); width: calc(100% + calc(16 * var(--chat-unit))); min-height: calc(28 * var(--chat-unit)); margin-left: calc(-8 * var(--chat-unit)); padding: calc(3 * var(--chat-unit)) var(--chat-space-2); border: 0; border-radius: var(--chat-radius-sm); background: none; color: var(--planeai-text-muted); font: inherit; font-size: var(--chat-size-sm); text-align: left; }
+  .step { display: flex; align-items: center; gap: var(--chat-space-2); width: calc(100% + calc(16 * var(--chat-unit))); min-height: calc(24 * var(--chat-unit)); margin-left: calc(-8 * var(--chat-unit)); padding: calc(3 * var(--chat-unit)) var(--chat-space-2); border: 0; border-radius: var(--chat-radius-sm); background: none; color: var(--planeai-text-muted); font: inherit; font-size: var(--chat-size); text-align: left; }
   .step:hover:not(:disabled) { background: var(--planeai-accent-subtle); color: var(--planeai-text); }
   .icon { display: grid; place-items: center; flex: none; width: calc(16 * var(--chat-unit)); color: var(--planeai-text-subtle); }
   [data-state="failed"] .icon { color: var(--planeai-danger); }
