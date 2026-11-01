@@ -8,6 +8,7 @@
   let { meta, onMode, onModel, onHandoff, actions }: { meta: SessionMeta; onMode: (mode: string) => void; onModel: (model: string | null) => void; onHandoff?: () => void; actions: Snippet } = $props();
 
   const MODES: Record<string, { label: string }> = {
+    auto: { label: "Auto" },
     default: { label: "Ask before acting" },
     acceptEdits: { label: "Accept edits" },
     plan: { label: "Plan only" },
