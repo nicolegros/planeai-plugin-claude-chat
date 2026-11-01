@@ -347,7 +347,8 @@
     /* Turns and the dock are centred on this lane, with at least the default gutter on each side. */
     --chat-lane: calc(736 * var(--chat-unit));
     --chat-gutter: max(var(--chat-space-5), (100% - var(--chat-lane)) / 2);
-    /* The frosted card every dock occupant sits in. */
+    /* Prompts and follow-ups sit in bubbles; the frosted card holds every dock occupant. */
+    --chat-bubble-radius: calc(16 * var(--chat-unit));
     --chat-card-radius: calc(16 * var(--chat-unit));
     --chat-card-background: color-mix(in srgb, var(--planeai-surface) 92%, transparent);
     --chat-card-blur: blur(12px) saturate(1.14);
@@ -417,7 +418,7 @@
   .stop, .stop:hover:not(:disabled) { background: var(--planeai-danger); color: var(--planeai-main); }
   .asking { display: flex; align-items: center; gap: var(--chat-space-2); color: var(--planeai-text-muted); font-size: var(--chat-size-sm); }
   .asking-dot { flex: none; width: calc(8 * var(--chat-unit)); height: calc(8 * var(--chat-unit)); border-radius: 50%; background: var(--planeai-warning); }
-  .follow-up { align-self: flex-end; max-width: 80%; padding: var(--chat-space-3); border-radius: calc(16 * var(--chat-unit)); background: var(--planeai-surface-raised); }
+  .follow-up { align-self: flex-end; max-width: 80%; padding: var(--chat-space-3); border-radius: var(--chat-bubble-radius); background: var(--planeai-surface-raised); }
   .follow-up-label { color: var(--planeai-text-subtle); font-size: var(--chat-size-xs); }
   .follow-up-text { white-space: pre-wrap; overflow-wrap: anywhere; }
   .handed-off { display: flex; align-items: center; gap: var(--chat-space-3); padding: var(--chat-space-3) var(--chat-space-4); }
