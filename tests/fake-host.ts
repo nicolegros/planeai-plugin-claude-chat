@@ -8,6 +8,7 @@ export const META: SessionMeta = {
   compacting: false,
   cwd: "/work/repo",
   limits: null,
+  background: [],
   permission_mode: "auto",
   modes: ["auto", "default", "acceptEdits", "plan"],
   models: [{ value: "opus", label: "Opus" }],

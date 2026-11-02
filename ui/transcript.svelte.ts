@@ -17,7 +17,8 @@ export type Entry =
   | { kind: "turn_start"; seq: number; user_ids: string[] }
   | { kind: "assistant"; seq: number; text: string }
   /** `children`: the calls of the subagent this call started, in order. `at`: when it was made and came back, in epoch ms. */
-  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; at?: number; result: { is_error: boolean; summary: string; lines?: number; at?: number } | null; children: ToolEntry[] }
+  /** `background`: it answered at once, but the work it started still runs in the background. */
+  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; at?: number; result: { is_error: boolean; summary: string; lines?: number; at?: number; pending?: true } | null; children: ToolEntry[]; background?: boolean }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
   /** `answers` is null until answered, and stays null when the user skipped (`resolved`). */
   | { kind: "question"; seq: number; request_id: string; questions: Question[]; answers: Record<string, string> | null; resolved: boolean }
@@ -32,7 +33,7 @@ export type ToolEntry = Extract<Entry, { kind: "tool" }>;
 export type UserEntry = Extract<Entry, { kind: "user" }>;
 export type ResultEntry = Extract<Entry, { kind: "result" }>;
 
-const EMPTY_META: SessionMeta = { model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false, cwd: null, limits: null };
+const EMPTY_META: SessionMeta = { model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false, cwd: null, limits: null, background: [] };
 
 /** Folds the ordered event stream into renderable entries; events at or below `seq` are ignored. */
 export class Transcript {
@@ -44,6 +45,8 @@ export class Transcript {
   seq = 0;
   /** Every tool call by id, a subagent's included, so results and subagent calls find theirs. */
   private tools = new Map<string, ToolEntry>();
+  /** The calls whose work runs in the background, as the session last said. */
+  private inBackground = new Set<string>();
 
   apply({ seq, payload }: StoredEvent): void {
     if (seq <= this.seq) return;
@@ -53,6 +56,15 @@ export class Transcript {
 
   setMeta(meta: SessionMeta): void {
     this.meta = { ...EMPTY_META, ...meta };
+    this.markBackground();
+  }
+
+  /** Marks the calls whose work runs in the background, and unmarks those whose work ended. */
+  private markBackground(): void {
+    this.inBackground = new Set(this.meta.background.flatMap((task) => (task.tool_use_id ? [task.tool_use_id] : [])));
+    for (const [id, tool] of this.tools) {
+      if (this.inBackground.has(id) !== !!tool.background) tool.background = this.inBackground.has(id);
+    }
   }
 
   private fold(seq: number, event: ChatEvent): void {
@@ -62,6 +74,7 @@ export class Transcript {
         return;
       case "meta":
         this.meta = { ...this.meta, ...event.meta };
+        if (event.meta.background) this.markBackground();
         return;
       case "status":
         this.status = event.status;
@@ -74,7 +87,7 @@ export class Transcript {
         this.entries.push({ kind: "assistant", seq, text: event.text });
         return;
       case "tool": {
-        const tool: ToolEntry = { kind: "tool", seq, id: event.id, name: event.name, summary: event.summary, input: event.input, at: event.at, result: null, children: [] };
+        const tool: ToolEntry = { kind: "tool", seq, id: event.id, name: event.name, summary: event.summary, input: event.input, at: event.at, result: null, children: [], ...(this.inBackground.has(event.id) ? { background: true } : {}) };
         // A subagent's call whose Agent call is not loaded, as in a page not fetched, has nowhere to show.
         const siblings = event.parent ? this.tools.get(event.parent)?.children : this.entries;
         if (!siblings) return;
@@ -86,7 +99,7 @@ export class Transcript {
       }
       case "tool_result": {
         const tool = this.tools.get(event.tool_use_id);
-        if (tool) tool.result = { is_error: event.is_error, summary: event.summary, ...(event.lines === undefined ? {} : { lines: event.lines }), ...(event.at === undefined ? {} : { at: event.at }) };
+        if (tool) tool.result = { is_error: event.is_error, summary: event.summary, ...(event.lines === undefined ? {} : { lines: event.lines }), ...(event.at === undefined ? {} : { at: event.at }), ...(event.pending ? { pending: true as const } : {}) };
         return;
       }
       case "permission": {

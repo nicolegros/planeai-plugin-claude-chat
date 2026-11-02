@@ -20,6 +20,7 @@ export class FakeQuery {
   readonly close = vi.fn(() => this.finish());
   readonly setPermissionMode = vi.fn(async () => {});
   readonly setModel = vi.fn(async () => {});
+  readonly stopTask = vi.fn(async () => {});
   readonly supportedModels = vi.fn(() => this.modelsAnswer);
   /** Resolves at once unless the factory holds models back for `releaseModels`. */
   private modelsAnswer: Promise<{ value: string; displayName: string }[]>;
@@ -83,6 +84,7 @@ export function fakeQueryFactory({ holdModels = false } = {}): { factory: QueryF
       close: fake.close,
       setPermissionMode: fake.setPermissionMode,
       setModel: fake.setModel,
+      stopTask: fake.stopTask,
       supportedModels: fake.supportedModels,
       getContextUsage: fake.getContextUsage,
       supportedCommands: fake.supportedCommands,

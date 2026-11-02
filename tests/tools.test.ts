@@ -73,6 +73,9 @@ describe("viewTool", () => {
     const groups = stepGroups([agent("a"), tool("Read", read("x"), { id: "r" }), agent("b"), agent("c", { result: null }), agent("d", { result: { is_error: true, summary: "" } })]);
     expect(groups.map((group) => (group.kind === "step" ? group.tool.id : group.tools.map((tool) => tool.id)))).toEqual(["a", "r", ["b", "c", "d"]]);
     expect(viewAgents((groups[2] as { tools: ToolEntry[] }).tools, 0)).toEqual({ label: "3 subagents · 1 working · 1 done · 1 failed", running: true });
+    // A background subagent works on whatever its placeholder result said.
+    const background = [agent("e", { result: { is_error: true, summary: "" }, background: true }), agent("f")];
+    expect(viewAgents(background, 0)).toEqual({ label: "2 subagents · 1 working · 1 done", running: true });
   });
 
   it("previews changes and command output only", () => {

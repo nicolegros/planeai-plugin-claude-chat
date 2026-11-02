@@ -56,6 +56,16 @@ _Avoid_: Tool args, params
 One line about a tool call's input, kept so a tool without a tool input still shows something.
 The UI shows it as it is and never reads fields out of it.
 
+**Subagent**:
+A Claude that an Agent call starts to do part of the work, whose own tool calls show nested under that call.
+Several launched together show as one group.
+_Avoid_: Child agent, worker
+
+**Background task**:
+A command or subagent Claude Code runs on after the tool call that started it answered, and often after the turn ended.
+Its call reads as running until Claude Code says the task ended, and the chat lists what still runs above the message box.
+_Avoid_: Async task, job
+
 ### Chat UI
 
 **Chat session**:

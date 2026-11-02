@@ -6,8 +6,9 @@
   import Spinner from "./Spinner.svelte";
   import ToolDetail from "./ToolDetail.svelte";
   import ToolSteps from "./ToolSteps.svelte";
+  import { clock } from "./clock.svelte";
   import { plural } from "./format";
-  import { isAgent, previewOf, stepGroups, viewAgent, viewAgents, viewTool } from "./tools";
+  import { answerOf, isAgent, isRunning, previewOf, stepGroups, verbOf, viewAgent, viewAgents, viewTool } from "./tools";
   import type { ToolEntry } from "./transcript.svelte";
 
   let { tools, root }: { tools: ToolEntry[]; root?: string } = $props();
@@ -15,21 +16,18 @@
   let open = $state<Record<string, boolean>>({});
   /** A group of subagents stays open while one works, unless the user folded or unfolded it. */
   let groupOpen = $state<Record<string, boolean>>({});
-  let now = $state(Date.now());
-  const working = $derived(tools.some((tool) => isAgent(tool) && tool.result === null));
+  const working = $derived(tools.some((tool) => isAgent(tool) && isRunning(tool)));
+  const now = $derived(clock.now);
 
   // Running subagents show how long they have run.
   $effect(() => {
-    if (!working) return;
-    now = Date.now();
-    const timer = setInterval(() => (now = Date.now()), 1000);
-    return () => clearInterval(timer);
+    if (working) return clock.hold();
   });
 </script>
 
 {#snippet step(tool: ToolEntry)}
   {@const view = viewTool(tool, root)}
-  {@const verb = view.verbs[view.state === "running" ? 0 : 1]}
+  {@const verb = verbOf(view)}
   {@const detailId = `${uid}-${tool.id}`}
   <li class="tool" data-state={view.state}>
     <button type="button" class="step" aria-expanded={!!open[tool.id]} aria-controls={open[tool.id] ? detailId : undefined} onclick={() => (open[tool.id] = !open[tool.id])}>
@@ -71,7 +69,9 @@
 {/snippet}
 
 {#snippet agent(tool: ToolEntry)}
-  {@const view = viewAgent(tool, now, root)}
+  <!-- Only a running call reads the clock, so finished rows do not redraw each second. -->
+  {@const view = viewAgent(tool, isRunning(tool) ? now : 0, root)}
+  {@const answer = answerOf(tool)}
   {@const detailId = `${uid}-${tool.id}`}
   <li class="tool" data-state={view.state}>
     <button type="button" class="step" aria-expanded={!!open[tool.id]} aria-controls={open[tool.id] ? detailId : undefined} onclick={() => (open[tool.id] = !open[tool.id])}>
@@ -87,7 +87,7 @@
     {#if open[tool.id]}
       <div class="nested" id={detailId}>
         {#if tool.children.length}<ToolSteps tools={tool.children} {root} />{/if}
-        {#if tool.result?.summary.trim()}<p class="answer">{tool.result.summary.trim()}</p>{/if}
+        {#if answer}<p class="answer">{answer}</p>{/if}
       </div>
     {:else if view.detail}
       <p class="preview agent-detail">{view.detail}</p>
@@ -98,7 +98,7 @@
 <ul class="steps">
   {#each stepGroups(tools) as group (group.kind === "step" ? group.tool.id : `group-${group.tools[0].id}`)}
     {#if group.kind === "agents"}
-      {@const view = viewAgents(group.tools, now)}
+      {@const view = viewAgents(group.tools, group.tools.some(isRunning) ? now : 0)}
       {@const key = group.tools[0].id}
       {@const expanded = groupOpen[key] ?? view.running}
       {@const groupId = `${uid}-group-${key}`}
