@@ -127,7 +127,7 @@
   .family { flex: 1 1 0; min-width: 0; }
   .size input { width: 72px; }
   /* Shares the preview's line, since the pane's frame has no room for another. */
-  .foot { display: flex; align-items: center; gap: var(--planeai-space-2); }
+  .foot { display: flex; align-items: center; gap: var(--planeai-space-2); min-width: 0; }
   .foot .line { flex: 1; min-width: 0; }
   .width { display: flex; flex: none; align-items: center; gap: var(--planeai-space-1); }
   .width span { color: var(--planeai-text-muted); font-size: 12px; white-space: nowrap; }
