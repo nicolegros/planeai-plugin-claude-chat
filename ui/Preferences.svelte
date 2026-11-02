@@ -11,15 +11,18 @@
   let codeFont = $state("");
   /** A number input binds `undefined` while it is empty or not a number. */
   let size = $state<number | undefined>();
+  let fullWidth = $state(false);
   let failure = $state<string | null>(null);
   /** Until the saved settings are known, an edit would save over the fields not shown yet. */
   let loaded = $state(false);
   /** Saved, but open chats could not be told; they read the settings when they open. */
   let unannounced = $state(false);
+  /** The settings last loaded or sent to be saved, which a width change keeps while another field is invalid. */
+  let lastValid: Appearance = {};
   /** Saves run one after another, so the last edit is the one that sticks. */
   let saving: Promise<unknown> = Promise.resolve();
 
-  const appearance = $derived(normalizeAppearance({ font_family: font, code_font_family: codeFont, font_size: size }));
+  const appearance = $derived(normalizeAppearance({ font_family: font, code_font_family: codeFont, font_size: size, full_width: fullWidth }));
   const fontProblem = $derived(familyProblem(font));
   const codeFontProblem = $derived(familyProblem(codeFont));
   const sizeProblem = $derived(size === undefined || validSize(size) ? null : `Size must be a whole number from ${FONT_SIZE.min} to ${FONT_SIZE.max}.`);
@@ -33,9 +36,11 @@
     failure = null;
     try {
       const saved = normalizeAppearance(await context.host.settings.get());
+      lastValid = saved;
       font = saved.font_family ?? "";
       codeFont = saved.code_font_family ?? "";
       size = saved.font_size;
+      fullWidth = saved.full_width ?? false;
       loaded = true;
     } catch (reason) {
       failure = `Could not load: ${describe(reason)}`;
@@ -45,6 +50,7 @@
   onMount(() => void load());
 
   function save(next: Appearance): void {
+    lastValid = next;
     saving = saving.then(async () => {
       try {
         await context.host.settings.replace({ ...next });
@@ -67,10 +73,15 @@
     if (loaded && !problem) save(appearance);
   }
 
+  function onWidthChange(): void {
+    if (loaded) save(problem ? normalizeAppearance({ ...lastValid, full_width: fullWidth }) : appearance);
+  }
+
   function reset(): void {
     font = "";
     codeFont = "";
     size = undefined;
+    fullWidth = false;
     save({});
   }
 </script>
@@ -99,15 +110,21 @@
   <!-- Always present, so invalid fields can point at it and only problems are announced. -->
   <p id={STATUS_ID} class="visually-hidden" aria-live="polite">{problem ?? ""}</p>
   <!-- One line whatever it says: PlaneAI gives this pane a fixed-height frame. -->
-  {#if problem}
-    <p class="line error" aria-hidden="true" title={problem}>{problem}</p>
-  {:else if failure}
-    <p class="line error" role="alert" title={failure}>{failure}</p>
-  {:else if unannounced}
-    <p class="line" role="status">Saved. Open chats use it when they are reopened.</p>
-  {:else}
-    <p class="line" aria-hidden="true" style={appearanceStyle(appearance)}>Claude's replies look like this, with <code>inline code</code> in the code font.</p>
-  {/if}
+  <div class="foot">
+    {#if problem}
+      <p class="line error" aria-hidden="true" title={problem}>{problem}</p>
+    {:else if failure}
+      <p class="line error" role="alert" title={failure}>{failure}</p>
+    {:else if unannounced}
+      <p class="line" role="status">Saved. Open chats use it when they are reopened.</p>
+    {:else}
+      <p class="line" aria-hidden="true" style={appearanceStyle(appearance)}>Claude's replies look like this, with <code>inline code</code> in the code font.</p>
+    {/if}
+    <label class="width" title="Span the whole pane instead of a centred column">
+      <input type="checkbox" bind:checked={fullWidth} disabled={!loaded} onchange={onWidthChange} />
+      <span>Full width</span>
+    </label>
+  </div>
 </section>
 
 <style>
@@ -117,6 +134,12 @@
   label span { color: var(--planeai-text-subtle); font-size: 11.5px; }
   .family { flex: 1 1 0; min-width: 0; }
   .size input { width: 72px; }
+  /* Shares the preview's line, since the pane's frame has no room for another. */
+  .foot { display: flex; align-items: center; gap: var(--planeai-space-2); min-width: 0; }
+  .foot .line { flex: 1; min-width: 0; }
+  .width { display: flex; flex: none; align-items: center; gap: var(--planeai-space-1); }
+  .width span { color: var(--planeai-text-muted); font-size: 12px; white-space: nowrap; }
+  .width input { margin: 0; }
   input { min-width: 0; padding-top: 5px; padding-bottom: 5px; }
   input[aria-invalid="true"] { border-color: var(--planeai-danger); }
   button { flex: none; }
