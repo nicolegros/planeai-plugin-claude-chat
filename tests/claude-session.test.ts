@@ -613,6 +613,38 @@ describe("ClaudeSession", () => {
     ]);
   });
 
+  it("ends the calls a sidecar that died left open, once the session is opened again", () => {
+    store.append(SESSION_ID, { seq: 1, payload: { type: "user", text: "go" } });
+    store.append(SESSION_ID, { seq: 2, payload: { type: "tool", id: "done", name: "Read", summary: "a" } });
+    store.append(SESSION_ID, { seq: 3, payload: { type: "tool_result", tool_use_id: "done", is_error: false, summary: "a" } });
+    store.append(SESSION_ID, { seq: 4, payload: { type: "tool", id: "bg", name: "Bash", summary: "make watch" } });
+    store.append(SESSION_ID, { seq: 5, payload: { type: "tool_result", tool_use_id: "bg", is_error: false, summary: "Command running in background with ID: b1.", pending: true } });
+    store.append(SESSION_ID, { seq: 6, payload: { type: "tool", id: "open", name: "Grep", summary: "TODO" } });
+    const chat = session();
+    chat.announce();
+    expect(events.map(({ payload }) => payload).filter((event) => event.type === "tool_result")).toEqual([
+      { type: "tool_result", tool_use_id: "bg", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+      { type: "tool_result", tool_use_id: "open", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+    ]);
+    // Opening it again finds nothing more to end.
+    chat.announce();
+    expect(events.filter(({ payload }) => payload.type === "tool_result")).toHaveLength(2);
+  });
+
+  it("ends a subagent's running calls when the subagent ends", async () => {
+    const chat = session();
+    await chat.send("go");
+    const call = (id: string, name: string, parent?: string) => ({ type: "assistant", parent_tool_use_id: parent ?? null, session_id: SESSION_ID, message: { content: [{ type: "tool_use", id, name, input: {} }] } }) as never;
+    const result = (id: string) => ({ type: "user", parent_tool_use_id: null, session_id: SESSION_ID, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "Stopped", is_error: true }] } }) as never;
+    fake.queries[0].emit(call("agent", "Agent"), call("inner", "Agent", "agent"), call("deep", "Grep", "inner"), result("agent"));
+    await flush();
+    expect(events.map(({ payload }) => payload).filter((event) => event.type === "tool_result").map((event) => [event.tool_use_id, event.summary])).toEqual([
+      ["agent", "Stopped"],
+      ["inner", "Its subagent ended before this finished."],
+      ["deep", "Its subagent ended before this finished."],
+    ]);
+  });
+
   it("ends a call Claude never answered when Claude stops", async () => {
     const chat = session();
     await chat.send("go");

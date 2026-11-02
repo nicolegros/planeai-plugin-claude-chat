@@ -16,16 +16,18 @@ const KINDS: Record<string, BackgroundTask["kind"]> = { local_bash: "command", l
 
 const ENDINGS = { completed: "finished", failed: "failed", stopped: "was stopped" } as const;
 
-/** Enough of a command's output for its result, which keeps only its start and end anyway. */
-const MAX_OUTPUT_BYTES = 1_000_000;
+const NOUNS: Record<BackgroundTask["kind"], string> = { command: "Command", agent: "Subagent", other: "Background task" };
+
+/** Enough of a command's output for its result, which keeps only about 6,000 characters of it. */
+const MAX_OUTPUT_BYTES = 64 * 1024;
 
 /** The end of a background command's output file, or `null` when it cannot be read. */
-export function readOutput(path: string): string | null {
+export function readOutput(path: string, limit = MAX_OUTPUT_BYTES): string | null {
   try {
     const file = openSync(path, "r");
     try {
       const size = fstatSync(file).size;
-      const length = Math.min(size, MAX_OUTPUT_BYTES);
+      const length = Math.min(size, limit);
       const buffer = Buffer.alloc(length);
       readSync(file, buffer, 0, length, size - length);
       return buffer.toString("utf8");
@@ -98,8 +100,7 @@ export class BackgroundTasks {
     this.known.delete(message.task_id);
     if (!task?.backgrounded || message.skip_transcript) return [];
     const exit = task.kind === "command" ? /exit code (\d+)/.exec(message.summary)?.[1] : undefined;
-    const noun = task.kind === "agent" ? "Subagent" : task.kind === "command" ? "Command" : "Background task";
-    const notice: ChatEvent = { type: "notice", text: `${noun} "${clip(task.label, 80)}" ${ENDINGS[message.status]}${exit === undefined ? "" : ` (exit ${exit})`}` };
+    const notice: ChatEvent = { type: "notice", text: `${NOUNS[task.kind]} "${clip(task.label, 80)}" ${ENDINGS[message.status]}${exit === undefined ? "" : ` (exit ${exit})`}` };
     const toolUseId = message.tool_use_id ?? task.tool_use_id;
     if (!toolUseId) return [notice];
     const failed = message.status !== "completed" || (exit !== undefined && exit !== "0");

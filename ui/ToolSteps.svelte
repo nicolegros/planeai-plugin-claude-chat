@@ -69,7 +69,9 @@
 {/snippet}
 
 {#snippet agent(tool: ToolEntry)}
-  {@const view = viewAgent(tool, now, root)}
+  <!-- Only a running call reads the clock, so finished rows do not redraw each second. -->
+  {@const view = viewAgent(tool, isRunning(tool) ? now : 0, root)}
+  {@const answer = answerOf(tool)}
   {@const detailId = `${uid}-${tool.id}`}
   <li class="tool" data-state={view.state}>
     <button type="button" class="step" aria-expanded={!!open[tool.id]} aria-controls={open[tool.id] ? detailId : undefined} onclick={() => (open[tool.id] = !open[tool.id])}>
@@ -85,7 +87,7 @@
     {#if open[tool.id]}
       <div class="nested" id={detailId}>
         {#if tool.children.length}<ToolSteps tools={tool.children} {root} />{/if}
-        {#if answerOf(tool)}<p class="answer">{answerOf(tool)}</p>{/if}
+        {#if answer}<p class="answer">{answer}</p>{/if}
       </div>
     {:else if view.detail}
       <p class="preview agent-detail">{view.detail}</p>
@@ -96,7 +98,7 @@
 <ul class="steps">
   {#each stepGroups(tools) as group (group.kind === "step" ? group.tool.id : `group-${group.tools[0].id}`)}
     {#if group.kind === "agents"}
-      {@const view = viewAgents(group.tools, now)}
+      {@const view = viewAgents(group.tools, group.tools.some(isRunning) ? now : 0)}
       {@const key = group.tools[0].id}
       {@const expanded = groupOpen[key] ?? view.running}
       {@const groupId = `${uid}-group-${key}`}

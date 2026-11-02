@@ -2,6 +2,7 @@
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { appearanceStyle } from "../src/appearance";
   import BackgroundBar from "./BackgroundBar.svelte";
+  import { backgroundTitle } from "./background";
   import { ChatSession } from "./chat-session.svelte";
   import CommandMenu from "./CommandMenu.svelte";
   import { matchCommands } from "./commands.svelte";
@@ -34,6 +35,7 @@
 
   const conversation = $derived(turns(transcript.entries));
   const root = $derived(transcript.meta.cwd ?? undefined);
+  const backgroundShown = $derived(transcript.meta.background.length > 0 && !session.working);
 
   const uid = $props.id();
   const MENU_ID = `${uid}-commands`;
@@ -268,7 +270,7 @@
       </section>
     {/each}
   </div>
-  <p class="visually-hidden" role="status">{session.status === "needs_attention" ? "Claude is waiting for your answer" : session.working ? "Claude is working" : ""}</p>
+  <p class="visually-hidden" role="status">{session.status === "needs_attention" ? "Claude is waiting for your answer" : session.working ? "Claude is working" : backgroundShown ? backgroundTitle(transcript.meta.background) : ""}</p>
   <div class="dock" bind:clientHeight={dockHeight}>
     {#if session.dock.kind === "question"}
       {@const question = session.dock.question}
@@ -280,7 +282,7 @@
       </div>
     {:else}
       <!-- Like T3 Code, background work shows here once Claude is no longer working. -->
-      {#if transcript.meta.background.length > 0 && !session.working}
+      {#if backgroundShown}
         <BackgroundBar tasks={transcript.meta.background} onStop={() => session.stopBackground()} />
       {/if}
       <form class="composer" onsubmit={(event) => { event.preventDefault(); send(); }}>

@@ -136,7 +136,7 @@ function rendererOf(tool: ToolEntry): [ToolRenderer<ToolInput | undefined>, Tool
   return renderer ? [renderer, tool.input] : [otherTool(tool.name), undefined];
 }
 
-/** Still working: no result yet, or its work runs on in the background. */
+/** Still working: no result yet, or its work runs on in the background; a placeholder left from a Claude that stopped is not. */
 export const isRunning = (tool: ToolEntry): boolean => tool.result === null || !!tool.background;
 
 const stateOf = (tool: ToolEntry): ToolView["state"] => (isRunning(tool) ? "running" : tool.result?.is_error ? "failed" : "done");
@@ -149,12 +149,15 @@ export function viewTool(tool: ToolEntry, root?: string): ToolView {
   return { ...renderer.view(input, tool, { root, output, lines }), state };
 }
 
-/** What a call returned, short of Claude Code's placeholder for work it runs on in the background. */
-export const answerOf = (tool: ToolEntry): string => (tool.result?.pending || tool.background ? "" : (tool.result?.summary.trim() ?? ""));
+/** Its result is only Claude Code's placeholder for work it runs, or ran, in the background. */
+const placeholder = (tool: ToolEntry): boolean => !!tool.result?.pending || !!tool.background;
+
+/** What a call returned, short of a placeholder. */
+export const answerOf = (tool: ToolEntry): string => (placeholder(tool) ? "" : (tool.result?.summary.trim() ?? ""));
 
 /** A change's diff, or a command's last output. */
 export function previewOf(tool: ToolEntry): Preview | null {
-  if (tool.result?.pending || tool.background) return null;
+  if (placeholder(tool)) return null;
   const [renderer, input] = rendererOf(tool);
   return renderer.preview?.(input, tool) ?? null;
 }

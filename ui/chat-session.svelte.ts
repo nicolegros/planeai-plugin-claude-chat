@@ -94,8 +94,15 @@ export class ChatSession {
     void this.run(() => this.context.host.call("claude.mode.set", { session_id: this.id, mode }));
   }
 
-  stopBackground(): void {
-    void this.run(() => this.context.host.call("claude.background.stop", { session_id: this.id }));
+  /** Whether the stop went through; a task that could not be stopped is reported to the user. */
+  async stopBackground(): Promise<boolean> {
+    try {
+      await this.context.host.call("claude.background.stop", { session_id: this.id });
+      return true;
+    } catch (error) {
+      this.notifyError(error);
+      return false;
+    }
   }
 
   setModel(model: string | null): void {

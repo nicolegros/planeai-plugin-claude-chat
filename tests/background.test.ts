@@ -42,6 +42,7 @@ describe("BackgroundTasks", () => {
     const folder = mkdtempSync(join(tmpdir(), "claude-chat-output-"));
     writeFileSync(join(folder, "out"), "tick-1\ntick-2\n");
     expect(readOutput(join(folder, "out"))).toBe("tick-1\ntick-2\n");
+    expect(readOutput(join(folder, "out"), 7)).toBe("tick-2\n");
     expect(readOutput(join(folder, "missing"))).toBeNull();
   });
 });

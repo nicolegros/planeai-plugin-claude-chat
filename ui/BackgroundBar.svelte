@@ -5,7 +5,7 @@
   import type { BackgroundTask } from "./host";
   import Icon from "./Icon.svelte";
 
-  let { tasks, onStop }: { tasks: BackgroundTask[]; onStop: () => void } = $props();
+  let { tasks, onStop }: { tasks: BackgroundTask[]; onStop: () => Promise<boolean> } = $props();
 
   /** Set until the stopped work leaves the list, which changes with each task that stops. */
   let stopping = $state<BackgroundTask[] | null>(null);
@@ -13,16 +13,16 @@
 
   $effect(() => clock.hold());
 
-  function stop(): void {
+  async function stop(): Promise<void> {
     stopping = tasks;
-    onStop();
+    if (!(await onStop())) stopping = null;
   }
 </script>
 
 <div class="background">
   <span class="icon"><Icon name={tasks.some((task) => task.kind === "agent") ? "bot" : "terminal"} size={14} /></span>
-  <!-- Only what runs is announced, not the time ticking next to it. -->
-  <span class="title" role="status">{backgroundTitle(tasks)}</span>
+  <!-- The chat's own status line announces what runs, and not the time ticking here. -->
+  <span class="title">{backgroundTitle(tasks)}</span>
   <span class="elapsed" aria-hidden="true">{duration(Math.max(0, clock.now - since))}</span>
   <button type="button" class="stop" onclick={stop} disabled={stopping === tasks} aria-label={stopping === tasks ? "Stopping background work" : "Stop background work"}>{stopping === tasks ? "Stopping…" : "Stop"}</button>
 </div>

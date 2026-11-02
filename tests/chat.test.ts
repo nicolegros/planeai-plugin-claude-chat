@@ -510,6 +510,7 @@ describe("Chat", () => {
       await settle();
       const bar = () => document.querySelector(".background")!;
       expect(bar().querySelector(".title")?.textContent).toBe("Waiting on 1 subagent and 1 command");
+      expect(document.querySelector(".visually-hidden[role=status]")?.textContent).toBe("Waiting on 1 subagent and 1 command");
       expect(bar().querySelector(".elapsed")?.textContent).toBe("1m");
       button("Stop background work").click();
       await settle();
@@ -531,6 +532,15 @@ describe("Chat", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("lets the user try again when background work could not be stopped", async () => {
+    const harness = await render({ meta: { ...META, background: [{ id: "b1", kind: "command", label: "Watch the build", started_at: Date.now() }] } });
+    vi.mocked(harness.value.host.call).mockRejectedValueOnce(new Error('Could not stop "Watch the build": no such task'));
+    button("Stop background work").click();
+    await settle();
+    expect(harness.value.host.data.notify).toHaveBeenCalledWith('Could not stop "Watch the build": no such task');
+    expect(button("Stop background work").disabled).toBe(false);
   });
 
   it("says how long a clipped output really was", async () => {

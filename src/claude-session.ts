@@ -27,6 +27,8 @@ const INTERRUPTED = "Interrupted by the user";
 
 /** The result of a call Claude never answered, or whose background work ended with its process. */
 const UNFINISHED = "Claude stopped before this finished.";
+/** The result of a subagent's call still running when that subagent ended. */
+const ORPHANED = "Its subagent ended before this finished.";
 
 const BASE_MODES: PermissionMode[] = ["auto", "default", "acceptEdits", "plan"];
 
@@ -144,8 +146,10 @@ export class ClaudeSession {
   /** The models of the running Claude process, once listed. */
   private models: Promise<ModelOption[]> = Promise.resolve([]);
   private readonly backgroundTasks = new BackgroundTasks();
-  /** Calls still waiting on their result, background work's placeholders included. */
-  private readonly openCalls = new Set<string>();
+  /** Calls still waiting on their result, background work's placeholders included, each with its Agent call. */
+  private readonly openCalls = new Map<string, string | undefined>();
+  /** Calls the stored transcript left open, as when the sidecar died; no Claude runs them now. */
+  private staleCalls: string[];
   /** Set when the transcript disagrees with PlaneAI on who drives the session; `announce` records it. */
   private handoffCorrection: boolean | null = null;
 
@@ -181,6 +185,8 @@ export class ClaudeSession {
     const inTerminal = lastHandoff?.type === "handoff" && lastHandoff.in_terminal;
     // An empty chat has nothing to correct; it is rebuilt from Claude's transcript instead.
     if (this.events.length > 0 && inTerminal !== config.handedOff) this.handoffCorrection = config.handedOff;
+    for (const { payload } of this.events) this.track(payload);
+    this.staleCalls = [...this.openCalls.keys()];
     this.conversationId = store.conversation(config.id) ?? config.id;
     this.slashCommands = new SlashCommands(store);
     this.restored = this.events.length > 0 ? Promise.resolve() : this.restore();
@@ -240,6 +246,8 @@ export class ClaudeSession {
       this.emit({ type: "handoff", in_terminal: this.handoffCorrection });
       this.handoffCorrection = null;
     }
+    this.endCalls(this.staleCalls.filter((id) => this.openCalls.has(id)), UNFINISHED);
+    this.staleCalls = [];
     this.announceStatus(true);
   }
 
@@ -450,7 +458,7 @@ export class ClaudeSession {
     // Background work ends with the Claude process that ran it, and so does any call left open.
     this.backgroundTasks.reset();
     if (this.meta.background.length > 0) this.updateMeta({ background: [] });
-    for (const id of [...this.openCalls]) this.emit({ type: "tool_result", tool_use_id: id, is_error: true, summary: UNFINISHED, at: Date.now() });
+    this.endCalls([...this.openCalls.keys()], UNFINISHED);
   }
 
   /** Runs an SDK control request without blocking the RPC that asked for it. */
@@ -622,10 +630,18 @@ export class ClaudeSession {
     this.emit({ type: "meta", meta });
   }
 
+  private track(payload: ChatEvent): void {
+    if (payload.type === "tool") this.openCalls.set(payload.id, payload.parent);
+    if (payload.type === "tool_result" && !payload.pending) this.openCalls.delete(payload.tool_use_id);
+  }
+
+  private endCalls(ids: string[], summary: string): void {
+    for (const id of ids) this.emit({ type: "tool_result", tool_use_id: id, is_error: true, summary, at: Date.now() });
+  }
+
   private emit(payload: ChatEvent): void {
     if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
-    if (payload.type === "tool") this.openCalls.add(payload.id);
-    if (payload.type === "tool_result" && !payload.pending) this.openCalls.delete(payload.tool_use_id);
+    this.track(payload);
     const event = { seq: this.nextSeq(), payload };
     if (!isEphemeral(payload)) {
       this.events.push(event);
@@ -633,6 +649,10 @@ export class ClaudeSession {
       this.store.append(this.config.id, event);
     }
     this.host.event(this.config.id, event.seq, payload);
+    // A subagent that ended, as when stopped, leaves its own running calls without a result.
+    if (payload.type === "tool_result" && !payload.pending) {
+      this.endCalls([...this.openCalls].flatMap(([id, parent]) => (parent === payload.tool_use_id ? [id] : [])), ORPHANED);
+    }
   }
 
   private nextSeq(): number {
