@@ -3,7 +3,7 @@ import type { ChatEvent } from "./events";
 type Result = Extract<ChatEvent, { type: "tool_result" }>;
 
 /** The result of a subagent's call still running when that subagent ended. */
-export const ORPHANED = "Its subagent ended before this finished.";
+const ORPHANED = "Its subagent ended before this finished.";
 
 /**
  * Calls still waiting on their result, a background call's placeholder included, so that
@@ -15,19 +15,21 @@ export class OpenCalls {
   /** Calls answered with a placeholder: their work runs on in the background, past their subagent's end. */
   private background = new Set<string>();
 
-  /** Follows a call or its result; returns the results ending the calls of a subagent that just ended. */
-  track(event: ChatEvent, now: number): Result[] {
+  /** Follows a call or its result. A subagent's own calls stay open when it ends, until `orphansOf` or `end`. */
+  track(event: ChatEvent): void {
     if (event.type === "tool") {
       this.parents.set(event.id, event.parent);
       if (event.parent) this.children.set(event.parent, (this.children.get(event.parent) ?? new Set()).add(event.id));
-    }
-    if (event.type !== "tool_result") return [];
-    if (event.pending) {
+    } else if (event.type === "tool_result" && event.pending) {
       if (this.parents.has(event.tool_use_id)) this.background.add(event.tool_use_id);
-      return [];
+    } else if (event.type === "tool_result") {
+      this.close(event.tool_use_id);
     }
-    if (!this.close(event.tool_use_id)) return [];
-    return this.endUnder(event.tool_use_id, ORPHANED, now, true);
+  }
+
+  /** Results ending the open calls of a subagent that ended, short of its background work. */
+  orphansOf(id: string, now: number): Result[] {
+    return this.parents.has(id) ? [] : this.endUnder(id, ORPHANED, now, true);
   }
 
   get ids(): string[] {
@@ -57,7 +59,9 @@ export class OpenCalls {
     const parent = this.parents.get(id);
     this.parents.delete(id);
     this.background.delete(id);
-    if (parent) this.children.get(parent)?.delete(id);
+    const siblings = parent ? this.children.get(parent) : undefined;
+    siblings?.delete(id);
+    if (parent && siblings?.size === 0) this.children.delete(parent);
     return true;
   }
 }

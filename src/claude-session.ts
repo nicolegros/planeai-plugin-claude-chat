@@ -183,7 +183,7 @@ export class ClaudeSession {
     const inTerminal = lastHandoff?.type === "handoff" && lastHandoff.in_terminal;
     // An empty chat has nothing to correct; it is rebuilt from Claude's transcript instead.
     if (this.events.length > 0 && inTerminal !== config.handedOff) this.handoffCorrection = config.handedOff;
-    for (const { payload } of this.events) this.openCalls.track(payload, 0);
+    for (const { payload } of this.events) this.openCalls.track(payload);
     this.staleCalls = this.openCalls.ids;
     this.conversationId = store.conversation(config.id) ?? config.id;
     this.slashCommands = new SlashCommands(store);
@@ -217,7 +217,7 @@ export class ClaudeSession {
     // Every request waits for this, so the UI has not loaded a snapshot and nothing is sent live.
     const kept = replayed.slice(-(MAX_SNAPSHOT_EVENTS - 1));
     // No Claude runs what the stored conversation left unanswered.
-    for (const payload of kept) this.openCalls.track(payload, 0);
+    for (const payload of kept) this.openCalls.track(payload);
     const rebuilt = [...kept, ...this.openCalls.end(UNFINISHED, Date.now()), REBUILT].map((payload) => ({ seq: this.nextSeq(), payload }));
     this.events.push(...rebuilt);
     this.store.appendAll(this.config.id, rebuilt);
@@ -633,7 +633,7 @@ export class ClaudeSession {
 
   private emit(payload: ChatEvent): void {
     if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
-    const orphaned = this.openCalls.track(payload, Date.now());
+    this.openCalls.track(payload);
     const event = { seq: this.nextSeq(), payload };
     if (!isEphemeral(payload)) {
       this.events.push(event);
@@ -641,7 +641,8 @@ export class ClaudeSession {
       this.store.append(this.config.id, event);
     }
     this.host.event(this.config.id, event.seq, payload);
-    for (const result of orphaned) this.emit(result);
+    // A subagent that ended, as when stopped, leaves its own running calls without a result.
+    if (payload.type === "tool_result" && !payload.pending) for (const result of this.openCalls.orphansOf(payload.tool_use_id, Date.now())) this.emit(result);
   }
 
   private nextSeq(): number {

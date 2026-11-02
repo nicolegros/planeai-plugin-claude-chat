@@ -620,15 +620,20 @@ describe("ClaudeSession", () => {
     store.append(SESSION_ID, { seq: 4, payload: { type: "tool", id: "bg", name: "Bash", summary: "make watch" } });
     store.append(SESSION_ID, { seq: 5, payload: { type: "tool_result", tool_use_id: "bg", is_error: false, summary: "Command running in background with ID: b1.", pending: true } });
     store.append(SESSION_ID, { seq: 6, payload: { type: "tool", id: "open", name: "Grep", summary: "TODO" } });
+    // The sidecar died after a subagent's result, before ending the calls it left running.
+    store.append(SESSION_ID, { seq: 7, payload: { type: "tool", id: "agent", name: "Agent", summary: "" } });
+    store.append(SESSION_ID, { seq: 8, payload: { type: "tool", id: "inner", name: "Read", summary: "a", parent: "agent" } });
+    store.append(SESSION_ID, { seq: 9, payload: { type: "tool_result", tool_use_id: "agent", is_error: false, summary: "Done." } });
     const chat = session();
     chat.announce();
     expect(events.map(({ payload }) => payload).filter((event) => event.type === "tool_result")).toEqual([
       { type: "tool_result", tool_use_id: "bg", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
       { type: "tool_result", tool_use_id: "open", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+      { type: "tool_result", tool_use_id: "inner", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
     ]);
     // Opening it again finds nothing more to end.
     chat.announce();
-    expect(events.filter(({ payload }) => payload.type === "tool_result")).toHaveLength(2);
+    expect(events.filter(({ payload }) => payload.type === "tool_result")).toHaveLength(3);
   });
 
   it("ends a subagent's running calls when the subagent ends", async () => {
