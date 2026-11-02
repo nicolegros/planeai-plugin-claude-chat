@@ -518,7 +518,9 @@ export class ClaudeSession {
     // /clear moves Claude to a new id within the turn; its result already carries it.
     if (message.type === "result") this.follow(message.session_id);
     const events = translate(message).filter((event) => !this.requests.hides(event));
-    const started = this.followUps.frame(message, events.some((event) => !isEphemeral(event)));
+    // A subagent's steps, which a background agent sends after its turn ended, never start a turn.
+    const subagent = "parent_tool_use_id" in message && !!message.parent_tool_use_id;
+    const started = this.followUps.frame(message, !subagent && events.some((event) => !isEphemeral(event)));
     if (started) this.emit({ type: "turn_start", user_ids: started });
     // Claude Code starts in Ask instead when auto mode is unavailable, as for a model without it.
     const noAuto = message.type === "system" && message.subtype === "init" && message.permissionMode === "default" && this.meta.permission_mode === "auto";

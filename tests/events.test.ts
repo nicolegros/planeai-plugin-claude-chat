@@ -14,6 +14,30 @@ describe("translate", () => {
     expect(events[5]).toMatchObject({ type: "result", is_error: false, subtype: "success", usage: { output_tokens: expect.any(Number) } });
   });
 
+  it("keeps each subagent's tool calls, tagged with the Agent call that made them, and none of its text", () => {
+    const events = fixture("subagent-turn").flatMap(translate);
+    const write = "toolu_014d9ticYX7FHDYQpJQQtXhA";
+    const list = "toolu_01A2Gm4bY6V59HLQVVwbUfDL";
+    expect(events.flatMap((event) => (event.type === "tool" ? [[event.name, event.parent ?? null]] : []))).toEqual([
+      ["Agent", null],
+      ["Agent", null],
+      ["Bash", write],
+      ["Bash", list],
+      ["Read", write],
+    ]);
+    expect(events.filter((event) => event.type === "tool_result")).toHaveLength(5);
+    // When each agent started and came back, and its answer without the notes Claude wraps it in.
+    expect(events.find((event) => event.type === "tool" && event.id === write)).toMatchObject({ at: Date.parse("2026-11-02T18:19:59.583Z") });
+    expect(events.find((event) => event.type === "tool_result" && event.tool_use_id === write)).toEqual({
+      type: "tool_result",
+      tool_use_id: write,
+      is_error: false,
+      summary: "I ran `echo alpha > a.txt` in `/private/workspace` and then read the file back with the Read tool.\n\n`/private/workspace/a.txt` contains exactly `alpha` followed by a newline (`echo` adds it).",
+      at: Date.parse("2026-11-02T18:20:11.713Z"),
+    });
+    expect(events.filter((event) => event.type === "assistant")).toEqual([expect.objectContaining({ text: expect.stringMatching(/^Both subagents ran in parallel/) })]);
+  });
+
   it("renders slash command output without empty turn summaries", () => {
     const events = fixture("slash-commands").flatMap(translate);
     expect(events.filter((event) => event.type !== "delta" && event.type !== "meta").map((event) => event.type)).toEqual([
@@ -52,9 +76,10 @@ describe("translate", () => {
     ]);
   });
 
-  it("folds subagent traffic away", () => {
-    const [toolUse] = fixture("bash-turn").filter((message) => message.type === "assistant");
-    expect(translate({ ...toolUse, parent_tool_use_id: "toolu_parent" } as typeof toolUse)).toEqual([]);
+  it("never shows a subagent's own text, streamed or whole", () => {
+    const text = { type: "assistant", parent_tool_use_id: "toolu_parent", message: { content: [{ type: "text", text: "Looking around" }] } } as unknown as SDKMessage;
+    const delta = { type: "stream_event", parent_tool_use_id: "toolu_parent", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Look" } } } as unknown as SDKMessage;
+    expect([translate(text), translate(delta)]).toEqual([[], []]);
   });
 
   it("rebuilds a question Claude asked by its questions, however long their summary", () => {
