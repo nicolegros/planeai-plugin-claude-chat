@@ -427,7 +427,55 @@ describe("Chat", () => {
     button("⋯ 2 earlier lines").click();
     flushSync();
     expect(document.querySelector(".output-tail pre")?.textContent).toBe("a\nb\nc\nd\ne");
-    expect(document.querySelector(".answer")?.textContent).toBe("Two callers.");
+    expect(document.querySelector(".agent-detail")?.textContent).toBe("Two callers.");
+  });
+
+  it("shows subagents launched together as one group, each with its latest step, then its answer", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(10_000);
+    try {
+      const harness = await render();
+      const push = (() => {
+        let seq = 0;
+        return (payload: Parameters<typeof harness.push>[1]) => harness.push(++seq, payload);
+      })();
+      push({ type: "tool", id: "a1", name: "Agent", summary: "", input: { kind: "agent", description: "Write and read a.txt" }, at: 1_000 });
+      push({ type: "tool", id: "a2", name: "Agent", summary: "", input: { kind: "agent", description: "List the directory" }, at: 2_000 });
+      push({ type: "tool", id: "b1", name: "Bash", summary: "", input: { kind: "bash", command: "echo alpha > a.txt" }, parent: "a1" });
+      push({ type: "tool_result", tool_use_id: "b1", is_error: false, summary: "" });
+      push({ type: "tool", id: "r1", name: "Read", summary: "", input: { kind: "read", file_path: "/work/repo/a.txt" }, parent: "a1" });
+      push({ type: "tool_result", tool_use_id: "a2", is_error: false, summary: "One file.\nIt is a.txt.", at: 8_000 });
+      await settle();
+      const row = (title: string) => [...document.querySelectorAll<HTMLButtonElement>("button.step")].find((step) => step.querySelector(".sentence")?.textContent?.trim() === title)!;
+      const rows = () => [...document.querySelectorAll(".steps.group > .tool")].map((row) => [row.querySelector(".sentence")?.textContent, row.querySelector(".meta")?.textContent?.replace(/\s+/g, " ").trim(), row.querySelector(".agent-detail")?.textContent]);
+      const group = row("2 subagents · 1 working · 1 done");
+      expect(group.closest(".tool")?.querySelector(".meta")?.textContent?.trim()).toBe("9s");
+      expect(rows()).toEqual([
+        ["Write and read a.txt", "2 steps 9s", "Reading a.txt"],
+        ["List the directory", "6s", "One file."],
+      ]);
+      // A subagent's own steps never reach the turn's step list.
+      expect(document.querySelectorAll(".steps:not(.group) > .tool")).toHaveLength(1);
+
+      vi.advanceTimersByTime(2_000);
+      flushSync();
+      expect(rows()[0][1]).toBe("2 steps 11s");
+
+      row("Write and read a.txt").click();
+      flushSync();
+      expect([...document.querySelectorAll(".steps.group .nested .sentence")].map((step) => step.textContent?.replace(/\s+/g, " ").trim())).toEqual(["Ran echo alpha > a.txt", "Reading a.txt"]);
+
+      push({ type: "tool_result", tool_use_id: "a1", is_error: false, summary: "It says alpha.", at: 12_500 });
+      await settle();
+      // Done, the group folds unless the user unfolds it again.
+      expect(document.querySelector(".steps.group")).toBeNull();
+      row("2 subagents · 2 done").click();
+      flushSync();
+      expect(rows()[0][1]).toBe("2 steps 12s");
+      expect(document.querySelector(".steps.group .answer")?.textContent).toBe("It says alpha.");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says how long a clipped output really was", async () => {

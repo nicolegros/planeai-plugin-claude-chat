@@ -1,5 +1,5 @@
 import { lineCount } from "../src/events";
-import { plural } from "./format";
+import { duration, plural } from "./format";
 import type { Todo, ToolInput } from "./host";
 import type { IconName } from "./icons";
 import { diffStats, editsOf, type Edit } from "./preview";
@@ -28,7 +28,7 @@ export interface ToolView {
 }
 
 /** What is worth reading without expanding a step. */
-export type Preview = { kind: "diff"; edits: Edit[] } | { kind: "output"; output: string; failed: boolean; lines?: number } | { kind: "answer"; text: string };
+export type Preview = { kind: "diff"; edits: Edit[] } | { kind: "output"; output: string; failed: boolean; lines?: number };
 
 interface Facts {
   root?: string;
@@ -106,7 +106,6 @@ const TOOLS: { [K in ToolInput["kind"]]: ToolRenderer<InputOf<K>> } = {
   agent: {
     steps: ["agent", "agents"],
     view: ({ description }) => ({ icon: "bot", verbs: ["Asking an agent to", "Asked an agent to"], target: /^[A-Z][a-z]/.test(description) ? description[0].toLowerCase() + description.slice(1) : description, style: "text" }),
-    preview: (_, tool) => (tool.result?.summary.trim() ? { kind: "answer", text: tool.result.summary.trim() } : null),
   },
   fetch: {
     steps: ["page fetched", "pages fetched"],
@@ -145,7 +144,7 @@ export function viewTool(tool: ToolEntry, root?: string): ToolView {
   return { ...renderer.view(input, tool, { root, output, lines }), state };
 }
 
-/** A change's diff, a command's last output, an agent's answer. */
+/** A change's diff, or a command's last output. */
 export function previewOf(tool: ToolEntry): Preview | null {
   const [renderer, input] = rendererOf(tool);
   return renderer.preview?.(input, tool) ?? null;
@@ -161,4 +160,65 @@ export function describeSteps(tools: ToolEntry[]): string {
     counts.set(words[0], slot);
   }
   return [...counts.values()].map(({ words, count }) => plural(count, ...words)).join(", ");
+}
+
+/** A step as one plain line, as a running agent's latest step reads under it: "Reading a.txt", or a command's description. */
+export function sentenceOf(tool: ToolEntry, root?: string): string {
+  const view = viewTool(tool, root);
+  if (view.lead) return view.lead;
+  return [view.verbs[view.state === "running" ? 0 : 1], view.target, view.folder ? `in ${view.folder}` : ""].filter(Boolean).join(" ");
+}
+
+/** A Markdown line as it reads, without its code ticks, bold, heading, quote or list marks. */
+function plainLine(line: string): string {
+  return line
+    .replace(/^\s*(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)/, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .trim();
+}
+
+export const isAgent = (tool: ToolEntry): boolean => tool.input?.kind === "agent";
+
+/** How long a call ran, or has run so far; unknown when Claude did not stamp its messages. */
+export function elapsed(tool: ToolEntry, now: number): number | undefined {
+  if (tool.at === undefined) return undefined;
+  const end = tool.result ? tool.result.at : now;
+  return end === undefined ? undefined : Math.max(0, end - tool.at);
+}
+
+/** A subagent as its row reads: what it was asked, then its latest step while it works, or its answer. */
+export function viewAgent(tool: ToolEntry, now: number, root?: string): { title: string; state: ToolView["state"]; detail: string; elapsed?: string } {
+  const state = tool.result === null ? "running" : tool.result.is_error ? "failed" : "done";
+  const title = tool.input?.kind === "agent" && tool.input.description ? tool.input.description : "Subagent";
+  const latest = tool.children.at(-1);
+  const answer = plainLine(tool.result?.summary.split("\n").find((line) => line.trim()) ?? "");
+  const detail = state === "running" ? (latest ? sentenceOf(latest, root) : "Starting") : answer;
+  const ms = elapsed(tool, now);
+  return { title, state, detail, ...(ms === undefined ? {} : { elapsed: duration(ms) }) };
+}
+
+/** Steps in order, with two or more subagents launched together kept as one group. */
+export function stepGroups(tools: ToolEntry[]): ({ kind: "step"; tool: ToolEntry } | { kind: "agents"; tools: ToolEntry[] })[] {
+  const out: ({ kind: "step"; tool: ToolEntry } | { kind: "agents"; tools: ToolEntry[] })[] = [];
+  for (const tool of tools) {
+    const last = out.at(-1);
+    if (!isAgent(tool)) out.push({ kind: "step", tool });
+    else if (last?.kind === "agents") last.tools.push(tool);
+    else if (last?.kind === "step" && isAgent(last.tool)) out[out.length - 1] = { kind: "agents", tools: [last.tool, tool] };
+    else out.push({ kind: "step", tool });
+  }
+  return out;
+}
+
+/** "3 subagents · 2 working · 1 done", and how long the group has run, from the first start to the last end. */
+export function viewAgents(tools: ToolEntry[], now: number): { label: string; running: boolean; elapsed?: string } {
+  const working = tools.filter((tool) => tool.result === null).length;
+  const failed = tools.filter((tool) => tool.result?.is_error).length;
+  const done = tools.length - working - failed;
+  const parts = [plural(tools.length, "subagent"), working ? `${working} working` : "", done ? `${done} done` : "", failed ? `${failed} failed` : ""];
+  const starts = tools.flatMap((tool) => (tool.at === undefined ? [] : [tool.at]));
+  const ends = tools.map((tool) => (tool.result ? tool.result.at : now));
+  const known = starts.length === tools.length && ends.every((end) => end !== undefined);
+  return { label: parts.filter(Boolean).join(" · "), running: working > 0, ...(known ? { elapsed: duration(Math.max(...(ends as number[])) - Math.min(...starts)) } : {}) };
 }

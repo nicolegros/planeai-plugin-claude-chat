@@ -4,7 +4,7 @@ import type { ToolEntry } from "../ui/transcript.svelte";
 import { turns } from "../ui/turns";
 
 let seq = 0;
-const tool = (name: string, summary: string, extra: Partial<ToolEntry> = {}): ToolEntry => ({ kind: "tool", seq: ++seq, id: `t${seq}`, name, summary, result: { is_error: false, summary: "" }, ...extra });
+const tool = (name: string, summary: string, extra: Partial<ToolEntry> = {}): ToolEntry => ({ kind: "tool", seq: ++seq, id: `t${seq}`, name, summary, result: { is_error: false, summary: "" }, children: [], ...extra });
 const user = (text: string, queued = false): Entry => ({ kind: "user", seq: ++seq, text, ...(queued ? { queued } : {}) });
 const assistant = (text: string): Entry => ({ kind: "assistant", seq: ++seq, text });
 const result = (duration_ms = 1_000): Entry => ({ kind: "result", seq: ++seq, is_error: false, cost_usd: 0, duration_ms });

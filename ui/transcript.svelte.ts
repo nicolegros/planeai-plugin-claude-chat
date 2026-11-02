@@ -16,7 +16,8 @@ export type Entry =
   | { kind: "user"; seq: number; text: string; queued?: boolean; id?: string }
   | { kind: "turn_start"; seq: number; user_ids: string[] }
   | { kind: "assistant"; seq: number; text: string }
-  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; result: { is_error: boolean; summary: string; lines?: number } | null }
+  /** `children`: the calls of the subagent this call started, in order. `at`: when it was made and came back, in epoch ms. */
+  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; at?: number; result: { is_error: boolean; summary: string; lines?: number; at?: number } | null; children: ToolEntry[] }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
   /** `answers` is null until answered, and stays null when the user skipped (`resolved`). */
   | { kind: "question"; seq: number; request_id: string; questions: Question[]; answers: Record<string, string> | null; resolved: boolean }
@@ -41,6 +42,8 @@ export class Transcript {
   meta = $state<SessionMeta>({ ...EMPTY_META });
   status = $state<SessionStatus>("idle");
   seq = 0;
+  /** Every tool call by id, a subagent's included, so results and subagent calls find theirs. */
+  private tools = new Map<string, ToolEntry>();
 
   apply({ seq, payload }: StoredEvent): void {
     if (seq <= this.seq) return;
@@ -70,13 +73,20 @@ export class Transcript {
         this.live = "";
         this.entries.push({ kind: "assistant", seq, text: event.text });
         return;
-      case "tool":
-        this.live = "";
-        this.entries.push({ kind: "tool", seq, id: event.id, name: event.name, summary: event.summary, input: event.input, result: null });
+      case "tool": {
+        const tool: ToolEntry = { kind: "tool", seq, id: event.id, name: event.name, summary: event.summary, input: event.input, at: event.at, result: null, children: [] };
+        // A subagent's call whose Agent call is not loaded, as in a page not fetched, has nowhere to show.
+        const siblings = event.parent ? this.tools.get(event.parent)?.children : this.entries;
+        if (!siblings) return;
+        if (!event.parent) this.live = "";
+        siblings.push(tool);
+        // The stored entry is the reactive one, which later results must update.
+        this.tools.set(event.id, siblings.at(-1) as ToolEntry);
         return;
+      }
       case "tool_result": {
-        const tool = this.entries.findLast((entry) => entry.kind === "tool" && entry.id === event.tool_use_id);
-        if (tool?.kind === "tool") tool.result = { is_error: event.is_error, summary: event.summary, ...(event.lines === undefined ? {} : { lines: event.lines }) };
+        const tool = this.tools.get(event.tool_use_id);
+        if (tool) tool.result = { is_error: event.is_error, summary: event.summary, ...(event.lines === undefined ? {} : { lines: event.lines }), ...(event.at === undefined ? {} : { at: event.at }) };
         return;
       }
       case "permission": {

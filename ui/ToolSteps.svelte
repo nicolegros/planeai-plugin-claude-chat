@@ -5,58 +5,121 @@
   import OutputTail from "./OutputTail.svelte";
   import Spinner from "./Spinner.svelte";
   import ToolDetail from "./ToolDetail.svelte";
-  import { previewOf, viewTool } from "./tools";
+  import ToolSteps from "./ToolSteps.svelte";
+  import { plural } from "./format";
+  import { isAgent, previewOf, stepGroups, viewAgent, viewAgents, viewTool } from "./tools";
   import type { ToolEntry } from "./transcript.svelte";
 
   let { tools, root }: { tools: ToolEntry[]; root?: string } = $props();
   const uid = $props.id();
   let open = $state<Record<string, boolean>>({});
+  /** A group of subagents stays open while one works, unless the user folded or unfolded it. */
+  let groupOpen = $state<Record<string, boolean>>({});
+  let now = $state(Date.now());
+  const working = $derived(tools.some((tool) => isAgent(tool) && tool.result === null));
+
+  // Running subagents show how long they have run.
+  $effect(() => {
+    if (!working) return;
+    now = Date.now();
+    const timer = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(timer);
+  });
 </script>
 
-<ul class="steps">
-  {#each tools as tool (tool.id)}
-    {@const view = viewTool(tool, root)}
-    {@const verb = view.verbs[view.state === "running" ? 0 : 1]}
-    {@const detailId = `${uid}-${tool.id}`}
-    <li class="tool" data-state={view.state}>
-      <button type="button" class="step" aria-expanded={!!open[tool.id]} aria-controls={open[tool.id] ? detailId : undefined} onclick={() => (open[tool.id] = !open[tool.id])}>
-        <span class="icon">{#if view.state === "running"}<Spinner />{:else}<Icon name={view.icon} />{/if}</span>
-        <span class="sentence">
-          {#if view.lead}
-            {view.lead}<code class="quiet">{view.target}</code>
-          {:else}
-            {verb}
-            {#if view.style === "code"}<code>{view.target}</code>
-            {:else if view.style === "name"}<strong>{view.target}</strong>
-            {:else}{view.target}{/if}
-            {#if view.folder}<span class="dim"> in {view.folder}</span>{/if}
-            {#if view.note}<span class="dim"> · {view.note}</span>{/if}
-          {/if}
-        </span>
-        <span class="meta">
-          {#if view.state === "failed"}<span class="failed">Failed</span>{/if}
-          {#if view.added}<span class="added">+{view.added}</span>{/if}
-          {#if view.removed}<span class="removed">−{view.removed}</span>{/if}
-          {#if view.count && view.state !== "failed"}<span>{view.count}</span>{/if}
-        </span>
-        <span class="chevron"><Icon name="chevron" size={12} /></span>
-      </button>
-      {#if view.todos}
-        <div class="nested"><Checklist todos={view.todos} /></div>
-      {/if}
-      {#if open[tool.id]}
-        <div class="nested" id={detailId}><ToolDetail {tool} /></div>
-      {:else}
-        {@const preview = previewOf(tool)}
-        {#if preview?.kind === "diff"}
-          <div class="preview"><Diff edits={preview.edits} preview /></div>
-        {:else if preview?.kind === "output"}
-          <div class="preview"><OutputTail output={preview.output} failed={preview.failed} lines={preview.lines} /></div>
-        {:else if preview?.kind === "answer"}
-          <p class="preview answer">{preview.text}</p>
+{#snippet step(tool: ToolEntry)}
+  {@const view = viewTool(tool, root)}
+  {@const verb = view.verbs[view.state === "running" ? 0 : 1]}
+  {@const detailId = `${uid}-${tool.id}`}
+  <li class="tool" data-state={view.state}>
+    <button type="button" class="step" aria-expanded={!!open[tool.id]} aria-controls={open[tool.id] ? detailId : undefined} onclick={() => (open[tool.id] = !open[tool.id])}>
+      <span class="icon">{#if view.state === "running"}<Spinner />{:else}<Icon name={view.icon} />{/if}</span>
+      <span class="sentence">
+        {#if view.lead}
+          {view.lead}<code class="quiet">{view.target}</code>
+        {:else}
+          {verb}
+          {#if view.style === "code"}<code>{view.target}</code>
+          {:else if view.style === "name"}<strong>{view.target}</strong>
+          {:else}{view.target}{/if}
+          {#if view.folder}<span class="dim"> in {view.folder}</span>{/if}
+          {#if view.note}<span class="dim"> · {view.note}</span>{/if}
         {/if}
+      </span>
+      <span class="meta">
+        {#if view.state === "failed"}<span class="failed">Failed</span>{/if}
+        {#if view.added}<span class="added">+{view.added}</span>{/if}
+        {#if view.removed}<span class="removed">−{view.removed}</span>{/if}
+        {#if view.count && view.state !== "failed"}<span>{view.count}</span>{/if}
+      </span>
+      <span class="chevron"><Icon name="chevron" size={12} /></span>
+    </button>
+    {#if view.todos}
+      <div class="nested"><Checklist todos={view.todos} /></div>
+    {/if}
+    {#if open[tool.id]}
+      <div class="nested" id={detailId}><ToolDetail {tool} /></div>
+    {:else}
+      {@const preview = previewOf(tool)}
+      {#if preview?.kind === "diff"}
+        <div class="preview"><Diff edits={preview.edits} preview /></div>
+      {:else if preview?.kind === "output"}
+        <div class="preview"><OutputTail output={preview.output} failed={preview.failed} lines={preview.lines} /></div>
       {/if}
-    </li>
+    {/if}
+  </li>
+{/snippet}
+
+{#snippet agent(tool: ToolEntry)}
+  {@const view = viewAgent(tool, now, root)}
+  {@const detailId = `${uid}-${tool.id}`}
+  <li class="tool" data-state={view.state}>
+    <button type="button" class="step" aria-expanded={!!open[tool.id]} aria-controls={open[tool.id] ? detailId : undefined} onclick={() => (open[tool.id] = !open[tool.id])}>
+      <span class="icon">{#if view.state === "running"}<Spinner />{:else}<Icon name="bot" />{/if}</span>
+      <span class="sentence"><strong>{view.title}</strong></span>
+      <span class="meta">
+        {#if view.state === "failed"}<span class="failed">Failed</span>{/if}
+        {#if tool.children.length}<span>{plural(tool.children.length, "step")}</span>{/if}
+        {#if view.elapsed}<span>{view.elapsed}</span>{/if}
+      </span>
+      <span class="chevron"><Icon name="chevron" size={12} /></span>
+    </button>
+    {#if open[tool.id]}
+      <div class="nested" id={detailId}>
+        {#if tool.children.length}<ToolSteps tools={tool.children} {root} />{/if}
+        {#if tool.result?.summary.trim()}<p class="answer">{tool.result.summary.trim()}</p>{/if}
+      </div>
+    {:else if view.detail}
+      <p class="preview agent-detail">{view.detail}</p>
+    {/if}
+  </li>
+{/snippet}
+
+<ul class="steps">
+  {#each stepGroups(tools) as group (group.kind === "step" ? group.tool.id : `group-${group.tools[0].id}`)}
+    {#if group.kind === "agents"}
+      {@const view = viewAgents(group.tools, now)}
+      {@const key = group.tools[0].id}
+      {@const expanded = groupOpen[key] ?? view.running}
+      {@const groupId = `${uid}-group-${key}`}
+      <li class="tool" data-state={view.running ? "running" : "done"}>
+        <button type="button" class="step" aria-expanded={expanded} aria-controls={expanded ? groupId : undefined} onclick={() => (groupOpen[key] = !expanded)}>
+          <span class="icon">{#if view.running}<Spinner />{:else}<Icon name="bot" />{/if}</span>
+          <span class="sentence"><strong>{view.label}</strong></span>
+          <span class="meta">{#if view.elapsed}<span>{view.elapsed}</span>{/if}</span>
+          <span class="chevron"><Icon name="chevron" size={12} /></span>
+        </button>
+        {#if expanded}
+          <ul class="steps group" id={groupId}>
+            {#each group.tools as tool (tool.id)}{@render agent(tool)}{/each}
+          </ul>
+        {/if}
+      </li>
+    {:else if isAgent(group.tool)}
+      {@render agent(group.tool)}
+    {:else}
+      {@render step(group.tool)}
+    {/if}
   {/each}
 </ul>
 
@@ -79,6 +142,9 @@
   [aria-expanded="true"] .chevron { transform: rotate(90deg); }
   /* Lines up with the sentence, past the icon. */
   .preview { margin: calc(2 * var(--chat-unit)) 0 var(--chat-space-2) var(--chat-space-6); }
-  .answer { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; color: var(--planeai-text-muted); font-size: var(--chat-size-sm); white-space: pre-line; }
+  /* The latest step of a working subagent, or its answer, on one line under its row. */
+  .agent-detail { overflow: hidden; color: var(--planeai-text-muted); font-size: var(--chat-size-sm); text-overflow: ellipsis; white-space: nowrap; }
+  .group { margin: calc(2 * var(--chat-unit)) 0 var(--chat-space-1) var(--chat-space-4); }
+  .answer { margin-top: var(--chat-space-2); color: var(--planeai-text-muted); font-size: var(--chat-size-sm); white-space: pre-line; }
   .nested { margin: calc(2 * var(--chat-unit)) 0 var(--chat-space-2) calc(7 * var(--chat-unit)); padding-left: var(--chat-space-4); border-left: 1px solid var(--planeai-border-strong); }
 </style>
