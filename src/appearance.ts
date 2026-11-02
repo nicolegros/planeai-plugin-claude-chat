@@ -1,9 +1,11 @@
-/** The chat's fonts, stored in PlaneAI's settings for this plugin; a missing field is PlaneAI's default. */
+/** The chat's fonts and width, stored in PlaneAI's settings for this plugin; a missing field is the default. */
 export interface Appearance {
   font_family?: string;
   code_font_family?: string;
   /** Base text size in px; the chat's other sizes are derived from it. */
   font_size?: number;
+  /** The conversation spans the pane instead of a centred column. */
+  full_width?: boolean;
 }
 
 export const FONT_SIZE = { min: 10, max: 24, default: 13 };
@@ -55,15 +57,17 @@ export function normalizeAppearance(value: unknown): Appearance {
     ...(fontFamily ? { font_family: fontFamily } : {}),
     ...(codeFontFamily ? { code_font_family: codeFontFamily } : {}),
     ...(validSize(fields.font_size) ? { font_size: fields.font_size } : {}),
+    ...(fields.full_width === true ? { full_width: true } : {}),
   };
 }
 
-/** Inline style for a root element: the fonts, with PlaneAI's as fallbacks for missing ones, the base size, and how much it scales the default spacing. */
+/** Inline style for a root element: the fonts, with PlaneAI's as fallbacks for missing ones, the base size, how much it scales the default spacing, and the full-width lane. */
 export function appearanceStyle(appearance: Appearance): string {
   return [
     `--chat-font: ${appearance.font_family ? `${cssFamily(appearance.font_family)}, ` : ""}var(--planeai-font-sans)`,
     `--chat-code-font: ${appearance.code_font_family ? `${cssFamily(appearance.code_font_family)}, ` : ""}var(--planeai-font-mono)`,
     `--chat-size: ${appearance.font_size ?? FONT_SIZE.default}px`,
     `--chat-scale: ${(appearance.font_size ?? FONT_SIZE.default) / FONT_SIZE.default}`,
+    ...(appearance.full_width ? ["--chat-lane: 100%"] : []),
   ].join("; ");
 }

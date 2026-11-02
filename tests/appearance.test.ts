@@ -20,6 +20,13 @@ describe("appearance", () => {
     expect(normalizeAppearance({ font_size: 25 })).toEqual({});
     expect(normalizeAppearance(null)).toEqual({});
     expect(normalizeAppearance(["Inter"])).toEqual({});
+    expect(normalizeAppearance({ full_width: true })).toEqual({ full_width: true });
+    expect(normalizeAppearance({ full_width: "yes" })).toEqual({});
+  });
+
+  it("widens the lane to the whole pane only when asked", () => {
+    expect(style({})("--chat-lane")).toBe("");
+    expect(style({ full_width: true })("--chat-lane")).toBe("100%");
   });
 
   it("falls back to PlaneAI's fonts behind the user's, quoting each name", () => {

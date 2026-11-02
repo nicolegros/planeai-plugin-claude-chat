@@ -374,6 +374,10 @@ describe("Chat", () => {
     expect(chat.style.getPropertyValue("--chat-font")).toBe("var(--planeai-font-sans)");
     expect(chat.style.getPropertyValue("--chat-code-font")).toBe('"Fira Code", var(--planeai-font-mono)');
     expect(chat.style.getPropertyValue("--chat-size")).toBe("13px");
+    expect(chat.style.getPropertyValue("--chat-lane")).toBe("");
+    harness.push(2, { type: "appearance", appearance: { full_width: true } });
+    await settle();
+    expect(chat.style.getPropertyValue("--chat-lane")).toBe("100%");
   });
 
   it("summarizes each turn with duration, cost and tokens", async () => {
