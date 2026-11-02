@@ -17,6 +17,8 @@
   let loaded = $state(false);
   /** Saved, but open chats could not be told; they read the settings when they open. */
   let unannounced = $state(false);
+  /** The settings last loaded or sent to be saved, which a width change keeps while another field is invalid. */
+  let lastValid: Appearance = {};
   /** Saves run one after another, so the last edit is the one that sticks. */
   let saving: Promise<unknown> = Promise.resolve();
 
@@ -34,6 +36,7 @@
     failure = null;
     try {
       const saved = normalizeAppearance(await context.host.settings.get());
+      lastValid = saved;
       font = saved.font_family ?? "";
       codeFont = saved.code_font_family ?? "";
       size = saved.font_size;
@@ -47,6 +50,7 @@
   onMount(() => void load());
 
   function save(next: Appearance): void {
+    lastValid = next;
     saving = saving.then(async () => {
       try {
         await context.host.settings.replace({ ...next });
@@ -67,6 +71,10 @@
   /** Saves a finished edit; the preview follows every keystroke on its own. */
   function onChange(): void {
     if (loaded && !problem) save(appearance);
+  }
+
+  function onWidthChange(): void {
+    if (loaded) save(problem ? normalizeAppearance({ ...lastValid, full_width: fullWidth }) : appearance);
   }
 
   function reset(): void {
@@ -113,7 +121,7 @@
       <p class="line" aria-hidden="true" style={appearanceStyle(appearance)}>Claude's replies look like this, with <code>inline code</code> in the code font.</p>
     {/if}
     <label class="width" title="Span the whole pane instead of a centred column">
-      <input type="checkbox" bind:checked={fullWidth} disabled={!loaded} onchange={onChange} />
+      <input type="checkbox" bind:checked={fullWidth} disabled={!loaded} onchange={onWidthChange} />
       <span>Full width</span>
     </label>
   </div>

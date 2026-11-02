@@ -89,6 +89,19 @@ describe("Preferences", () => {
     expect(harness.host.settings.replace).toHaveBeenLastCalledWith({});
   });
 
+  it("shows a saved full-width choice, and saves a width change even while another field is invalid", async () => {
+    const harness = context({ font_size: 15, full_width: true });
+    app = mount(Preferences, { target: document.body, props: { context: harness } });
+    await settle();
+    expect(field("Full width").checked).toBe(true);
+    enter(field("Size"), "40");
+    field("Full width").click();
+    await settle();
+    expect(harness.host.settings.replace).toHaveBeenCalledOnce();
+    expect(harness.host.settings.replace).toHaveBeenLastCalledWith({ font_size: 15 });
+    expect(harness.host.call).toHaveBeenLastCalledWith("claude.appearance.changed", { appearance: { font_size: 15 } });
+  });
+
   it("keeps the fields locked until the settings load, and offers a retry when they do not", async () => {
     const harness = context({ font_family: "Inter", font_size: 15 });
     vi.mocked(harness.host.settings.get).mockRejectedValueOnce(new Error("busy"));
