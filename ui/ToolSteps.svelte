@@ -7,7 +7,7 @@
   import ToolDetail from "./ToolDetail.svelte";
   import ToolSteps from "./ToolSteps.svelte";
   import { plural } from "./format";
-  import { isAgent, previewOf, stepGroups, viewAgent, viewAgents, viewTool } from "./tools";
+  import { isAgent, isRunning, previewOf, stepGroups, viewAgent, viewAgents, viewTool } from "./tools";
   import type { ToolEntry } from "./transcript.svelte";
 
   let { tools, root }: { tools: ToolEntry[]; root?: string } = $props();
@@ -16,7 +16,7 @@
   /** A group of subagents stays open while one works, unless the user folded or unfolded it. */
   let groupOpen = $state<Record<string, boolean>>({});
   let now = $state(Date.now());
-  const working = $derived(tools.some((tool) => isAgent(tool) && tool.result === null));
+  const working = $derived(tools.some((tool) => isAgent(tool) && isRunning(tool)));
 
   // Running subagents show how long they have run.
   $effect(() => {

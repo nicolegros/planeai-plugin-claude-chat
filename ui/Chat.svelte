@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { appearanceStyle } from "../src/appearance";
+  import BackgroundBar from "./BackgroundBar.svelte";
   import { ChatSession } from "./chat-session.svelte";
   import CommandMenu from "./CommandMenu.svelte";
   import { matchCommands } from "./commands.svelte";
@@ -278,6 +279,10 @@
         <button type="button" class="primary" onclick={() => session.handback()}>Return to chat</button>
       </div>
     {:else}
+      <!-- Like T3 Code, background work shows here once Claude is no longer working. -->
+      {#if transcript.meta.background.length > 0 && !session.working}
+        <BackgroundBar tasks={transcript.meta.background} onStop={() => session.stopBackground()} />
+      {/if}
       <form class="composer" onsubmit={(event) => { event.preventDefault(); send(); }}>
         {#if menuOpen}
           <CommandMenu

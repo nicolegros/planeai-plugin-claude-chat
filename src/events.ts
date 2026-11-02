@@ -104,6 +104,17 @@ export interface ContextUsage {
   percentage: number;
 }
 
+/** Work Claude Code runs in the background, as a command or a subagent, which outlives the turn that started it. */
+export interface BackgroundTask {
+  id: string;
+  /** The tool call that started it, whose row shows it running. */
+  tool_use_id?: string;
+  kind: "command" | "agent" | "other";
+  label: string;
+  /** Epoch ms. */
+  started_at: number;
+}
+
 /** Live session state shown around the transcript rather than in it. */
 export interface SessionMeta {
   /** The model the user picked; `null` is Claude Code's default. */
@@ -123,6 +134,8 @@ export interface SessionMeta {
   cwd: string | null;
   /** The plan's usage windows Claude Code last reported, shared by every session. */
   limits: PlanLimits | null;
+  /** Background work still running; empty whenever Claude is not running. */
+  background: BackgroundTask[];
 }
 
 export interface Compaction {

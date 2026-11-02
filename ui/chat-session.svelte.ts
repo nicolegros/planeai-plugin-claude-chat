@@ -94,6 +94,10 @@ export class ChatSession {
     void this.run(() => this.context.host.call("claude.mode.set", { session_id: this.id, mode }));
   }
 
+  stopBackground(): void {
+    void this.run(() => this.context.host.call("claude.background.stop", { session_id: this.id }));
+  }
+
   setModel(model: string | null): void {
     void this.run(() => this.context.host.call("claude.model.set", { session_id: this.id, model }));
   }

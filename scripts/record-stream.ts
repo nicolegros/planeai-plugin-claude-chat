@@ -1,5 +1,6 @@
 // Records a real Agent SDK message stream as a test fixture:
-//   bun scripts/record-stream.ts <fixture-name> "<prompt>" ["<next prompt>" ...]
+//   bun scripts/record-stream.ts [--linger=<seconds>] <fixture-name> "<prompt>" ["<next prompt>" ...]
+// --linger keeps recording that long after the last turn ends, for background work that outlives it.
 // Each prompt is sent as its own turn once the previous one ends, so slash commands
 // like /compact or /clear can be recorded after a first turn.
 // Uses your installed `claude` and its login. Messages are sanitized: init keeps
@@ -11,7 +12,10 @@ import { join } from "node:path";
 import { InputQueue } from "../src/input-queue";
 import { findExecutable } from "../src/plugin";
 
-const [name, ...prompts] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const linger = Number(/^--linger=(\d+)$/.exec(args[0] ?? "")?.[1] ?? 0);
+if (linger) args.shift();
+const [name, ...prompts] = args;
 if (!name || prompts.length === 0) throw new Error('usage: bun scripts/record-stream.ts <fixture-name> "<prompt>" ["<next prompt>" ...]');
 const cwd = mkdtempSync(join(tmpdir(), "claude-chat-record-"));
 const recorded: unknown[] = [];
@@ -33,7 +37,11 @@ function sanitize(message: SDKMessage): unknown {
       ...(message.terminal_slash_commands ? { terminal_slash_commands: message.terminal_slash_commands } : {}),
     };
   }
-  let json = JSON.stringify(message).replaceAll(cwd, "/workspace").replaceAll(process.env.HOME ?? "~", "/home/user");
+  let json = JSON.stringify(message)
+    .replaceAll(cwd, "/workspace")
+    .replaceAll(process.env.HOME ?? "~", "/home/user")
+    // Background work writes its output under a folder named after the machine's temp path.
+    .replace(/\/private\/tmp\/claude-\d+\/[^/"]+/g, "/tmp/claude-tasks");
   if ("session_id" in message) json = json.replaceAll(message.session_id, sessionId(message.session_id));
   return JSON.parse(json);
 }
@@ -59,12 +67,14 @@ const stream = query({
     },
   },
 });
+let lingering: ReturnType<typeof setTimeout> | undefined;
 for await (const message of stream) {
   if (message.type === "stream_event" && message.event.type === "content_block_delta" && message.event.delta.type !== "text_delta") continue;
   if (["system", "assistant", "user", "stream_event", "result", "conversation_reset"].includes(message.type)) recorded.push(sanitize(message));
   if (message.type === "result") {
-    if (next === prompts.length) break;
-    input.push(turn(prompts[next++]));
+    if (next < prompts.length) input.push(turn(prompts[next++]));
+    else if (!linger) break;
+    else lingering ??= setTimeout(() => stream.close(), linger * 1000);
   }
 }
 input.close();

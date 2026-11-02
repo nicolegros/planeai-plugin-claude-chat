@@ -160,6 +160,9 @@ export class ClaudeChatPlugin {
         (await this.session(request)).setPermissionMode(string(request, "mode"));
         return {};
       }
+      case "claude.background.stop":
+        (await this.session(object(params))).stopBackground();
+        return {};
       case "claude.model.set": {
         const request = object(params);
         const model = request.model;

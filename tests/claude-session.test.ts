@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeSession, HandedOffError, type ClaudeRuntime } from "../src/claude-session";
-import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ChatEvent, SessionStatus } from "../src/events";
 import { TranscriptStore } from "../src/transcript";
 import { fakeQueryFactory, fixture, flush, history } from "./helpers";
@@ -548,6 +548,59 @@ describe("ClaudeSession", () => {
     await expect(chat.send("hello")).rejects.toThrow("transcript unreadable");
     expect(events.at(-1)!.payload).toEqual({ type: "error", message: "transcript unreadable" });
     expect(statuses).toEqual(["busy", "idle"]);
+  });
+
+  it("follows recorded background work: rows that run on, the live list, the real results and an idle session", async () => {
+    const chat = session();
+    await chat.send("start both");
+    const messages = fixture("background-turn", SESSION_ID);
+    const shell = "toolu_018fBFQc7wHX7u9wLKChvQDt";
+    const agent = "toolu_01J9s8LzGT9gdQoXtxibXcHp";
+    const until = (found: (message: SDKMessage) => boolean) => messages.splice(0, messages.findIndex(found) + 1);
+    const live = () => chat.snapshot().meta.background.map(({ id, kind, label, tool_use_id }) => ({ id, kind, label, tool_use_id }));
+
+    fake.queries[0].emit(...until((message) => message.type === "result"));
+    await flush();
+    expect(live()).toEqual([
+      { id: "bycjpkeb8", kind: "command", label: "Print six ticks two seconds apart", tool_use_id: shell },
+      { id: "a7be00af35cffb3ac", kind: "agent", label: "Run sleep and echo", tool_use_id: agent },
+    ]);
+    expect(statuses.at(-1)).toBe("idle");
+
+    // The background agent works on after the turn ended, without making the session busy.
+    const before = events.length;
+    fake.queries[0].emit(...until((message) => message.type === "system" && message.subtype === "task_notification" && message.task_id === "a7be00af35cffb3ac"));
+    await flush();
+    expect(statuses.at(-1)).toBe("idle");
+    const ended = events.slice(before).map(({ payload }) => payload);
+    expect(ended.filter((event) => event.type === "tool" && event.parent === agent)).toHaveLength(1);
+    expect(ended.slice(-2)).toEqual([
+      { type: "tool_result", tool_use_id: agent, is_error: false, summary: "I ran `sleep 5 && echo agent-done`. It finished without errors and printed exactly this:\n\n```\nagent-done\n```", at: expect.any(Number) },
+      { type: "notice", text: 'Subagent "Run sleep and echo" finished' },
+    ]);
+
+    fake.queries[0].emit(...messages);
+    await flush();
+    expect(live()).toEqual([]);
+    expect(events.map(({ payload }) => payload).filter((event) => event.type === "notice")).toEqual([
+      { type: "notice", text: 'Subagent "Run sleep and echo" finished' },
+      { type: "notice", text: 'Command "Print six ticks two seconds apart" finished (exit 0)' },
+    ]);
+    // Claude reports each in a turn of its own, which makes the session busy, then idle again.
+    expect(statuses.slice(-2)).toEqual(["busy", "idle"]);
+  });
+
+  it("stops every background task, and forgets them when Claude stops", async () => {
+    const chat = session();
+    await chat.send("start both");
+    const messages = fixture("background-turn", SESSION_ID);
+    fake.queries[0].emit(...messages.slice(0, messages.findIndex((message) => message.type === "result") + 1));
+    await flush();
+    chat.stopBackground();
+    expect(fake.queries[0].stopTask.mock.calls).toEqual([["bycjpkeb8"], ["a7be00af35cffb3ac"]]);
+    fake.queries[0].close();
+    await flush();
+    expect(chat.snapshot().meta.background).toEqual([]);
   });
 
   it("starts auto-approve sessions in auto mode, with bypass allowed", async () => {

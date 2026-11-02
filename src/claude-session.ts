@@ -1,6 +1,7 @@
 import type { Options, PermissionMode, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import type { Appearance } from "./appearance";
+import { BackgroundTasks } from "./background";
 import { SlashCommands } from "./commands";
 import { clip, isEphemeral, planLimits, replay, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
 import { FollowUpTracker } from "./follow-ups";
@@ -139,6 +140,7 @@ export class ClaudeSession {
   readonly restored: Promise<void>;
   /** The models of the running Claude process, once listed. */
   private models: Promise<ModelOption[]> = Promise.resolve([]);
+  private readonly backgroundTasks = new BackgroundTasks();
   /** Set when the transcript disagrees with PlaneAI on who drives the session; `announce` records it. */
   private handoffCorrection: boolean | null = null;
 
@@ -163,6 +165,7 @@ export class ClaudeSession {
       // Claude lists its models once it starts; until then, the ones it listed last.
       models: store.models(),
       limits: store.limits(),
+      background: [],
       context: null,
       handed_off: config.handedOff,
       compacting: false,
@@ -321,6 +324,11 @@ export class ClaudeSession {
     this.control(this.query?.setPermissionMode(mode as PermissionMode), "switch permission mode");
   }
 
+  /** Stops every background command and subagent; each then reports itself stopped. */
+  stopBackground(): void {
+    for (const task of this.meta.background) this.control(this.query?.stopTask(task.id), `stop "${task.label}"`);
+  }
+
   /** `null` returns to the user's configured default model. */
   setModel(model: string | null): void {
     const previous = this.meta.model;
@@ -431,6 +439,9 @@ export class ClaudeSession {
     this.input?.close();
     this.input = null;
     query?.close();
+    // Background work ends with the Claude process that ran it.
+    this.backgroundTasks.reset();
+    if (this.meta.background.length > 0) this.updateMeta({ background: [] });
   }
 
   /** Runs an SDK control request without blocking the RPC that asked for it. */
@@ -512,6 +523,19 @@ export class ClaudeSession {
           this.slashCommands.replace(message.commands);
           this.emit({ type: "commands_changed" });
           break;
+        case "task_started":
+          if (this.backgroundTasks.started(message, Date.now())) this.updateMeta({ background: this.backgroundTasks.list() });
+          break;
+        case "task_updated":
+          this.backgroundTasks.updated(message);
+          break;
+        case "background_tasks_changed":
+          this.backgroundTasks.changed(message, Date.now());
+          this.updateMeta({ background: this.backgroundTasks.list() });
+          break;
+        case "task_notification":
+          for (const event of this.backgroundTasks.ended(message, Date.now())) this.emit(event);
+          break;
       }
     }
     if (message.type === "rate_limit_event") this.onRateLimit(message.rate_limit_info);
@@ -529,8 +553,9 @@ export class ClaudeSession {
     if (message.type === "result") {
       this.endTurn();
       void this.loadContextUsage(query);
-    } else if (message.type === "assistant" || message.type === "stream_event") {
+    } else if (!subagent && (message.type === "assistant" || message.type === "stream_event")) {
       // Any frame of a turn means one runs, including a held follow-up's turn after the previous result.
+      // A background subagent's frames do not: it works on after its turn ended.
       this.turnRunning = true;
     }
     this.refreshStatus();

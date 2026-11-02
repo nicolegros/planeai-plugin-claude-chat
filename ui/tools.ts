@@ -136,16 +136,22 @@ function rendererOf(tool: ToolEntry): [ToolRenderer<ToolInput | undefined>, Tool
   return renderer ? [renderer, tool.input] : [otherTool(tool.name), undefined];
 }
 
+/** Still working: no result yet, or its work runs on in the background. */
+export const isRunning = (tool: ToolEntry): boolean => tool.result === null || !!tool.background;
+
+const stateOf = (tool: ToolEntry): ToolView["state"] => (isRunning(tool) ? "running" : tool.result?.is_error ? "failed" : "done");
+
 export function viewTool(tool: ToolEntry, root?: string): ToolView {
-  const state = tool.result === null ? "running" : tool.result.is_error ? "failed" : "done";
+  const state = stateOf(tool);
   const output = tool.result?.summary ?? "";
   const lines = state === "done" ? (tool.result?.lines ?? lineCount(output)) : 0;
   const [renderer, input] = rendererOf(tool);
   return { ...renderer.view(input, tool, { root, output, lines }), state };
 }
 
-/** A change's diff, or a command's last output. */
+/** A change's diff, or a command's last output; a background command's placeholder output is not worth showing. */
 export function previewOf(tool: ToolEntry): Preview | null {
+  if (tool.background) return null;
   const [renderer, input] = rendererOf(tool);
   return renderer.preview?.(input, tool) ?? null;
 }
@@ -183,13 +189,13 @@ export const isAgent = (tool: ToolEntry): boolean => tool.input?.kind === "agent
 /** How long a call ran, or has run so far; unknown when Claude did not stamp its messages. */
 export function elapsed(tool: ToolEntry, now: number): number | undefined {
   if (tool.at === undefined) return undefined;
-  const end = tool.result ? tool.result.at : now;
+  const end = isRunning(tool) ? now : tool.result?.at;
   return end === undefined ? undefined : Math.max(0, end - tool.at);
 }
 
 /** A subagent as its row reads: what it was asked, then its latest step while it works, or its answer. */
 export function viewAgent(tool: ToolEntry, now: number, root?: string): { title: string; state: ToolView["state"]; detail: string; elapsed?: string } {
-  const state = tool.result === null ? "running" : tool.result.is_error ? "failed" : "done";
+  const state = stateOf(tool);
   const title = tool.input?.kind === "agent" && tool.input.description ? tool.input.description : "Subagent";
   const latest = tool.children.at(-1);
   const answer = plainLine(tool.result?.summary.split("\n").find((line) => line.trim()) ?? "");
@@ -213,12 +219,12 @@ export function stepGroups(tools: ToolEntry[]): ({ kind: "step"; tool: ToolEntry
 
 /** "3 subagents · 2 working · 1 done", and how long the group has run, from the first start to the last end. */
 export function viewAgents(tools: ToolEntry[], now: number): { label: string; running: boolean; elapsed?: string } {
-  const working = tools.filter((tool) => tool.result === null).length;
+  const working = tools.filter(isRunning).length;
   const failed = tools.filter((tool) => tool.result?.is_error).length;
   const done = tools.length - working - failed;
   const parts = [plural(tools.length, "subagent"), working ? `${working} working` : "", done ? `${done} done` : "", failed ? `${failed} failed` : ""];
   const starts = tools.flatMap((tool) => (tool.at === undefined ? [] : [tool.at]));
-  const ends = tools.map((tool) => (tool.result ? tool.result.at : now));
+  const ends = tools.map((tool) => (isRunning(tool) ? now : tool.result?.at));
   const known = starts.length === tools.length && ends.every((end) => end !== undefined);
   return { label: parts.filter(Boolean).join(" · "), running: working > 0, ...(known ? { elapsed: duration(Math.max(...(ends as number[])) - Math.min(...starts)) } : {}) };
 }
