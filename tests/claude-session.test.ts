@@ -936,6 +936,17 @@ describe("ClaudeSession", () => {
     expect(restarted.snapshot().events.map(({ payload }) => payload.type)).toEqual(types);
   });
 
+  it("ends a call the rebuilt conversation left unanswered, since no Claude runs it", async () => {
+    const base = { session_id: SESSION_ID, parent_tool_use_id: null, parent_agent_id: null };
+    const cut = [...history(SESSION_ID), { ...base, type: "assistant", uuid: "a9", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_left", name: "Bash", input: { command: "make" } }] } }] as SessionMessage[];
+    const chat = session({ history: cut });
+    await chat.restored;
+    expect(chat.snapshot().events.slice(-2).map(({ payload }) => payload)).toEqual([
+      { type: "tool_result", tool_use_id: "toolu_left", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+      { type: "notice", text: "Earlier messages were rebuilt from Claude Code's transcript, without turn costs or permission prompts." },
+    ]);
+  });
+
   it("keeps a prompt sent during the rebuild after the rebuilt messages", async () => {
     let release: (messages: SessionMessage[]) => void = () => {};
     const chat = new ClaudeSession(
