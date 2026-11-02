@@ -199,8 +199,11 @@ export type ChatEvent =
   | { type: "assistant"; text: string }
   /** `parent`: the Agent call whose subagent made this call. `at`: when Claude made it, in epoch ms. */
   | { type: "tool"; id: string; name: string; summary: string; input?: ToolInput; parent?: string; at?: number }
-  /** `lines`: the output's line count, when `summary` had to be clipped. `at`: when it came back, in epoch ms. */
-  | { type: "tool_result"; tool_use_id: string; is_error: boolean; summary: string; lines?: number; at?: number }
+  /**
+   * `lines`: the output's line count, when `summary` had to be clipped. `at`: when it came back, in epoch ms.
+   * `pending`: Claude Code's placeholder for work it runs on in the background, until that work's own result.
+   */
+  | { type: "tool_result"; tool_use_id: string; is_error: boolean; summary: string; lines?: number; at?: number; pending?: true }
   | { type: "permission"; request_id: string; tool: string; title: string; summary: string; input?: ToolInput; can_remember: boolean }
   | { type: "permission_resolved"; request_id: string; allowed: boolean; remembered?: boolean; reason?: string }
   /** Claude asks the user; answering resolves the AskUserQuestion call. */
@@ -392,6 +395,12 @@ function toolResultText(content: unknown): string {
   return "";
 }
 
+/** Claude Code answers a background command or subagent at once, before its work is done. */
+function isPlaceholder(result: unknown): boolean {
+  const { isAsync, backgroundTaskId } = result && typeof result === "object" ? (result as { isAsync?: unknown; backgroundTaskId?: unknown }) : {};
+  return isAsync === true || typeof backgroundTaskId === "string";
+}
+
 /** A block that is one whole tag, as Claude Code's `<tools-used-before-summary>` note. */
 const TAG_BLOCK = /^\s*<([\w-]+)>[\s\S]*<\/\1>\s*$/;
 
@@ -421,7 +430,7 @@ function safeCut(text: string, at: number): number {
 }
 
 /** Output keeps its start and its end, where a command's outcome usually is, each cut on a line boundary near the cut. */
-function toolResult(toolUseId: string, isError: boolean, output: string): ChatEvent {
+export function toolResult(toolUseId: string, isError: boolean, output: string): Extract<ChatEvent, { type: "tool_result" }> {
   if (output.length <= MAX_RESULT_CHARS) return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary: output };
   const headCut = MAX_RESULT_CHARS / 3;
   const tailCut = output.length - (MAX_RESULT_CHARS * 2) / 3;
@@ -548,9 +557,10 @@ function translateOwn(message: SDKMessage): ChatEvent[] {
       if (!Array.isArray(content)) return [];
       // The structured result belongs to the message's one tool result.
       const answer = content.length === 1 ? agentAnswer(message.tool_use_result) : null;
+      const pending = content.length === 1 && isPlaceholder(message.tool_use_result);
       return content.flatMap((block): ChatEvent[] =>
         block.type === "tool_result"
-          ? [{ ...toolResult(block.tool_use_id, block.is_error === true, answer ?? toolResultText(block.content)), ...timeOf(message) }]
+          ? [{ ...toolResult(block.tool_use_id, block.is_error === true, answer ?? toolResultText(block.content)), ...timeOf(message), ...(pending ? { pending: true as const } : {}) }]
           : [],
       );
     }

@@ -161,7 +161,7 @@ export class ClaudeChatPlugin {
         return {};
       }
       case "claude.background.stop":
-        (await this.session(object(params))).stopBackground();
+        await (await this.session(object(params))).stopBackground();
         return {};
       case "claude.model.set": {
         const request = object(params);

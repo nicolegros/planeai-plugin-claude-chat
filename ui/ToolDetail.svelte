@@ -1,5 +1,6 @@
 <script lang="ts">
   import ToolInputView from "./ToolInputView.svelte";
+  import { answerOf } from "./tools";
   import type { ToolEntry } from "./transcript.svelte";
 
   let { tool }: { tool: ToolEntry } = $props();
@@ -7,7 +8,7 @@
 
 <div class="detail">
   {#if tool.input?.kind === "skill" && tool.input.args}<p class="caption">{tool.input.args}</p>{/if}
-  <ToolInputView input={tool.input} summary={tool.summary} output={tool.result?.summary ?? ""} inline />
+  <ToolInputView input={tool.input} summary={tool.summary} output={answerOf(tool)} inline />
   {#if tool.result?.is_error && tool.input?.kind !== "bash"}<p class="caption failed">The tool reported an error.</p>{/if}
 </div>
 

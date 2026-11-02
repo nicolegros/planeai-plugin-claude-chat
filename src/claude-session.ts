@@ -25,6 +25,9 @@ export class ClaudeUnavailableError extends Error {}
 
 const INTERRUPTED = "Interrupted by the user";
 
+/** The result of a call Claude never answered, or whose background work ended with its process. */
+const UNFINISHED = "Claude stopped before this finished.";
+
 const BASE_MODES: PermissionMode[] = ["auto", "default", "acceptEdits", "plan"];
 
 /**
@@ -141,6 +144,8 @@ export class ClaudeSession {
   /** The models of the running Claude process, once listed. */
   private models: Promise<ModelOption[]> = Promise.resolve([]);
   private readonly backgroundTasks = new BackgroundTasks();
+  /** Calls still waiting on their result, background work's placeholders included. */
+  private readonly openCalls = new Set<string>();
   /** Set when the transcript disagrees with PlaneAI on who drives the session; `announce` records it. */
   private handoffCorrection: boolean | null = null;
 
@@ -325,8 +330,11 @@ export class ClaudeSession {
   }
 
   /** Stops every background command and subagent; each then reports itself stopped. */
-  stopBackground(): void {
-    for (const task of this.meta.background) this.control(this.query?.stopTask(task.id), `stop "${task.label}"`);
+  async stopBackground(): Promise<void> {
+    const tasks = this.meta.background;
+    const outcomes = await Promise.allSettled(tasks.map((task) => this.query?.stopTask(task.id)));
+    const failed = outcomes.flatMap((outcome, index) => (outcome.status === "rejected" ? [`"${tasks[index].label}": ${errorMessage(outcome.reason)}`] : []));
+    if (failed.length > 0) throw new Error(`Could not stop ${failed.join("; ")}`);
   }
 
   /** `null` returns to the user's configured default model. */
@@ -439,9 +447,10 @@ export class ClaudeSession {
     this.input?.close();
     this.input = null;
     query?.close();
-    // Background work ends with the Claude process that ran it.
+    // Background work ends with the Claude process that ran it, and so does any call left open.
     this.backgroundTasks.reset();
     if (this.meta.background.length > 0) this.updateMeta({ background: [] });
+    for (const id of [...this.openCalls]) this.emit({ type: "tool_result", tool_use_id: id, is_error: true, summary: UNFINISHED, at: Date.now() });
   }
 
   /** Runs an SDK control request without blocking the RPC that asked for it. */
@@ -524,7 +533,8 @@ export class ClaudeSession {
           this.emit({ type: "commands_changed" });
           break;
         case "task_started":
-          if (this.backgroundTasks.started(message, Date.now())) this.updateMeta({ background: this.backgroundTasks.list() });
+          this.backgroundTasks.started(message, Date.now());
+          if (this.backgroundTasks.isLive(message.task_id)) this.updateMeta({ background: this.backgroundTasks.list() });
           break;
         case "task_updated":
           this.backgroundTasks.updated(message);
@@ -614,6 +624,8 @@ export class ClaudeSession {
 
   private emit(payload: ChatEvent): void {
     if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
+    if (payload.type === "tool") this.openCalls.add(payload.id);
+    if (payload.type === "tool_result" && !payload.pending) this.openCalls.delete(payload.tool_use_id);
     const event = { seq: this.nextSeq(), payload };
     if (!isEphemeral(payload)) {
       this.events.push(event);

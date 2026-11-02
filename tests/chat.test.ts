@@ -484,9 +484,9 @@ describe("Chat", () => {
     try {
       const harness = await render({ status: "busy" });
       harness.push(1, { type: "tool", id: "sh", name: "Bash", summary: "", input: { kind: "bash", command: "make watch", description: "Watch the build" }, at: 1_000 });
-      harness.push(2, { type: "tool_result", tool_use_id: "sh", is_error: false, summary: "Command running in background with ID: b1." });
+      harness.push(2, { type: "tool_result", tool_use_id: "sh", is_error: false, summary: "Command running in background with ID: b1.", pending: true });
       harness.push(3, { type: "tool", id: "ag", name: "Agent", summary: "", input: { kind: "agent", description: "Audit the docs" }, at: 2_000 });
-      harness.push(4, { type: "tool_result", tool_use_id: "ag", is_error: false, summary: "Async agent launched successfully." });
+      harness.push(4, { type: "tool_result", tool_use_id: "ag", is_error: false, summary: "Async agent launched successfully.", pending: true });
       const background = [
         { id: "b1", tool_use_id: "sh", kind: "command" as const, label: "Watch the build", started_at: 40_000 },
         { id: "a1", tool_use_id: "ag", kind: "agent" as const, label: "Audit the docs", started_at: 70_000 },
@@ -499,23 +499,29 @@ describe("Chat", () => {
       // A background command's placeholder output is not worth showing.
       expect(document.querySelector(".output-tail")).toBeNull();
       expect(document.querySelector(".agent-detail")?.textContent).toBe("Starting");
+      // Unfolded while it works, it shows no placeholder for an answer.
+      document.querySelectorAll<HTMLButtonElement>(".tool button.step")[1].click();
+      flushSync();
+      expect(document.querySelector(".answer")).toBeNull();
+      document.querySelectorAll<HTMLButtonElement>(".tool button.step")[1].click();
+      flushSync();
 
       harness.push(6, { type: "status", status: "idle" });
       await settle();
       const bar = () => document.querySelector(".background")!;
       expect(bar().querySelector(".title")?.textContent).toBe("Waiting on 1 subagent and 1 command");
       expect(bar().querySelector(".elapsed")?.textContent).toBe("1m");
-      button("Stop").click();
+      button("Stop background work").click();
       await settle();
       expect(harness.value.host.call).toHaveBeenCalledWith("claude.background.stop", { session_id: "s1" });
-      expect(button("Stopping…").disabled).toBe(true);
+      expect(button("Stopping background work").disabled).toBe(true);
 
       harness.push(7, { type: "tool_result", tool_use_id: "ag", is_error: false, summary: "Two broken links.", at: 9_000 });
       harness.push(8, { type: "notice", text: 'Subagent "Audit the docs" finished' });
       harness.push(9, { type: "meta", meta: { background: background.slice(0, 1) } });
       await settle();
       expect(bar().querySelector(".title")?.textContent).toBe("Running · Watch the build");
-      expect(button("Stop").disabled).toBe(false);
+      expect(button("Stop background work").disabled).toBe(false);
       expect([...document.querySelectorAll(".tool")].map((row) => row.getAttribute("data-state"))).toEqual(["running", "done"]);
       expect(document.querySelector(".agent-detail")?.textContent).toBe("Two broken links.");
 

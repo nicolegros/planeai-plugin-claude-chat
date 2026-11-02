@@ -18,7 +18,7 @@ export type Entry =
   | { kind: "assistant"; seq: number; text: string }
   /** `children`: the calls of the subagent this call started, in order. `at`: when it was made and came back, in epoch ms. */
   /** `background`: it answered at once, but the work it started still runs in the background. */
-  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; at?: number; result: { is_error: boolean; summary: string; lines?: number; at?: number } | null; children: ToolEntry[]; background?: boolean }
+  | { kind: "tool"; seq: number; id: string; name: string; summary: string; input?: ToolInput; at?: number; result: { is_error: boolean; summary: string; lines?: number; at?: number; pending?: true } | null; children: ToolEntry[]; background?: boolean }
   | { kind: "permission"; seq: number; permission: PermissionEntry }
   /** `answers` is null until answered, and stays null when the user skipped (`resolved`). */
   | { kind: "question"; seq: number; request_id: string; questions: Question[]; answers: Record<string, string> | null; resolved: boolean }
@@ -99,7 +99,7 @@ export class Transcript {
       }
       case "tool_result": {
         const tool = this.tools.get(event.tool_use_id);
-        if (tool) tool.result = { is_error: event.is_error, summary: event.summary, ...(event.lines === undefined ? {} : { lines: event.lines }), ...(event.at === undefined ? {} : { at: event.at }) };
+        if (tool) tool.result = { is_error: event.is_error, summary: event.summary, ...(event.lines === undefined ? {} : { lines: event.lines }), ...(event.at === undefined ? {} : { at: event.at }), ...(event.pending ? { pending: true as const } : {}) };
         return;
       }
       case "permission": {

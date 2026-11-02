@@ -596,11 +596,33 @@ describe("ClaudeSession", () => {
     const messages = fixture("background-turn", SESSION_ID);
     fake.queries[0].emit(...messages.slice(0, messages.findIndex((message) => message.type === "result") + 1));
     await flush();
-    chat.stopBackground();
+    await chat.stopBackground();
     expect(fake.queries[0].stopTask.mock.calls).toEqual([["bycjpkeb8"], ["a7be00af35cffb3ac"]]);
+    // A task that ended meanwhile cannot be stopped, which the user is told.
+    fake.queries[0].stopTask.mockRejectedValueOnce(new Error("no such task"));
+    await expect(chat.stopBackground()).rejects.toThrow('Could not stop "Print six ticks two seconds apart": no such task');
     fake.queries[0].close();
     await flush();
     expect(chat.snapshot().meta.background).toEqual([]);
+    // Their calls answered with a placeholder; with Claude gone, they end unfinished.
+    const results = events.map(({ payload }) => payload).filter((event) => event.type === "tool_result");
+    expect(results.filter((result) => result.pending).map((result) => result.tool_use_id)).toEqual(["toolu_018fBFQc7wHX7u9wLKChvQDt", "toolu_01J9s8LzGT9gdQoXtxibXcHp"]);
+    expect(results.slice(-2)).toEqual([
+      { type: "tool_result", tool_use_id: "toolu_018fBFQc7wHX7u9wLKChvQDt", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+      { type: "tool_result", tool_use_id: "toolu_01J9s8LzGT9gdQoXtxibXcHp", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+    ]);
+  });
+
+  it("ends a call Claude never answered when Claude stops", async () => {
+    const chat = session();
+    await chat.send("go");
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    fake.queries[0].emit(assistant);
+    await flush();
+    fake.queries[0].close();
+    await flush();
+    expect(events.at(-1)!.payload).toMatchObject({ type: "tool_result", is_error: true, summary: "Claude stopped before this finished." });
+    expect(chat.snapshot().events.filter((event) => event.payload.type === "tool_result")).toHaveLength(1);
   });
 
   it("starts auto-approve sessions in auto mode, with bypass allowed", async () => {

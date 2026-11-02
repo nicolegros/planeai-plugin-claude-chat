@@ -1,21 +1,17 @@
 <script lang="ts">
   import { backgroundTitle } from "./background";
+  import { clock } from "./clock.svelte";
   import { duration } from "./format";
   import type { BackgroundTask } from "./host";
   import Icon from "./Icon.svelte";
 
   let { tasks, onStop }: { tasks: BackgroundTask[]; onStop: () => void } = $props();
 
-  let now = $state(Date.now());
   /** Set until the stopped work leaves the list, which changes with each task that stops. */
   let stopping = $state<BackgroundTask[] | null>(null);
   const since = $derived(Math.min(...tasks.map((task) => task.started_at)));
 
-  $effect(() => {
-    now = Date.now();
-    const timer = setInterval(() => (now = Date.now()), 1000);
-    return () => clearInterval(timer);
-  });
+  $effect(() => clock.hold());
 
   function stop(): void {
     stopping = tasks;
@@ -23,11 +19,12 @@
   }
 </script>
 
-<div class="background" role="status">
+<div class="background">
   <span class="icon"><Icon name={tasks.some((task) => task.kind === "agent") ? "bot" : "terminal"} size={14} /></span>
-  <span class="title">{backgroundTitle(tasks)}</span>
-  <span class="elapsed">{duration(Math.max(0, now - since))}</span>
-  <button type="button" class="stop" onclick={stop} disabled={stopping === tasks}>{stopping === tasks ? "Stopping…" : "Stop"}</button>
+  <!-- Only what runs is announced, not the time ticking next to it. -->
+  <span class="title" role="status">{backgroundTitle(tasks)}</span>
+  <span class="elapsed" aria-hidden="true">{duration(Math.max(0, clock.now - since))}</span>
+  <button type="button" class="stop" onclick={stop} disabled={stopping === tasks} aria-label={stopping === tasks ? "Stopping background work" : "Stop background work"}>{stopping === tasks ? "Stopping…" : "Stop"}</button>
 </div>
 
 <style>
