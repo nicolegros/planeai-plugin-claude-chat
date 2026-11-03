@@ -104,6 +104,17 @@ export interface ContextUsage {
   percentage: number;
 }
 
+/** Work Claude Code runs in the background, as a command or a subagent, which outlives the turn that started it. */
+export interface BackgroundTask {
+  id: string;
+  /** The tool call that started it, whose row shows it running. */
+  tool_use_id?: string;
+  kind: "command" | "agent" | "other";
+  label: string;
+  /** Epoch ms. */
+  started_at: number;
+}
+
 /** Live session state shown around the transcript rather than in it. */
 export interface SessionMeta {
   /** The model the user picked; `null` is Claude Code's default. */
@@ -123,6 +134,8 @@ export interface SessionMeta {
   cwd: string | null;
   /** The plan's usage windows Claude Code last reported, shared by every session. */
   limits: PlanLimits | null;
+  /** Background work still running; empty whenever Claude is not running. */
+  background: BackgroundTask[];
 }
 
 export interface Compaction {
@@ -184,9 +197,13 @@ export type ChatEvent =
   | { type: "turn_start"; user_ids: string[] }
   | { type: "delta"; text: string }
   | { type: "assistant"; text: string }
-  | { type: "tool"; id: string; name: string; summary: string; input?: ToolInput }
-  /** `lines`: the output's line count, when `summary` had to be clipped. */
-  | { type: "tool_result"; tool_use_id: string; is_error: boolean; summary: string; lines?: number }
+  /** `parent`: the Agent call whose subagent made this call. `at`: when Claude made it, in epoch ms. */
+  | { type: "tool"; id: string; name: string; summary: string; input?: ToolInput; parent?: string; at?: number }
+  /**
+   * `lines`: the output's line count, when `summary` had to be clipped. `at`: when it came back, in epoch ms.
+   * `pending`: Claude Code's placeholder for work it runs on in the background, until that work's own result.
+   */
+  | { type: "tool_result"; tool_use_id: string; is_error: boolean; summary: string; lines?: number; at?: number; pending?: true }
   | { type: "permission"; request_id: string; tool: string; title: string; summary: string; input?: ToolInput; can_remember: boolean }
   | { type: "permission_resolved"; request_id: string; allowed: boolean; remembered?: boolean; reason?: string }
   /** Claude asks the user; answering resolves the AskUserQuestion call. */
@@ -378,6 +395,26 @@ function toolResultText(content: unknown): string {
   return "";
 }
 
+/** Claude Code answers a background command or subagent at once, before its work is done. */
+function isPlaceholder(result: unknown): boolean {
+  const { isAsync, backgroundTaskId } = result && typeof result === "object" ? (result as { isAsync?: unknown; backgroundTaskId?: unknown }) : {};
+  return isAsync === true || typeof backgroundTaskId === "string";
+}
+
+/** A block that is one whole tag, as Claude Code's `<tools-used-before-summary>` note. */
+const TAG_BLOCK = /^\s*<([\w-]+)>[\s\S]*<\/\1>\s*$/;
+
+/**
+ * A subagent's own answer. Claude hands the model the answer wrapped in notes and usage
+ * figures; the structured result keeps it apart, with only tag blocks to leave out.
+ */
+function agentAnswer(result: unknown): string | null {
+  const { agentId, content } = result && typeof result === "object" ? (result as { agentId?: unknown; content?: unknown }) : {};
+  if (typeof agentId !== "string" || !Array.isArray(content)) return null;
+  const answer = toolResultText(content.filter((block) => !TAG_BLOCK.test(String((block as { text?: unknown } | null)?.text ?? ""))));
+  return answer.trim() ? answer : null;
+}
+
 const MAX_RESULT_CHARS = 6_000;
 
 /** Lines of output, not counting trailing newlines. */
@@ -393,7 +430,7 @@ function safeCut(text: string, at: number): number {
 }
 
 /** Output keeps its start and its end, where a command's outcome usually is, each cut on a line boundary near the cut. */
-function toolResult(toolUseId: string, isError: boolean, output: string): ChatEvent {
+export function toolResult(toolUseId: string, isError: boolean, output: string): Extract<ChatEvent, { type: "tool_result" }> {
   if (output.length <= MAX_RESULT_CHARS) return { type: "tool_result", tool_use_id: toolUseId, is_error: isError, summary: output };
   const headCut = MAX_RESULT_CHARS / 3;
   const tailCut = output.length - (MAX_RESULT_CHARS * 2) / 3;
@@ -463,9 +500,25 @@ export function replay(messages: SessionMessage[]): ChatEvent[] {
   });
 }
 
-/** Translate one SDK message from the main agent into chat events. Subagent traffic is folded away. */
+/**
+ * Translate one SDK message into chat events. Of a subagent's messages only its tool calls and
+ * their results are kept, each call naming the Agent call it belongs to.
+ */
 export function translate(message: SDKMessage): ChatEvent[] {
-  if ("parent_tool_use_id" in message && message.parent_tool_use_id) return [];
+  const parent = "parent_tool_use_id" in message ? message.parent_tool_use_id : null;
+  if (!parent) return translateOwn(message);
+  if (message.type !== "assistant" && message.type !== "user") return [];
+  return translateOwn(message).flatMap((event): ChatEvent[] => (event.type === "tool" ? [{ ...event, parent }] : event.type === "tool_result" ? [event] : []));
+}
+
+/** When Claude Code wrote a message; its SDK types leave the field out, though every message carries it. */
+function timeOf(message: SDKMessage): { at?: number } {
+  const stamp = (message as { timestamp?: unknown }).timestamp;
+  const at = typeof stamp === "string" ? Date.parse(stamp) : NaN;
+  return Number.isFinite(at) ? { at } : {};
+}
+
+function translateOwn(message: SDKMessage): ChatEvent[] {
   switch (message.type) {
     case "system":
       switch (message.subtype) {
@@ -495,16 +548,19 @@ export function translate(message: SDKMessage): ChatEvent[] {
         if (block.type === "text" && block.text.trim()) return [{ type: "assistant", text: clip(block.text) }];
         if (block.type === "tool_use") {
           const input = toolInput(block.name, block.input);
-          return [{ type: "tool", id: block.id, name: block.name, summary: summarizeInput(block.input), ...(input ? { input } : {}) }];
+          return [{ type: "tool", id: block.id, name: block.name, summary: summarizeInput(block.input), ...(input ? { input } : {}), ...timeOf(message) }];
         }
         return [];
       });
     case "user": {
       const content = message.message.content;
       if (!Array.isArray(content)) return [];
+      // The structured result belongs to the message's one tool result.
+      const answer = content.length === 1 ? agentAnswer(message.tool_use_result) : null;
+      const pending = content.length === 1 && isPlaceholder(message.tool_use_result);
       return content.flatMap((block): ChatEvent[] =>
         block.type === "tool_result"
-          ? [toolResult(block.tool_use_id, block.is_error === true, toolResultText(block.content))]
+          ? [{ ...toolResult(block.tool_use_id, block.is_error === true, answer ?? toolResultText(block.content)), ...timeOf(message), ...(pending ? { pending: true as const } : {}) }]
           : [],
       );
     }

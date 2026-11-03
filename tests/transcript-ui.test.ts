@@ -30,4 +30,23 @@ describe("Transcript", () => {
     expect(tool).toMatchObject({ kind: "tool", result: { is_error: true, summary: "1 failed" } });
     expect(permission).toMatchObject({ kind: "permission", permission: { resolved: false } });
   });
+
+  it("nests each subagent's calls under the Agent call that started it, however deep", () => {
+    const transcript = new Transcript();
+    const events = [
+      { type: "tool", id: "a1", name: "Agent", summary: "audit" },
+      { type: "tool", id: "a2", name: "Agent", summary: "list" },
+      { type: "tool", id: "b1", name: "Bash", summary: "ls", parent: "a2" },
+      { type: "tool", id: "r1", name: "Read", summary: "a.txt", parent: "a1" },
+      { type: "tool", id: "a3", name: "Agent", summary: "dig", parent: "a1" },
+      { type: "tool", id: "g1", name: "Grep", summary: "TODO", parent: "a3" },
+      { type: "tool_result", tool_use_id: "g1", is_error: false, summary: "3 files" },
+      // Its Agent call is in a page that was never loaded.
+      { type: "tool", id: "x1", name: "Bash", summary: "pwd", parent: "gone" },
+    ] as const;
+    events.forEach((payload, index) => transcript.apply({ seq: index + 1, payload }));
+    const shape = (tools: unknown[]): unknown => (tools as { id: string; children: unknown[] }[]).map((tool) => (tool.children.length ? { [tool.id]: shape(tool.children) } : tool.id));
+    expect(shape(transcript.entries)).toEqual([{ a1: ["r1", { a3: ["g1"] }] }, { a2: ["b1"] }]);
+    expect(transcript.entries[0]).toMatchObject({ children: [{}, { children: [{ result: { is_error: false, summary: "3 files" } }] }] });
+  });
 });

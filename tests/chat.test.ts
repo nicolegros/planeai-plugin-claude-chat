@@ -427,7 +427,120 @@ describe("Chat", () => {
     button("⋯ 2 earlier lines").click();
     flushSync();
     expect(document.querySelector(".output-tail pre")?.textContent).toBe("a\nb\nc\nd\ne");
-    expect(document.querySelector(".answer")?.textContent).toBe("Two callers.");
+    expect(document.querySelector(".agent-detail")?.textContent).toBe("Two callers.");
+  });
+
+  it("shows subagents launched together as one group, each with its latest step, then its answer", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(10_000);
+    try {
+      const harness = await render();
+      const push = (() => {
+        let seq = 0;
+        return (payload: Parameters<typeof harness.push>[1]) => harness.push(++seq, payload);
+      })();
+      push({ type: "tool", id: "a1", name: "Agent", summary: "", input: { kind: "agent", description: "Write and read a.txt" }, at: 1_000 });
+      push({ type: "tool", id: "a2", name: "Agent", summary: "", input: { kind: "agent", description: "List the directory" }, at: 2_000 });
+      push({ type: "tool", id: "b1", name: "Bash", summary: "", input: { kind: "bash", command: "echo alpha > a.txt" }, parent: "a1" });
+      push({ type: "tool_result", tool_use_id: "b1", is_error: false, summary: "" });
+      push({ type: "tool", id: "r1", name: "Read", summary: "", input: { kind: "read", file_path: "/work/repo/a.txt" }, parent: "a1" });
+      push({ type: "tool_result", tool_use_id: "a2", is_error: false, summary: "One file.\nIt is a.txt.", at: 8_000 });
+      await settle();
+      const row = (title: string) => [...document.querySelectorAll<HTMLButtonElement>("button.step")].find((step) => step.querySelector(".sentence")?.textContent?.trim() === title)!;
+      const rows = () => [...document.querySelectorAll(".steps.group > .tool")].map((row) => [row.querySelector(".sentence")?.textContent, row.querySelector(".meta")?.textContent?.replace(/\s+/g, " ").trim(), row.querySelector(".agent-detail")?.textContent]);
+      const group = row("2 subagents · 1 working · 1 done");
+      expect(group.closest(".tool")?.querySelector(".meta")?.textContent?.trim()).toBe("9s");
+      expect(rows()).toEqual([
+        ["Write and read a.txt", "2 steps 9s", "Reading a.txt"],
+        ["List the directory", "6s", "One file."],
+      ]);
+      // A subagent's own steps never reach the turn's step list.
+      expect(document.querySelectorAll(".steps:not(.group) > .tool")).toHaveLength(1);
+
+      vi.advanceTimersByTime(2_000);
+      flushSync();
+      expect(rows()[0][1]).toBe("2 steps 11s");
+
+      row("Write and read a.txt").click();
+      flushSync();
+      expect([...document.querySelectorAll(".steps.group .nested .sentence")].map((step) => step.textContent?.replace(/\s+/g, " ").trim())).toEqual(["Ran echo alpha > a.txt", "Reading a.txt"]);
+
+      push({ type: "tool_result", tool_use_id: "a1", is_error: false, summary: "It says alpha.", at: 12_500 });
+      await settle();
+      // Done, the group folds unless the user unfolds it again.
+      expect(document.querySelector(".steps.group")).toBeNull();
+      row("2 subagents · 2 done").click();
+      flushSync();
+      expect(rows()[0][1]).toBe("2 steps 12s");
+      expect(document.querySelector(".steps.group .answer")?.textContent).toBe("It says alpha.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows background work above the composer once Claude stops working, keeps its rows running, and stops it", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(100_000);
+    try {
+      const harness = await render({ status: "busy" });
+      harness.push(1, { type: "tool", id: "sh", name: "Bash", summary: "", input: { kind: "bash", command: "make watch", description: "Watch the build" }, at: 1_000 });
+      harness.push(2, { type: "tool_result", tool_use_id: "sh", is_error: false, summary: "Command running in background with ID: b1.", pending: true });
+      harness.push(3, { type: "tool", id: "ag", name: "Agent", summary: "", input: { kind: "agent", description: "Audit the docs" }, at: 2_000 });
+      harness.push(4, { type: "tool_result", tool_use_id: "ag", is_error: false, summary: "Async agent launched successfully.", pending: true });
+      const background = [
+        { id: "b1", tool_use_id: "sh", kind: "command" as const, label: "Watch the build", started_at: 40_000 },
+        { id: "a1", tool_use_id: "ag", kind: "agent" as const, label: "Audit the docs", started_at: 70_000 },
+      ];
+      harness.push(5, { type: "meta", meta: { background } });
+      await settle();
+      // While Claude works, its own progress shows instead.
+      expect(document.querySelector(".background")).toBeNull();
+      expect([...document.querySelectorAll(".tool")].map((row) => row.getAttribute("data-state"))).toEqual(["running", "running"]);
+      // A background command's placeholder output is not worth showing.
+      expect(document.querySelector(".output-tail")).toBeNull();
+      expect(document.querySelector(".agent-detail")?.textContent).toBe("Starting");
+      // Unfolded while it works, it shows no placeholder for an answer.
+      document.querySelectorAll<HTMLButtonElement>(".tool button.step")[1].click();
+      flushSync();
+      expect(document.querySelector(".answer")).toBeNull();
+      document.querySelectorAll<HTMLButtonElement>(".tool button.step")[1].click();
+      flushSync();
+
+      harness.push(6, { type: "status", status: "idle" });
+      await settle();
+      const bar = () => document.querySelector(".background")!;
+      expect(bar().querySelector(".title")?.textContent).toBe("Waiting on 1 subagent and 1 command");
+      expect(document.querySelector(".visually-hidden[role=status]")?.textContent).toBe("Waiting on 1 subagent and 1 command");
+      expect(bar().querySelector(".elapsed")?.textContent).toBe("1m");
+      button("Stop background work").click();
+      await settle();
+      expect(harness.value.host.call).toHaveBeenCalledWith("claude.background.stop", { session_id: "s1" });
+      expect(button("Stopping background work").disabled).toBe(true);
+
+      harness.push(7, { type: "tool_result", tool_use_id: "ag", is_error: false, summary: "Two broken links.", at: 9_000 });
+      harness.push(8, { type: "notice", text: 'Subagent "Audit the docs" finished' });
+      harness.push(9, { type: "meta", meta: { background: background.slice(0, 1) } });
+      await settle();
+      expect(bar().querySelector(".title")?.textContent).toBe("Running · Watch the build");
+      expect(button("Stop background work").disabled).toBe(false);
+      expect([...document.querySelectorAll(".tool")].map((row) => row.getAttribute("data-state"))).toEqual(["running", "done"]);
+      expect(document.querySelector(".agent-detail")?.textContent).toBe("Two broken links.");
+
+      harness.push(10, { type: "meta", meta: { background: [] } });
+      await settle();
+      expect(document.querySelector(".background")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets the user try again when background work could not be stopped", async () => {
+    const harness = await render({ meta: { ...META, background: [{ id: "b1", kind: "command", label: "Watch the build", started_at: Date.now() }] } });
+    vi.mocked(harness.value.host.call).mockRejectedValueOnce(new Error('Could not stop "Watch the build": no such task'));
+    button("Stop background work").click();
+    await settle();
+    expect(harness.value.host.data.notify).toHaveBeenCalledWith('Could not stop "Watch the build": no such task');
+    expect(button("Stop background work").disabled).toBe(false);
   });
 
   it("says how long a clipped output really was", async () => {

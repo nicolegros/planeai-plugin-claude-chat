@@ -1,5 +1,5 @@
 import { lineCount } from "../src/events";
-import { plural } from "./format";
+import { duration, plural } from "./format";
 import type { Todo, ToolInput } from "./host";
 import type { IconName } from "./icons";
 import { diffStats, editsOf, type Edit } from "./preview";
@@ -28,7 +28,7 @@ export interface ToolView {
 }
 
 /** What is worth reading without expanding a step. */
-export type Preview = { kind: "diff"; edits: Edit[] } | { kind: "output"; output: string; failed: boolean; lines?: number } | { kind: "answer"; text: string };
+export type Preview = { kind: "diff"; edits: Edit[] } | { kind: "output"; output: string; failed: boolean; lines?: number };
 
 interface Facts {
   root?: string;
@@ -106,7 +106,6 @@ const TOOLS: { [K in ToolInput["kind"]]: ToolRenderer<InputOf<K>> } = {
   agent: {
     steps: ["agent", "agents"],
     view: ({ description }) => ({ icon: "bot", verbs: ["Asking an agent to", "Asked an agent to"], target: /^[A-Z][a-z]/.test(description) ? description[0].toLowerCase() + description.slice(1) : description, style: "text" }),
-    preview: (_, tool) => (tool.result?.summary.trim() ? { kind: "answer", text: tool.result.summary.trim() } : null),
   },
   fetch: {
     steps: ["page fetched", "pages fetched"],
@@ -137,16 +136,28 @@ function rendererOf(tool: ToolEntry): [ToolRenderer<ToolInput | undefined>, Tool
   return renderer ? [renderer, tool.input] : [otherTool(tool.name), undefined];
 }
 
+/** Still working: no result yet, or its work runs on in the background; a placeholder left from a Claude that stopped is not. */
+export const isRunning = (tool: ToolEntry): boolean => tool.result === null || !!tool.background;
+
+const stateOf = (tool: ToolEntry): ToolView["state"] => (isRunning(tool) ? "running" : tool.result?.is_error ? "failed" : "done");
+
 export function viewTool(tool: ToolEntry, root?: string): ToolView {
-  const state = tool.result === null ? "running" : tool.result.is_error ? "failed" : "done";
+  const state = stateOf(tool);
   const output = tool.result?.summary ?? "";
   const lines = state === "done" ? (tool.result?.lines ?? lineCount(output)) : 0;
   const [renderer, input] = rendererOf(tool);
   return { ...renderer.view(input, tool, { root, output, lines }), state };
 }
 
-/** A change's diff, a command's last output, an agent's answer. */
+/** Its result is only Claude Code's placeholder for work it runs, or ran, in the background. */
+const placeholder = (tool: ToolEntry): boolean => !!tool.result?.pending || !!tool.background;
+
+/** What a call returned, short of a placeholder. */
+export const answerOf = (tool: ToolEntry): string => (placeholder(tool) ? "" : (tool.result?.summary.trim() ?? ""));
+
+/** A change's diff, or a command's last output. */
 export function previewOf(tool: ToolEntry): Preview | null {
+  if (placeholder(tool)) return null;
   const [renderer, input] = rendererOf(tool);
   return renderer.preview?.(input, tool) ?? null;
 }
@@ -161,4 +172,67 @@ export function describeSteps(tools: ToolEntry[]): string {
     counts.set(words[0], slot);
   }
   return [...counts.values()].map(({ words, count }) => plural(count, ...words)).join(", ");
+}
+
+/** "Reading" while it runs, "Read" once done. */
+export const verbOf = (view: ToolView): string => view.verbs[view.state === "running" ? 0 : 1];
+
+/** A step as one plain line, as a running agent's latest step reads under it: "Reading a.txt", or a command's description. */
+function sentenceOf(tool: ToolEntry, root?: string): string {
+  const view = viewTool(tool, root);
+  if (view.lead) return view.lead;
+  return [verbOf(view), view.target, view.folder ? `in ${view.folder}` : ""].filter(Boolean).join(" ");
+}
+
+/** A Markdown line as it reads, without its code ticks, bold, heading, quote or list marks. */
+function plainLine(line: string): string {
+  return line
+    .replace(/^\s*(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)/, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .trim();
+}
+
+export const isAgent = (tool: ToolEntry): boolean => tool.input?.kind === "agent";
+
+/** When a call started and ended, or `now` while it runs; unknown when Claude did not stamp its messages. */
+function span(tool: ToolEntry, now: number): { start: number; end: number } | undefined {
+  const end = isRunning(tool) ? now : tool.result?.at;
+  return tool.at === undefined || end === undefined ? undefined : { start: tool.at, end: Math.max(tool.at, end) };
+}
+
+/** A subagent as its row reads: what it was asked, then its latest step while it works, or its answer. */
+export function viewAgent(tool: ToolEntry, now: number, root?: string): { title: string; state: ToolView["state"]; detail: string; elapsed?: string } {
+  const state = stateOf(tool);
+  const title = tool.input?.kind === "agent" && tool.input.description ? tool.input.description : "Subagent";
+  const latest = tool.children.at(-1);
+  const answer = plainLine(answerOf(tool).split("\n")[0]);
+  const detail = state === "running" ? (latest ? sentenceOf(latest, root) : "Starting") : answer;
+  const ran = span(tool, now);
+  return { title, state, detail, ...(ran ? { elapsed: duration(ran.end - ran.start) } : {}) };
+}
+
+/** Steps in order, with two or more subagents launched together kept as one group. */
+export function stepGroups(tools: ToolEntry[]): ({ kind: "step"; tool: ToolEntry } | { kind: "agents"; tools: ToolEntry[] })[] {
+  const out: ({ kind: "step"; tool: ToolEntry } | { kind: "agents"; tools: ToolEntry[] })[] = [];
+  for (const tool of tools) {
+    const last = out.at(-1);
+    if (!isAgent(tool)) out.push({ kind: "step", tool });
+    else if (last?.kind === "agents") last.tools.push(tool);
+    else if (last?.kind === "step" && isAgent(last.tool)) out[out.length - 1] = { kind: "agents", tools: [last.tool, tool] };
+    else out.push({ kind: "step", tool });
+  }
+  return out;
+}
+
+/** "3 subagents · 2 working · 1 done", and how long the group has run, from the first start to the last end. */
+export function viewAgents(tools: ToolEntry[], now: number): { label: string; running: boolean; elapsed?: string } {
+  const states = tools.map(stateOf);
+  const count = (state: ToolView["state"]) => states.filter((each) => each === state).length;
+  const [working, done, failed] = [count("running"), count("done"), count("failed")];
+  const parts = [plural(tools.length, "subagent"), working ? `${working} working` : "", done ? `${done} done` : "", failed ? `${failed} failed` : ""];
+  const spans = tools.map((tool) => span(tool, now));
+  const known = spans.every((ran) => ran !== undefined);
+  const elapsed = known ? Math.max(...spans.map((ran) => ran!.end)) - Math.min(...spans.map((ran) => ran!.start)) : undefined;
+  return { label: parts.filter(Boolean).join(" · "), running: working > 0, ...(elapsed === undefined ? {} : { elapsed: duration(elapsed) }) };
 }

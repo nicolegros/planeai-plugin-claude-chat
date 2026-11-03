@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeSession, HandedOffError, type ClaudeRuntime } from "../src/claude-session";
-import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ChatEvent, SessionStatus } from "../src/events";
 import { TranscriptStore } from "../src/transcript";
 import { fakeQueryFactory, fixture, flush, history } from "./helpers";
@@ -550,6 +550,118 @@ describe("ClaudeSession", () => {
     expect(statuses).toEqual(["busy", "idle"]);
   });
 
+  it("follows recorded background work: rows that run on, the live list, the real results and an idle session", async () => {
+    const chat = session();
+    await chat.send("start both");
+    const messages = fixture("background-turn", SESSION_ID);
+    const shell = "toolu_018fBFQc7wHX7u9wLKChvQDt";
+    const agent = "toolu_01J9s8LzGT9gdQoXtxibXcHp";
+    const until = (found: (message: SDKMessage) => boolean) => messages.splice(0, messages.findIndex(found) + 1);
+    const live = () => chat.snapshot().meta.background.map(({ id, kind, label, tool_use_id }) => ({ id, kind, label, tool_use_id }));
+
+    fake.queries[0].emit(...until((message) => message.type === "result"));
+    await flush();
+    expect(live()).toEqual([
+      { id: "bycjpkeb8", kind: "command", label: "Print six ticks two seconds apart", tool_use_id: shell },
+      { id: "a7be00af35cffb3ac", kind: "agent", label: "Run sleep and echo", tool_use_id: agent },
+    ]);
+    expect(statuses.at(-1)).toBe("idle");
+
+    // The background agent works on after the turn ended, without making the session busy.
+    const before = events.length;
+    fake.queries[0].emit(...until((message) => message.type === "system" && message.subtype === "task_notification" && message.task_id === "a7be00af35cffb3ac"));
+    await flush();
+    expect(statuses.at(-1)).toBe("idle");
+    const ended = events.slice(before).map(({ payload }) => payload);
+    expect(ended.filter((event) => event.type === "tool" && event.parent === agent)).toHaveLength(1);
+    expect(ended.slice(-2)).toEqual([
+      { type: "tool_result", tool_use_id: agent, is_error: false, summary: "I ran `sleep 5 && echo agent-done`. It finished without errors and printed exactly this:\n\n```\nagent-done\n```", at: expect.any(Number) },
+      { type: "notice", text: 'Subagent "Run sleep and echo" finished' },
+    ]);
+
+    fake.queries[0].emit(...messages);
+    await flush();
+    expect(live()).toEqual([]);
+    expect(events.map(({ payload }) => payload).filter((event) => event.type === "notice")).toEqual([
+      { type: "notice", text: 'Subagent "Run sleep and echo" finished' },
+      { type: "notice", text: 'Command "Print six ticks two seconds apart" finished (exit 0)' },
+    ]);
+    // Claude reports each in a turn of its own, which makes the session busy, then idle again.
+    expect(statuses.slice(-2)).toEqual(["busy", "idle"]);
+  });
+
+  it("stops every background task, and forgets them when Claude stops", async () => {
+    const chat = session();
+    await chat.send("start both");
+    const messages = fixture("background-turn", SESSION_ID);
+    fake.queries[0].emit(...messages.slice(0, messages.findIndex((message) => message.type === "result") + 1));
+    await flush();
+    await chat.stopBackground();
+    expect(fake.queries[0].stopTask.mock.calls).toEqual([["bycjpkeb8"], ["a7be00af35cffb3ac"]]);
+    // A task that ended meanwhile cannot be stopped, which the user is told.
+    fake.queries[0].stopTask.mockRejectedValueOnce(new Error("no such task"));
+    await expect(chat.stopBackground()).rejects.toThrow('Could not stop "Print six ticks two seconds apart": no such task');
+    fake.queries[0].close();
+    await flush();
+    expect(chat.snapshot().meta.background).toEqual([]);
+    // Their calls answered with a placeholder; with Claude gone, they end unfinished.
+    const results = events.map(({ payload }) => payload).filter((event) => event.type === "tool_result");
+    expect(results.filter((result) => result.pending).map((result) => result.tool_use_id)).toEqual(["toolu_018fBFQc7wHX7u9wLKChvQDt", "toolu_01J9s8LzGT9gdQoXtxibXcHp"]);
+    expect(results.slice(-2)).toEqual([
+      { type: "tool_result", tool_use_id: "toolu_018fBFQc7wHX7u9wLKChvQDt", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+      { type: "tool_result", tool_use_id: "toolu_01J9s8LzGT9gdQoXtxibXcHp", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+    ]);
+  });
+
+  it("ends the calls a sidecar that died left open, once the session is opened again", () => {
+    store.append(SESSION_ID, { seq: 1, payload: { type: "user", text: "go" } });
+    store.append(SESSION_ID, { seq: 2, payload: { type: "tool", id: "done", name: "Read", summary: "a" } });
+    store.append(SESSION_ID, { seq: 3, payload: { type: "tool_result", tool_use_id: "done", is_error: false, summary: "a" } });
+    store.append(SESSION_ID, { seq: 4, payload: { type: "tool", id: "bg", name: "Bash", summary: "make watch" } });
+    store.append(SESSION_ID, { seq: 5, payload: { type: "tool_result", tool_use_id: "bg", is_error: false, summary: "Command running in background with ID: b1.", pending: true } });
+    store.append(SESSION_ID, { seq: 6, payload: { type: "tool", id: "open", name: "Grep", summary: "TODO" } });
+    // The sidecar died after a subagent's result, before ending the calls it left running.
+    store.append(SESSION_ID, { seq: 7, payload: { type: "tool", id: "agent", name: "Agent", summary: "" } });
+    store.append(SESSION_ID, { seq: 8, payload: { type: "tool", id: "inner", name: "Read", summary: "a", parent: "agent" } });
+    store.append(SESSION_ID, { seq: 9, payload: { type: "tool_result", tool_use_id: "agent", is_error: false, summary: "Done." } });
+    const chat = session();
+    chat.announce();
+    expect(events.map(({ payload }) => payload).filter((event) => event.type === "tool_result")).toEqual([
+      { type: "tool_result", tool_use_id: "bg", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+      { type: "tool_result", tool_use_id: "open", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+      { type: "tool_result", tool_use_id: "inner", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+    ]);
+    // Opening it again finds nothing more to end.
+    chat.announce();
+    expect(events.filter(({ payload }) => payload.type === "tool_result")).toHaveLength(3);
+  });
+
+  it("ends a subagent's running calls when the subagent ends", async () => {
+    const chat = session();
+    await chat.send("go");
+    const call = (id: string, name: string, parent?: string) => ({ type: "assistant", parent_tool_use_id: parent ?? null, session_id: SESSION_ID, message: { content: [{ type: "tool_use", id, name, input: {} }] } }) as never;
+    const result = (id: string) => ({ type: "user", parent_tool_use_id: null, session_id: SESSION_ID, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "Stopped", is_error: true }] } }) as never;
+    fake.queries[0].emit(call("agent", "Agent"), call("inner", "Agent", "agent"), call("deep", "Grep", "inner"), result("agent"));
+    await flush();
+    expect(events.map(({ payload }) => payload).filter((event) => event.type === "tool_result").map((event) => [event.tool_use_id, event.summary])).toEqual([
+      ["agent", "Stopped"],
+      ["inner", "Its subagent ended before this finished."],
+      ["deep", "Its subagent ended before this finished."],
+    ]);
+  });
+
+  it("ends a call Claude never answered when Claude stops", async () => {
+    const chat = session();
+    await chat.send("go");
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    fake.queries[0].emit(assistant);
+    await flush();
+    fake.queries[0].close();
+    await flush();
+    expect(events.at(-1)!.payload).toMatchObject({ type: "tool_result", is_error: true, summary: "Claude stopped before this finished." });
+    expect(chat.snapshot().events.filter((event) => event.payload.type === "tool_result")).toHaveLength(1);
+  });
+
   it("starts auto-approve sessions in auto mode, with bypass allowed", async () => {
     await session({ autoApprove: true }).send("go");
     expect(fake.queries[0].options).toMatchObject({ permissionMode: "auto", allowDangerouslySkipPermissions: true });
@@ -827,6 +939,17 @@ describe("ClaudeSession", () => {
     const restarted = session({ history: [] });
     await restarted.restored;
     expect(restarted.snapshot().events.map(({ payload }) => payload.type)).toEqual(types);
+  });
+
+  it("ends a call the rebuilt conversation left unanswered, since no Claude runs it", async () => {
+    const base = { session_id: SESSION_ID, parent_tool_use_id: null, parent_agent_id: null };
+    const cut = [...history(SESSION_ID), { ...base, type: "assistant", uuid: "a9", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_left", name: "Bash", input: { command: "make" } }] } }] as SessionMessage[];
+    const chat = session({ history: cut });
+    await chat.restored;
+    expect(chat.snapshot().events.slice(-2).map(({ payload }) => payload)).toEqual([
+      { type: "tool_result", tool_use_id: "toolu_left", is_error: true, summary: "Claude stopped before this finished.", at: expect.any(Number) },
+      { type: "notice", text: "Earlier messages were rebuilt from Claude Code's transcript, without turn costs or permission prompts." },
+    ]);
   });
 
   it("keeps a prompt sent during the rebuild after the rebuilt messages", async () => {

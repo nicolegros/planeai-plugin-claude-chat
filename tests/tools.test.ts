@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ToolInput } from "../ui/host";
-import { describeSteps, previewOf, viewTool } from "../ui/tools";
+import { describeSteps, previewOf, stepGroups, viewAgent, viewAgents, viewTool } from "../ui/tools";
 import type { ToolEntry } from "../ui/transcript.svelte";
 
 let seq = 0;
-const tool = (name: string, input: ToolInput | undefined, extra: Partial<ToolEntry> = {}): ToolEntry => ({ kind: "tool", seq: ++seq, id: `t${seq}`, name, summary: "summary", input, result: { is_error: false, summary: "" }, ...extra });
+const tool = (name: string, input: ToolInput | undefined, extra: Partial<ToolEntry> = {}): ToolEntry => ({ kind: "tool", seq: ++seq, id: `t${seq}`, name, summary: "summary", input, result: { is_error: false, summary: "" }, children: [], ...extra });
 const read = (file_path: string) => ({ kind: "read" as const, file_path });
 
 describe("viewTool", () => {
@@ -56,13 +56,35 @@ describe("viewTool", () => {
     expect(viewTool(tool("Bash", { kind: "bash", command: "make" }, { result: { is_error: false, summary: "start\n… [9 more characters]\nend", lines: 400 } })).count).toBe("400 lines");
   });
 
-  it("previews changes, command output and agent answers only", () => {
+  it("reads a subagent's latest step while it works, then the first line of its answer as plain text", () => {
+    const agent = (extra: Partial<ToolEntry>) => tool("Agent", { kind: "agent", description: "List the directory" }, { result: null, at: 1_000, ...extra });
+    expect(viewAgent(agent({}), 4_000)).toEqual({ title: "List the directory", state: "running", detail: "Starting", elapsed: "3s" });
+    const ls = tool("Bash", { kind: "bash", command: "ls -la", description: "List directory contents" }, { result: null });
+    expect(viewAgent(agent({ children: [tool("Read", read("/repo/a.txt"), {}), ls] }), 4_000, "/repo").detail).toBe("List directory contents");
+    expect(viewAgent(agent({ children: [tool("Read", read("/repo/a.txt"), { result: null })] }), 4_000, "/repo").detail).toBe("Reading a.txt");
+    const answer = "\n- I ran `ls -la` in `/repo`: **1 entry**, `__init__.py`.\n\nMore.";
+    expect(viewAgent(agent({ result: { is_error: false, summary: answer, at: 7_400 } }), 60_000)).toEqual({ title: "List the directory", state: "done", detail: "I ran ls -la in /repo: 1 entry, __init__.py.", elapsed: "6s" });
+    // Claude did not stamp the result, so how long it ran is unknown.
+    expect(viewAgent(agent({ result: { is_error: true, summary: "Interrupted" } }), 60_000)).toEqual({ title: "List the directory", state: "failed", detail: "Interrupted" });
+  });
+
+  it("groups subagents launched together, and only those", () => {
+    const agent = (id: string, extra: Partial<ToolEntry> = {}) => tool("Agent", { kind: "agent", description: id }, { id, ...extra });
+    const groups = stepGroups([agent("a"), tool("Read", read("x"), { id: "r" }), agent("b"), agent("c", { result: null }), agent("d", { result: { is_error: true, summary: "" } })]);
+    expect(groups.map((group) => (group.kind === "step" ? group.tool.id : group.tools.map((tool) => tool.id)))).toEqual(["a", "r", ["b", "c", "d"]]);
+    expect(viewAgents((groups[2] as { tools: ToolEntry[] }).tools, 0)).toEqual({ label: "3 subagents · 1 working · 1 done · 1 failed", running: true });
+    // A background subagent works on whatever its placeholder result said.
+    const background = [agent("e", { result: { is_error: true, summary: "" }, background: true }), agent("f")];
+    expect(viewAgents(background, 0)).toEqual({ label: "2 subagents · 1 working · 1 done", running: true });
+  });
+
+  it("previews changes and command output only", () => {
     expect(previewOf(tool("Edit", { kind: "edit", file_path: "a", edits: [{ old_string: "a", new_string: "b" }] }))).toMatchObject({ kind: "diff" });
     expect(previewOf(tool("Write", { kind: "write", file_path: "a", content: "x" }))).toEqual({ kind: "diff", edits: [{ old_string: "", new_string: "x" }] });
     const bash = { kind: "bash" as const, command: "x" };
     expect(previewOf(tool("Bash", bash, { result: { is_error: true, summary: "boom\n" } }))).toEqual({ kind: "output", output: "boom", failed: true });
     expect(previewOf(tool("Bash", bash, { result: { is_error: false, summary: "  " } }))).toBeNull();
-    expect(previewOf(tool("Agent", { kind: "agent", description: "x" }, { result: { is_error: false, summary: "Done." } }))).toEqual({ kind: "answer", text: "Done." });
+    expect(previewOf(tool("Agent", { kind: "agent", description: "x" }, { result: { is_error: false, summary: "Done." } }))).toBeNull();
     expect(previewOf(tool("Read", read("x"), { result: { is_error: false, summary: "1\ta" } }))).toBeNull();
     expect(previewOf(tool("Other", undefined, { result: { is_error: false, summary: "out" } }))).toBeNull();
   });

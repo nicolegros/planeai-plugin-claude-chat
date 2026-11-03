@@ -3,7 +3,7 @@ import type { SessionMeta } from "../ui/host";
 import { usageTip } from "../ui/usage";
 
 const NOW = new Date(2026, 9, 3, 15, 0);
-const meta = (patch: Partial<SessionMeta>): SessionMeta => ({ model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false, cwd: null, limits: null, ...patch });
+const meta = (patch: Partial<SessionMeta>): SessionMeta => ({ model: null, active_model: null, permission_mode: "default", modes: [], models: [], context: null, handed_off: false, compacting: false, cwd: null, limits: null, background: [], ...patch });
 const at = (day: number, hour: number, minute = 0) => new Date(2026, 9, day, hour, minute).getTime();
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 

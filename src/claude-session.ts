@@ -1,10 +1,12 @@
 import type { Options, PermissionMode, Query, SDKMessage, SDKUserMessage, SessionMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import type { Appearance } from "./appearance";
+import { BackgroundTasks } from "./background";
 import { SlashCommands } from "./commands";
 import { clip, isEphemeral, planLimits, replay, translate, type ChatEvent, type CommandOption, type ModelOption, type PermissionDecision, type SessionMeta, type SessionStatus } from "./events";
 import { FollowUpTracker } from "./follow-ups";
 import { InputQueue } from "./input-queue";
+import { OpenCalls } from "./open-calls";
 import { PendingRequests } from "./pending-requests";
 import { page } from "./paging";
 import { statusOf } from "./status";
@@ -23,6 +25,9 @@ export class HandedOffError extends Error {
 export class ClaudeUnavailableError extends Error {}
 
 const INTERRUPTED = "Interrupted by the user";
+
+/** The result of a call Claude never answered, or whose background work ended with its process. */
+const UNFINISHED = "Claude stopped before this finished.";
 
 const BASE_MODES: PermissionMode[] = ["auto", "default", "acceptEdits", "plan"];
 
@@ -139,6 +144,10 @@ export class ClaudeSession {
   readonly restored: Promise<void>;
   /** The models of the running Claude process, once listed. */
   private models: Promise<ModelOption[]> = Promise.resolve([]);
+  private readonly backgroundTasks = new BackgroundTasks();
+  private readonly openCalls = new OpenCalls();
+  /** Calls the stored transcript left open, as when the sidecar died; no Claude runs them now. */
+  private staleCalls: string[];
   /** Set when the transcript disagrees with PlaneAI on who drives the session; `announce` records it. */
   private handoffCorrection: boolean | null = null;
 
@@ -163,6 +172,7 @@ export class ClaudeSession {
       // Claude lists its models once it starts; until then, the ones it listed last.
       models: store.models(),
       limits: store.limits(),
+      background: [],
       context: null,
       handed_off: config.handedOff,
       compacting: false,
@@ -173,6 +183,8 @@ export class ClaudeSession {
     const inTerminal = lastHandoff?.type === "handoff" && lastHandoff.in_terminal;
     // An empty chat has nothing to correct; it is rebuilt from Claude's transcript instead.
     if (this.events.length > 0 && inTerminal !== config.handedOff) this.handoffCorrection = config.handedOff;
+    for (const { payload } of this.events) this.openCalls.track(payload);
+    this.staleCalls = this.openCalls.ids;
     this.conversationId = store.conversation(config.id) ?? config.id;
     this.slashCommands = new SlashCommands(store);
     this.restored = this.events.length > 0 ? Promise.resolve() : this.restore();
@@ -203,7 +215,10 @@ export class ClaudeSession {
     const replayed = replay(messages);
     if (replayed.length === 0) return;
     // Every request waits for this, so the UI has not loaded a snapshot and nothing is sent live.
-    const rebuilt = [...replayed.slice(-(MAX_SNAPSHOT_EVENTS - 1)), REBUILT].map((payload) => ({ seq: this.nextSeq(), payload }));
+    const kept = replayed.slice(-(MAX_SNAPSHOT_EVENTS - 1));
+    // No Claude runs what the stored conversation left unanswered.
+    for (const payload of kept) this.openCalls.track(payload);
+    const rebuilt = [...kept, ...this.openCalls.end(UNFINISHED, Date.now()), REBUILT].map((payload) => ({ seq: this.nextSeq(), payload }));
     this.events.push(...rebuilt);
     this.store.appendAll(this.config.id, rebuilt);
   }
@@ -232,6 +247,8 @@ export class ClaudeSession {
       this.emit({ type: "handoff", in_terminal: this.handoffCorrection });
       this.handoffCorrection = null;
     }
+    for (const result of this.openCalls.end(UNFINISHED, Date.now(), this.staleCalls)) this.emit(result);
+    this.staleCalls = [];
     this.announceStatus(true);
   }
 
@@ -319,6 +336,14 @@ export class ClaudeSession {
     if (!this.meta.modes.includes(mode)) throw new Error(`permission mode ${mode} is not available in this session`);
     this.updateMeta({ permission_mode: mode });
     this.control(this.query?.setPermissionMode(mode as PermissionMode), "switch permission mode");
+  }
+
+  /** Stops every background command and subagent; each then reports itself stopped. */
+  async stopBackground(): Promise<void> {
+    const tasks = this.meta.background;
+    const outcomes = await Promise.allSettled(tasks.map((task) => this.query?.stopTask(task.id)));
+    const failed = outcomes.flatMap((outcome, index) => (outcome.status === "rejected" ? [`"${tasks[index].label}": ${errorMessage(outcome.reason)}`] : []));
+    if (failed.length > 0) throw new Error(`Could not stop ${failed.join("; ")}`);
   }
 
   /** `null` returns to the user's configured default model. */
@@ -431,6 +456,10 @@ export class ClaudeSession {
     this.input?.close();
     this.input = null;
     query?.close();
+    // Background work ends with the Claude process that ran it, and so does any call left open.
+    this.backgroundTasks.reset();
+    if (this.meta.background.length > 0) this.updateMeta({ background: [] });
+    for (const result of this.openCalls.end(UNFINISHED, Date.now())) this.emit(result);
   }
 
   /** Runs an SDK control request without blocking the RPC that asked for it. */
@@ -512,13 +541,29 @@ export class ClaudeSession {
           this.slashCommands.replace(message.commands);
           this.emit({ type: "commands_changed" });
           break;
+        case "task_started":
+          this.backgroundTasks.started(message, Date.now());
+          if (this.backgroundTasks.isLive(message.task_id)) this.updateMeta({ background: this.backgroundTasks.list() });
+          break;
+        case "task_updated":
+          this.backgroundTasks.updated(message);
+          break;
+        case "background_tasks_changed":
+          this.backgroundTasks.changed(message, Date.now());
+          this.updateMeta({ background: this.backgroundTasks.list() });
+          break;
+        case "task_notification":
+          for (const event of this.backgroundTasks.ended(message, Date.now())) this.emit(event);
+          break;
       }
     }
     if (message.type === "rate_limit_event") this.onRateLimit(message.rate_limit_info);
     // /clear moves Claude to a new id within the turn; its result already carries it.
     if (message.type === "result") this.follow(message.session_id);
     const events = translate(message).filter((event) => !this.requests.hides(event));
-    const started = this.followUps.frame(message, events.some((event) => !isEphemeral(event)));
+    // A subagent's steps, which a background agent sends after its turn ended, never start a turn.
+    const subagent = "parent_tool_use_id" in message && !!message.parent_tool_use_id;
+    const started = this.followUps.frame(message, !subagent && events.some((event) => !isEphemeral(event)));
     if (started) this.emit({ type: "turn_start", user_ids: started });
     // Claude Code starts in Ask instead when auto mode is unavailable, as for a model without it.
     const noAuto = message.type === "system" && message.subtype === "init" && message.permissionMode === "default" && this.meta.permission_mode === "auto";
@@ -527,8 +572,9 @@ export class ClaudeSession {
     if (message.type === "result") {
       this.endTurn();
       void this.loadContextUsage(query);
-    } else if (message.type === "assistant" || message.type === "stream_event") {
+    } else if (!subagent && (message.type === "assistant" || message.type === "stream_event")) {
       // Any frame of a turn means one runs, including a held follow-up's turn after the previous result.
+      // A background subagent's frames do not: it works on after its turn ended.
       this.turnRunning = true;
     }
     this.refreshStatus();
@@ -587,6 +633,7 @@ export class ClaudeSession {
 
   private emit(payload: ChatEvent): void {
     if (payload.type === "meta") this.meta = { ...this.meta, ...payload.meta };
+    this.openCalls.track(payload);
     const event = { seq: this.nextSeq(), payload };
     if (!isEphemeral(payload)) {
       this.events.push(event);
@@ -594,6 +641,8 @@ export class ClaudeSession {
       this.store.append(this.config.id, event);
     }
     this.host.event(this.config.id, event.seq, payload);
+    // A subagent that ended, as when stopped, leaves its own running calls without a result.
+    if (payload.type === "tool_result" && !payload.pending) for (const result of this.openCalls.orphansOf(payload.tool_use_id, Date.now())) this.emit(result);
   }
 
   private nextSeq(): number {
