@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { ClaudeChatPlugin, findExecutable, HOST_API_VERSION, PLUGIN_ID, PLUGIN_NAME } from "../src/plugin";
 import { TranscriptStore } from "../src/transcript";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import { fakeQueryFactory, history } from "./helpers";
+import { fakeQueryFactory, flush, history } from "./helpers";
 
 const manifest = JSON.parse(readFileSync(join(process.cwd(), "planeai-plugin.json"), "utf8"));
 const SESSION_ID = "6f1f3a0e-0000-4000-8000-000000000002";
@@ -118,6 +118,43 @@ describe("ClaudeChatPlugin", () => {
     await starting.catch(() => {});
     await expect(instance.handle("claude.snapshot", { session_id: SESSION_ID })).rejects.toThrow("not running");
     expect(fake.queries.flatMap((query) => query.sent)).toHaveLength(0);
+  });
+
+  it("continues a turn cut off by quitting only when the session is resumed, and not once PlaneAI stopped it", async () => {
+    const { instance, fake, root } = plugin();
+    const params = { ...start(), env: { PATH: fakeClaudeBin() } };
+    await instance.handle("provider.session.start", params);
+    await instance.handle("provider.session.send", { session_id: SESSION_ID, text: "hi" });
+    await flush();
+    await instance.handle("plugin.shutdown", {});
+
+    await instance.handle("provider.session.resume", params);
+    await flush();
+    expect(fake.queries[1].sent.map((message) => message.message.content)).toEqual(["PlaneAI restarted while you were working, which stopped you mid-turn. Continue where you left off."]);
+
+    await instance.handle("provider.session.stop", { session_id: SESSION_ID, reason: "exit" });
+    expect(existsSync(join(root, `${SESSION_ID}.cutoff`))).toBe(false);
+    await instance.handle("provider.session.resume", params);
+    await flush();
+    expect(fake.queries).toHaveLength(2);
+  });
+
+  it("drops a cut-off turn when PlaneAI starts the session afresh", async () => {
+    const { instance, fake, root } = plugin();
+    const params = { ...start(), env: { PATH: fakeClaudeBin() } };
+    await instance.handle("provider.session.start", params);
+    await instance.handle("provider.session.send", { session_id: SESSION_ID, text: "hi" });
+    await flush();
+    await instance.handle("plugin.shutdown", {});
+    expect(existsSync(join(root, `${SESSION_ID}.cutoff`))).toBe(true);
+
+    await instance.handle("provider.session.start", params);
+    await flush();
+    expect(existsSync(join(root, `${SESSION_ID}.cutoff`))).toBe(false);
+    await instance.handle("plugin.shutdown", {});
+    await instance.handle("provider.session.resume", params);
+    await flush();
+    expect(fake.queries).toHaveLength(1);
   });
 
   it("lists a session's slash commands for the chat's menu", async () => {

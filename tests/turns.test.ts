@@ -54,6 +54,15 @@ describe("turns", () => {
     expect(all[0].foldedTools.map((entry) => entry.name)).toEqual(["Bash"]);
   });
 
+  it("closes a cut-off turn on the resume notice and opens the continued one with the follow-up it never read", () => {
+    const followUp: Entry = { kind: "user", seq: ++seq, text: "also d.txt", queued: true, id: "u9" };
+    const notice: Entry = { kind: "notice", seq: ++seq, text: "Resumed after PlaneAI restarted" };
+    const all = turns([user("go"), assistant("Starting."), tool("Bash", "sleep"), followUp, notice, { kind: "turn_start", seq: ++seq, user_ids: ["u9"] } as Entry, tool("Bash", "sleep"), assistant("Done."), result(4_000)]);
+    expect(all.map((turn) => [turn.user?.text, turn.result?.duration_ms])).toEqual([["go", undefined], ["also d.txt", 4_000]]);
+    expect(all[0].shown.map((block) => block.kind === "entry" && block.entry.kind)).toEqual(["assistant", false, "notice"]);
+    expect(all[1].foldedTools.map((entry) => entry.summary)).toEqual(["sleep"]);
+  });
+
   it("opens a turn Claude ran for several follow-ups with the first, the others inside it", () => {
     const first: Entry = { kind: "user", seq: ++seq, text: "a", queued: true, id: "a" };
     const second: Entry = { kind: "user", seq: ++seq, text: "b", queued: true, id: "b" };

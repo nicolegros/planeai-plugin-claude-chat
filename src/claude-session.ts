@@ -10,7 +10,7 @@ import { OpenCalls } from "./open-calls";
 import { PendingRequests } from "./pending-requests";
 import { page } from "./paging";
 import { statusOf } from "./status";
-import { MAX_SNAPSHOT_EVENTS, type StoredEvent, type TranscriptStore } from "./transcript";
+import { MAX_SNAPSHOT_EVENTS, type CutOff, type StoredEvent, type TranscriptStore, type UnsentMessage } from "./transcript";
 
 const REBUILT: ChatEvent = { type: "notice", text: "Earlier messages were rebuilt from Claude Code's transcript, without turn costs or permission prompts." };
 
@@ -25,6 +25,32 @@ export class HandedOffError extends Error {
 export class ClaudeUnavailableError extends Error {}
 
 const INTERRUPTED = "Interrupted by the user";
+
+const RESUMED: ChatEvent = { type: "notice", text: "Resumed after PlaneAI restarted" };
+
+const CONTINUE = "PlaneAI restarted while you were working, which stopped you mid-turn. Continue where you left off.";
+
+/** What Claude is told to pick up a cut-off turn, quoting the user's messages it never received. */
+function continuation(unsent: UnsentMessage[]): string {
+  if (unsent.length === 0) return CONTINUE;
+  const quoted = unsent.map(({ text }) => text.split("\n").map((line) => `> ${line}`).join("\n"));
+  return `${CONTINUE}\n\nThese messages I sent had not reached you yet:\n\n${quoted.join("\n\n")}`;
+}
+
+/** A slash command means nothing quoted, so a cut-off turn never carries one. */
+function isCommand(text: string): boolean {
+  return text.trimStart().startsWith("/");
+}
+
+/** A message on its way to Claude: what the chat shows for it, and the user's messages a cut-off record must keep meanwhile (a continuation's are already owed). */
+interface Outgoing {
+  text: string;
+  followUp: boolean;
+  shown: ChatEvent[];
+  unsent: UnsentMessage[];
+  /** A cut-off turn's continuation, which a Stop before it reaches Claude cancels. */
+  continuing?: boolean;
+}
 
 /** The result of a call Claude never answered, or whose background work ended with its process. */
 const UNFINISHED = "Claude stopped before this finished.";
@@ -134,8 +160,8 @@ export class ClaudeSession {
   private readonly followUps = new FollowUpTracker();
   private readonly slashCommands: SlashCommands;
   private loadingCommands: Promise<SlashCommand[]> | null = null;
-  /** Sends on their way to the running Claude; once it is gone, they can no longer arrive. */
-  private readonly sending = new Set<symbol>();
+  /** Sends on their way to the running Claude, with the user's messages they carry; once it is gone, they can no longer arrive. */
+  private readonly sending = new Map<symbol, UnsentMessage[]>();
   private turnRunning = false;
   private delivering: Promise<unknown> = Promise.resolve();
   /** A handoff until it returns the terminal's command; returning to the chat is refused meanwhile. */
@@ -150,6 +176,12 @@ export class ClaudeSession {
   private staleCalls: string[];
   /** Set when the transcript disagrees with PlaneAI on who drives the session; `announce` records it. */
   private handoffCorrection: boolean | null = null;
+  /** What a cut-off turn left Claude to continue, until a message reaches Claude. */
+  private owed: UnsentMessage[] | null;
+  /** The user stopped the turn, so a quit before its result must not continue it. */
+  private interrupted = false;
+  /** Skips rewriting an unchanged record on every status refresh. */
+  private savedCutOff: string;
 
   constructor(
     private readonly config: SessionConfig,
@@ -186,6 +218,9 @@ export class ClaudeSession {
     for (const { payload } of this.events) this.openCalls.track(payload);
     this.staleCalls = this.openCalls.ids;
     this.conversationId = store.conversation(config.id) ?? config.id;
+    const cutOff = store.cutOff(config.id);
+    this.owed = cutOff?.unsent ?? null;
+    this.savedCutOff = JSON.stringify(cutOff);
     this.slashCommands = new SlashCommands(store);
     this.restored = this.events.length > 0 ? Promise.resolve() : this.restore();
     this.delivering = this.restored;
@@ -252,17 +287,43 @@ export class ClaudeSession {
     this.announceStatus(true);
   }
 
+  /** Has Claude continue the turn a quit or crash cut off, if any; only a resume does. */
+  continueCutOff(): void {
+    const owed = this.owed;
+    if (!owed) return;
+    if (this.meta.handed_off) {
+      // The terminal carries the conversation on instead.
+      this.owed = null;
+      this.saveCutOff();
+      return;
+    }
+    const queued = new Set(this.events.flatMap(({ payload }) => (payload.type === "user" && payload.id ? [payload.id] : [])));
+    const queuedIds = owed.filter(({ id }) => queued.has(id)).map(({ id }) => id);
+    // A prompt Claude never received keeps its bubble, so the continued work stays under it.
+    const opens: ChatEvent[] = owed.length > 0 && queuedIds.length === 0 ? [] : [{ type: "turn_start", user_ids: queuedIds }];
+    // The chat already shows why it failed, and the record stays for the next resume.
+    this.enqueue(() => ({ text: continuation(owed), followUp: false, shown: [RESUMED, ...opens], unsent: [], continuing: true })).catch(() => {});
+  }
+
   /**
    * `signal` is the request's: a prompt whose request was cancelled is never delivered.
    * Sends are delivered in order, so a `/model` waiting for Claude's model list is never overtaken.
    */
   send(text: string, signal?: AbortSignal): Promise<void> {
-    const delivery = this.delivering.then(() => this.deliver(text, signal));
+    return this.enqueue((id) => {
+      const followUp = this.status !== "idle";
+      return { text, followUp, shown: [{ type: "user", text: clip(text), ...(followUp ? { queued: true, id } : {}) }], unsent: isCommand(text) ? [] : [{ id, text }] };
+    }, signal);
+  }
+
+  private enqueue(outgoing: (id: string) => Outgoing, signal?: AbortSignal): Promise<void> {
+    const delivery = this.delivering.then(() => this.deliver(outgoing, signal));
     this.delivering = delivery.catch(() => {});
     return delivery;
   }
 
-  private async deliver(text: string, signal?: AbortSignal): Promise<void> {
+  /** `outgoing` is read once the previous sends are out, so it sees the status they left. */
+  private async deliver(outgoing: (id: string) => Outgoing, signal?: AbortSignal): Promise<void> {
     if (this.stopped) throw new Error("session is stopped");
     if (this.meta.handed_off) throw new HandedOffError();
     if (!this.config.claudeExecutable) {
@@ -270,20 +331,20 @@ export class ClaudeSession {
       throw new ClaudeUnavailableError("claude executable not found on PATH");
     }
     const id = randomUUID();
-    const isFollowUp = this.status !== "idle";
-    this.emit({ type: "user", text: clip(text), ...(isFollowUp ? { queued: true, id } : {}) });
+    const message = outgoing(id);
+    for (const event of message.shown) this.emit(event);
     const send = Symbol(id);
-    this.sending.add(send);
+    this.sending.set(send, message.unsent);
     this.refreshStatus();
     try {
-      await this.forward(text, id, isFollowUp, signal);
+      await this.forward(message, id, signal);
     } finally {
       this.sending.delete(send);
       this.refreshStatus();
     }
   }
 
-  private async forward(text: string, id: string, isFollowUp: boolean, signal?: AbortSignal): Promise<void> {
+  private async forward({ text, followUp, continuing }: Outgoing, id: string, signal?: AbortSignal): Promise<void> {
     let input: InputQueue<SDKUserMessage>;
     try {
       input = await this.ensureQuery();
@@ -306,8 +367,11 @@ export class ClaudeSession {
       this.switchModel(model);
       return;
     }
-    this.followUps.sent(id, isFollowUp);
+    if (continuing && !this.owed) return;
+    this.followUps.sent(id, followUp, text);
     this.turnRunning = true;
+    this.owed = null;
+    this.interrupted = false;
     input.push({
       type: "user",
       message: { role: "user", content: text },
@@ -319,6 +383,9 @@ export class ClaudeSession {
 
   /** Returns at once; the SDK's control channel can stall while Claude boots. */
   interrupt(): void {
+    this.owed = null;
+    this.interrupted = true;
+    this.refreshStatus();
     this.requests.denyAll(INTERRUPTED);
     this.control(this.query?.interrupt(), "interrupt");
   }
@@ -418,6 +485,8 @@ export class ClaudeSession {
     const running = this.status !== "idle" ? this.query : null;
     // Sends are refused from here, so nothing more reaches this Claude.
     this.updateMeta({ handed_off: true });
+    // The terminal continues the conversation instead.
+    this.owed = null;
     this.refreshStatus();
     if (running) {
       this.requests.denyAll(INTERRUPTED);
@@ -442,6 +511,8 @@ export class ClaudeSession {
   }
 
   stop(): void {
+    // A change still waiting for its status refresh is part of what the quit cut off.
+    this.saveCutOff();
     this.stopped = true;
     this.detach("The session was stopped");
   }
@@ -564,7 +635,10 @@ export class ClaudeSession {
     // A subagent's steps, which a background agent sends after its turn ended, never start a turn.
     const subagent = "parent_tool_use_id" in message && !!message.parent_tool_use_id;
     const started = this.followUps.frame(message, !subagent && events.some((event) => !isEphemeral(event)));
-    if (started) this.emit({ type: "turn_start", user_ids: started });
+    if (started) {
+      this.interrupted = false;
+      this.emit({ type: "turn_start", user_ids: started });
+    }
     // Claude Code starts in Ask instead when auto mode is unavailable, as for a model without it.
     const noAuto = message.type === "system" && message.subtype === "init" && message.permissionMode === "default" && this.meta.permission_mode === "auto";
     for (const event of events) this.emit(event);
@@ -657,6 +731,7 @@ export class ClaudeSession {
   /** A turn's result, Claude exiting or a detach ends the turn, and any compaction with it, even one that failed. */
   private endTurn(): void {
     this.turnRunning = false;
+    this.interrupted = false;
     if (this.meta.compacting && !this.stopped) this.updateMeta({ compacting: false });
   }
 
@@ -671,7 +746,28 @@ export class ClaudeSession {
     queueMicrotask(() => {
       this.announceQueued = false;
       this.announceStatus();
+      this.saveCutOff();
     });
+  }
+
+  /** What the next resume must continue: the chat was working, or a continuation is still owed. */
+  private get cutOff(): CutOff | null {
+    // Only the main turn counts: a background subagent's permission prompt is not cut-off work.
+    const working = !this.meta.handed_off && !this.interrupted && (this.turnRunning || [...this.sending.values()].some((messages) => messages.length > 0) || this.followUps.holding);
+    if (!working && !this.owed) return null;
+    const unsent = [...(this.owed ?? []), ...[...this.sending.values()].flat(), ...this.followUps.unsent.filter(({ text }) => !isCommand(text))];
+    // A follow-up is both on its way and held until its send returns.
+    return { unsent: [...new Map(unsent.map((message) => [message.id, message])).values()] };
+  }
+
+  /** A stopped session keeps its last record: stopping for a quit must not clear it. */
+  private saveCutOff(): void {
+    if (this.stopped) return;
+    const cutOff = this.cutOff;
+    const json = JSON.stringify(cutOff);
+    if (json === this.savedCutOff) return;
+    this.savedCutOff = json;
+    this.store.setCutOff(this.config.id, cutOff);
   }
 
   /** `force` repeats an unchanged status, for a host that just opened the session. */

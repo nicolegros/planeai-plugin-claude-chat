@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { storedPlanLimits, upgradeStored, type ChatEvent, type ModelOption, type PlanLimits } from "./events";
 
@@ -7,13 +7,24 @@ export interface StoredEvent {
   payload: ChatEvent;
 }
 
+/** A user message Claude had not consumed yet. */
+export interface UnsentMessage {
+  id: string;
+  text: string;
+}
+
+/** Work a quit or crash cut off: the chat was working, and these messages of the user's had not reached Claude. */
+export interface CutOff {
+  unsent: UnsentMessage[];
+}
+
 /** Keep reattach snapshots bounded; the full conversation lives in Claude's own transcript. */
 export const MAX_SNAPSHOT_EVENTS = 2_000;
 
 /**
  * Per-session event log under the plugin data dir, so a remounted or restarted UI
  * can rebuild the chat, plus a `started` marker, the conversation id /clear moved to,
- * and the highest event seq reserved.
+ * the highest event seq reserved and any turn a quit or crash cut off.
  * Plugin-wide: Claude Code's terminal-only command names, the models it last listed and the plan's usage windows.
  */
 export class TranscriptStore {
@@ -47,6 +58,10 @@ export class TranscriptStore {
 
   private seqPath(sessionId: string): string {
     return join(this.root, `${sessionId}.seq`);
+  }
+
+  private cutOffPath(sessionId: string): string {
+    return join(this.root, `${sessionId}.cutoff`);
   }
 
   load(sessionId: string): StoredEvent[] {
@@ -147,11 +162,31 @@ export class TranscriptStore {
     writeFileSync(this.seqPath(sessionId), String(seq));
   }
 
+  /** The work a quit or crash cut off, which the next resume continues. */
+  cutOff(sessionId: string): CutOff | null {
+    try {
+      const value: unknown = JSON.parse(readFileSync(this.cutOffPath(sessionId), "utf8"));
+      const unsent = (value as { unsent?: unknown } | null)?.unsent;
+      if (!Array.isArray(unsent) || !unsent.every((message) => typeof message?.id === "string" && typeof message?.text === "string")) return null;
+      return { unsent: unsent.map(({ id, text }: UnsentMessage) => ({ id, text })) };
+    } catch {
+      return null;
+    }
+  }
+
+  setCutOff(sessionId: string, cutOff: CutOff | null): void {
+    const path = this.cutOffPath(sessionId);
+    if (!cutOff) return rmSync(path, { force: true });
+    // Written aside then renamed, so a crash mid-write never leaves a torn record.
+    writeFileSync(`${path}.tmp`, JSON.stringify(cutOff));
+    renameSync(`${path}.tmp`, path);
+  }
+
   /** Every session with data here. */
   sessionIds(): string[] {
     const ids = new Set<string>();
     for (const name of readdirSync(this.root)) {
-      const match = /^(.+)\.(jsonl|started|conversation|seq)$/.exec(name);
+      const match = /^(.+)\.(jsonl|started|conversation|seq|cutoff)$/.exec(name);
       if (match) ids.add(match[1]);
     }
     return [...ids];
@@ -162,5 +197,7 @@ export class TranscriptStore {
     rmSync(this.startedPath(sessionId), { force: true });
     rmSync(this.conversationPath(sessionId), { force: true });
     rmSync(this.seqPath(sessionId), { force: true });
+    rmSync(this.cutOffPath(sessionId), { force: true });
+    rmSync(`${this.cutOffPath(sessionId)}.tmp`, { force: true });
   }
 }

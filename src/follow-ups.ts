@@ -1,3 +1,5 @@
+import type { UnsentMessage } from "./transcript";
+
 /** The part of a Claude frame that names the user messages its turn consumed; SDK messages fit it. */
 export interface Frame {
   type: string;
@@ -10,8 +12,8 @@ const STAMPED = new Set(["assistant", "stream_event", "result", "conversation_re
 
 /** A turn whose stamp starts with a follow-up gets a `turn_start` naming its follow-ups; follow-ups stamped into a turn another prompt started were folded. */
 export class FollowUpTracker {
-  /** Oldest first, until Claude consumes them. */
-  private held = new Set<string>();
+  /** Their text by id, oldest first, until Claude consumes them. */
+  private held = new Map<string, string>();
   /** Whether a frame of the running turn named the messages it consumed. */
   private turnStamped = false;
   /** Whether this Claude stamps at all; older versions do not, so follow-ups cannot be tracked. */
@@ -22,8 +24,8 @@ export class FollowUpTracker {
   private guessed: string[] | null = null;
 
   /** `followUp`: sent while a turn ran. */
-  sent(id: string, followUp: boolean): void {
-    if (followUp) this.held.add(id);
+  sent(id: string, followUp: boolean, text: string): void {
+    if (followUp) this.held.set(id, text);
     else this.betweenTurns = false;
   }
 
@@ -47,10 +49,12 @@ export class FollowUpTracker {
     for (const id of stamp) this.held.delete(id);
     // A local command such as /context stamps only its result; its output already belongs to the follow-up's turn.
     if (this.betweenTurns && !this.turnStamped && this.held.size > 0 && content) {
-      this.guessed = [this.held.values().next().value!];
+      this.guessed = [this.held.keys().next().value!];
       started = this.startTurn(this.guessed);
     }
     if (frame.type === "result") {
+      // Without stamps nothing says which follow-ups Claude took, so none is still owed after a turn.
+      if (!this.stamping) this.held.clear();
       this.turnStamped = false;
       this.guessed = null;
       this.betweenTurns = this.stamping && this.held.size > 0;
@@ -61,6 +65,11 @@ export class FollowUpTracker {
   /** Between turns with follow-ups still held: Claude goes on to them. Mid-turn, held follow-ups do not count. */
   get holding(): boolean {
     return this.betweenTurns;
+  }
+
+  /** The follow-ups Claude has not consumed, oldest first. */
+  get unsent(): UnsentMessage[] {
+    return [...this.held].map(([id, text]) => ({ id, text }));
   }
 
   /** Follow-ups a stopped Claude never consumed get no turn of their own; the next Claude may stamp differently. */
