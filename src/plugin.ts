@@ -106,6 +106,8 @@ export class ClaudeChatPlugin {
         const id = string(request, "session_id");
         this.sessions.get(id)?.stop();
         this.sessions.delete(id);
+        // Stopped on purpose, so nothing was cut off.
+        this.store.setCutOff(id, null);
         if (request.reason === "destroy") this.store.remove(id);
         return { stopped: true };
       }
@@ -197,6 +199,7 @@ export class ClaudeChatPlugin {
     );
     this.sessions.set(id, session);
     session.announce();
+    if (!isNew) session.continueCutOff();
     const prompt = params.initial_prompt;
     if (isNew && typeof prompt === "string" && prompt.trim()) {
       try {

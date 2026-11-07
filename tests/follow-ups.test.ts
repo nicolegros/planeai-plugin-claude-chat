@@ -14,17 +14,17 @@ function play(tracker: FollowUpTracker, ...frames: Frame[]): (string[] | null)[]
 describe("FollowUpTracker", () => {
   it("starts a turn for a follow-up Claude runs on its own, not for one it folds in", () => {
     const tracker = new FollowUpTracker();
-    tracker.sent("first", false);
-    tracker.sent("second", true);
-    tracker.sent("third", true);
+    tracker.sent("first", false, "first");
+    tracker.sent("second", true, "second");
+    tracker.sent("third", true, "third");
     expect(play(tracker, assistant("first"), assistant("first", "second"), result("first", "second"))).toEqual([null, null, null]);
     expect(play(tracker, assistant("third"), assistant("third"))).toEqual([["third"], null]);
   });
 
   it("holds after a turn while Claude still owes follow-ups a turn, and a batch led by one is its own turn", () => {
     const tracker = new FollowUpTracker();
-    tracker.sent("first", false);
-    tracker.sent("second", true);
+    tracker.sent("first", false, "first");
+    tracker.sent("second", true, "second");
     play(tracker, assistant("first"), result("first"));
     expect(tracker.holding).toBe(true);
     expect(play(tracker, assistant("second", "later"))).toEqual([["second"]]);
@@ -35,9 +35,9 @@ describe("FollowUpTracker", () => {
 
   it("starts a held follow-up's turn at a local command's output, which stamps only its result", () => {
     const tracker = new FollowUpTracker();
-    tracker.sent("first", false);
-    tracker.sent("context", true);
-    tracker.sent("clear", true);
+    tracker.sent("first", false, "first");
+    tracker.sent("context", true, "context");
+    tracker.sent("clear", true, "clear");
     play(tracker, assistant("first"), result("first"));
     expect(tracker.frame(unstamped, true)).toEqual(["context"]);
     expect(tracker.frame(result("context"), false)).toBeNull();
@@ -46,8 +46,8 @@ describe("FollowUpTracker", () => {
 
   it("does not guess between turns from frames that render nothing", () => {
     const tracker = new FollowUpTracker();
-    tracker.sent("first", false);
-    tracker.sent("second", true);
+    tracker.sent("first", false, "first");
+    tracker.sent("second", true, "second");
     play(tracker, assistant("first"), result("first"));
     expect(tracker.frame({ type: "system" }, false)).toBeNull();
     expect(tracker.frame(assistant("second"), true)).toEqual(["second"]);
@@ -55,8 +55,8 @@ describe("FollowUpTracker", () => {
 
   it("leaves a running command's own content in its turn when a follow-up is queued during it", () => {
     const tracker = new FollowUpTracker();
-    tracker.sent("compact", false);
-    tracker.sent("after", true);
+    tracker.sent("compact", false, "compact");
+    tracker.sent("after", true, "after");
     expect(tracker.frame({ type: "system" }, true)).toBeNull();
     expect(tracker.frame(result("compact"), false)).toBeNull();
     expect(tracker.holding).toBe(true);
@@ -65,25 +65,35 @@ describe("FollowUpTracker", () => {
 
   it("announces a guessed turn again with the rest of its batch once the stamp names them", () => {
     const tracker = new FollowUpTracker();
-    tracker.sent("first", false);
-    tracker.sent("second", true);
-    tracker.sent("third", true);
+    tracker.sent("first", false, "first");
+    tracker.sent("second", true, "second");
+    tracker.sent("third", true, "third");
     play(tracker, assistant("first"), result("first"));
     expect(play(tracker, unstamped, assistant("second", "third"), assistant("second", "third"))).toEqual([["second"], ["second", "third"], null]);
   });
 
   it("does not hold follow-ups for a Claude that never stamps", () => {
     const tracker = new FollowUpTracker();
-    tracker.sent("first", false);
-    tracker.sent("second", true);
+    tracker.sent("first", false, "first");
+    tracker.sent("second", true, "second");
     expect(play(tracker, unstamped, result(), unstamped)).toEqual([null, null, null]);
     expect(tracker.holding).toBe(false);
   });
 
+  it("knows the text of the follow-ups Claude has not consumed, oldest first", () => {
+    const tracker = new FollowUpTracker();
+    tracker.sent("first", false, "first");
+    tracker.sent("second", true, "check lint");
+    tracker.sent("third", true, "and types");
+    expect(tracker.unsent).toEqual([{ id: "second", text: "check lint" }, { id: "third", text: "and types" }]);
+    play(tracker, assistant("first", "second"));
+    expect(tracker.unsent).toEqual([{ id: "third", text: "and types" }]);
+  });
+
   it("forgets held follow-ups when Claude stops", () => {
     const tracker = new FollowUpTracker();
-    tracker.sent("first", false);
-    tracker.sent("second", true);
+    tracker.sent("first", false, "first");
+    tracker.sent("second", true, "second");
     play(tracker, assistant("first"), result("first"));
     tracker.reset();
     expect(tracker.holding).toBe(false);
@@ -92,10 +102,10 @@ describe("FollowUpTracker", () => {
 
   it("starts a fresh prompt's turn without a marker even after holding", () => {
     const tracker = new FollowUpTracker();
-    tracker.sent("first", false);
-    tracker.sent("second", true);
+    tracker.sent("first", false, "first");
+    tracker.sent("second", true, "second");
     play(tracker, assistant("first"), result("first"));
-    tracker.sent("fresh", false);
+    tracker.sent("fresh", false, "fresh");
     expect(tracker.holding).toBe(false);
     expect(play(tracker, unstamped)).toEqual([null]);
   });

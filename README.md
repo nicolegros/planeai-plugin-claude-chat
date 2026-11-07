@@ -35,6 +35,10 @@ Confirm your use is covered before relying on subscription login for this plugin
   `/clear` moves Claude to a new session id, which the plugin records and resumes from then on.
   It also tags that conversation `planeai:<session id>` in Claude Code, so a reinstalled plugin finds it again.
 - **Lazy start.** Starting or resuming a session spawns nothing; Claude starts on the first prompt or when the `/` menu first opens.
+- **Picks up after a restart.** When PlaneAI quits or crashes while Claude is working, Claude continues that turn when the session is next opened.
+  The chat notes that it resumed, and Claude is told it was stopped mid-turn, along with any follow-ups it had not received yet.
+  Disabling or updating the plugin mid-turn stops it the same way, so Claude continues then too.
+  A turn that ended, was stopped, or moved to the terminal is not continued, nor is background work that runs on after its turn.
 - **Status.** The plugin reports `busy`, `idle` and `needs_attention` to PlaneAI, which drives the sidebar and notifications.
   A pending permission prompt is `needs_attention`.
 - **Auto mode.** Every session starts in Claude Code's auto mode, where a classifier approves or blocks each action instead of a permission prompt.
@@ -80,6 +84,12 @@ make conformance PLANEAI_CLI=/path/to/planeai-cli  # PlaneAI's offline provider 
 
 Install the staged `dist/planeai-plugin-claude-chat` directory into a PlaneAI dev build to try it.
 
+To check that a cut-off turn continues, play PlaneAI against the staged binary and your own `claude`, quitting or killing the sidecar mid-turn:
+
+```bash
+bun scripts/e2e-resume.ts dist/planeai-plugin-claude-chat/bin/macos-arm64/planeai-plugin-claude-chat quit   # or crash
+```
+
 ### Layout
 
 | Path | Role |
@@ -89,7 +99,7 @@ Install the staged `dist/planeai-plugin-claude-chat` directory into a PlaneAI de
 | `src/plugin.ts` | Routes `provider.session.*`, `provider.sessions.reconcile` and the UI's `claude.*` calls to sessions. |
 | `src/claude-session.ts` | One PlaneAI session driven by an Agent SDK streaming-input query. |
 | `src/events.ts` | Translates SDK messages into the plugin's chat events. |
-| `src/transcript.ts` | Per-session event log for reattach, the Claude session id `/clear` moved to and the reserved event seq; the plugin-wide terminal-only command names. |
+| `src/transcript.ts` | Per-session event log for reattach, the Claude session id `/clear` moved to, the reserved event seq and any cut-off turn; the plugin-wide terminal-only command names. |
 | `src/appearance.ts` | Font and width settings validation and the CSS variables the chat reads. |
 | `ui/` | Svelte 5 UIs, each built into one self-contained ESM bundle PlaneAI mounts: `ui/chat.js` for sessions and `ui/preferences.js` for the preferences pane. |
 

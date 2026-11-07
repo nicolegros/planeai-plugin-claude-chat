@@ -1024,6 +1024,106 @@ describe("ClaudeSession", () => {
     expect(statuses.at(-1)).toBe("idle");
   });
 
+  const CONTINUE = "PlaneAI restarted while you were working, which stopped you mid-turn. Continue where you left off.";
+
+  /** PlaneAI opening the session again after a restart. */
+  async function resume(overrides: Parameters<typeof session>[0] = {}): Promise<ClaudeSession> {
+    events = [];
+    statuses = [];
+    const chat = session(overrides);
+    chat.announce();
+    chat.continueCutOff();
+    await flush();
+    return chat;
+  }
+
+  it("continues a turn a quit cut off once resumed, and again if the continuation is cut off too", async () => {
+    const first = session();
+    await first.send("run the tests");
+    await flush();
+    first.stop();
+
+    const resumed = await resume();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type !== "meta")).toEqual([
+      { type: "notice", text: "Resumed after PlaneAI restarted" },
+      { type: "turn_start", user_ids: [] },
+    ]);
+    expect(fake.queries[1].sent.map((message) => message.message)).toEqual([{ role: "user", content: CONTINUE }]);
+    expect(statuses).toEqual(["idle", "busy"]);
+    resumed.stop();
+
+    await resume();
+    expect(fake.queries[2].sent.map((message) => message.message)).toEqual([{ role: "user", content: CONTINUE }]);
+  });
+
+  it("quotes the follow-ups Claude had not consumed at the quit and moves them into the continued turn", async () => {
+    const first = session();
+    await first.send("first");
+    await first.send("second");
+    await first.send("also lint\nand types");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    first.stop();
+
+    await resume();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "turn_start")).toEqual([{ type: "turn_start", user_ids: [ids[1], ids[2]] }]);
+    expect(fake.queries[1].sent.map((message) => message.message.content)).toEqual([
+      `${CONTINUE}\n\nThese messages I sent had not reached you yet:\n\n> second\n\n> also lint\n> and types`,
+    ]);
+  });
+
+  it.each([
+    ["the turn ended", (query: (typeof fake.queries)[number]) => query.emit(...fixture("bash-turn", SESSION_ID))],
+    ["Claude exited on its own", (query: (typeof fake.queries)[number]) => query.finish()],
+    ["only background work ran on", (query: (typeof fake.queries)[number]) => {
+      const messages = fixture("background-turn", SESSION_ID);
+      query.emit(...messages.slice(0, messages.findIndex((message) => message.type === "result") + 1));
+    }],
+  ])("continues nothing once %s", async (_, settle) => {
+    const first = session();
+    await first.send("hello");
+    settle(fake.queries[0]);
+    await flush();
+    first.stop();
+    expect(store.cutOff(SESSION_ID)).toBeNull();
+
+    await resume();
+    expect(fake.queries).toHaveLength(1);
+    expect(statuses).toEqual(["idle"]);
+  });
+
+  it("keeps the record when a send still on its way gives up after the quit", async () => {
+    fake = fakeQueryFactory({ holdModels: true });
+    const first = session();
+    await first.send("hello");
+    const switching = first.send("/model opus");
+    await flush();
+    const recorded = store.cutOff(SESSION_ID);
+    expect(recorded?.unsent.map(({ text }) => text)).toEqual(["/model opus"]);
+    first.stop();
+    fake.queries[0].releaseModels();
+    await expect(switching).rejects.toThrow();
+    await flush();
+    expect(store.cutOff(SESSION_ID)).toEqual(recorded);
+  });
+
+  it("keeps a cut-off turn for the next resume when it cannot be continued", async () => {
+    const first = session();
+    await first.send("first");
+    await first.send("second");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    first.stop();
+
+    const missing = await resume({ claudeExecutable: null });
+    expect(events.at(-1)?.payload).toMatchObject({ type: "error", message: expect.stringContaining("Claude Code was not found") });
+    expect(store.cutOff(SESSION_ID)).toEqual({ unsent: [{ id: ids[1], text: "second" }] });
+    missing.stop();
+
+    await resume();
+    expect(fake.queries[1].sent.map((message) => message.message.content)).toEqual([`${CONTINUE}\n\nThese messages I sent had not reached you yet:\n\n> second`]);
+  });
+
   it("goes idle and restarts on the next prompt when Claude exits", async () => {
     const chat = session();
     await chat.send("hello");
