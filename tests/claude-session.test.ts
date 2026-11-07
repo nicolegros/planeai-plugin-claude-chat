@@ -1092,6 +1092,140 @@ describe("ClaudeSession", () => {
     expect(statuses).toEqual(["idle"]);
   });
 
+  it("continues nothing when the user stopped the turn and PlaneAI quit before it ended", async () => {
+    const first = session();
+    await first.send("hello");
+    await flush();
+    expect(store.cutOff(SESSION_ID)).toEqual({ unsent: [] });
+    first.interrupt();
+    await flush();
+    expect(store.cutOff(SESSION_ID)).toBeNull();
+    first.stop();
+
+    await resume();
+    expect(fake.queries).toHaveLength(1);
+  });
+
+  it("still records the next turn when a Stop landed after the previous one ended", async () => {
+    const first = session();
+    await first.send("hello");
+    fake.queries[0].emit(...fixture("bash-turn", SESSION_ID));
+    await flush();
+    first.interrupt();
+    await first.send("again");
+    await flush();
+    expect(store.cutOff(SESSION_ID)).toEqual({ unsent: [] });
+    first.stop();
+
+    await resume();
+    expect(fake.queries[1].sent.map((message) => message.message.content)).toEqual([CONTINUE]);
+  });
+
+  it("drops the continuation when the user stops it before Claude received it", async () => {
+    const first = session();
+    await first.send("hello");
+    await flush();
+    first.stop();
+
+    events = [];
+    const resumed = session();
+    resumed.announce();
+    resumed.continueCutOff();
+    resumed.interrupt();
+    await flush();
+    expect(fake.queries.slice(1).flatMap((query) => query.sent)).toEqual([]);
+    expect(store.cutOff(SESSION_ID)).toBeNull();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type !== "meta" && payload.type !== "status")).toEqual([
+      { type: "notice", text: "Resumed after PlaneAI restarted" },
+      { type: "turn_start", user_ids: [] },
+    ]);
+    expect(statuses.at(-1)).toBe("idle");
+  });
+
+  it("keeps the continued work under a prompt Claude never received", async () => {
+    store.setCutOff(SESSION_ID, { unsent: [{ id: "never-sent", text: "hello" }] });
+
+    await resume();
+    expect(events.map(({ payload }) => payload).filter((payload) => payload.type === "notice" || payload.type === "turn_start")).toEqual([
+      { type: "notice", text: "Resumed after PlaneAI restarted" },
+    ]);
+    expect(fake.queries[0].sent.map((message) => message.message.content)).toEqual([`${CONTINUE}\n\nThese messages I sent had not reached you yet:\n\n> hello`]);
+  });
+
+  it("never carries a slash command into a cut-off turn", async () => {
+    fake = fakeQueryFactory({ holdModels: true });
+    const idle = session();
+    void idle.send("/model opus").catch(() => {});
+    await flush();
+    idle.stop();
+    expect(store.cutOff(SESSION_ID)).toBeNull();
+
+    const busy = session();
+    await busy.send("hello");
+    await busy.send("/compact");
+    await flush();
+    busy.stop();
+    expect(store.cutOff(SESSION_ID)).toEqual({ unsent: [] });
+  });
+
+  it("continues nothing when only a background subagent waits on a permission prompt at the quit", async () => {
+    const first = session();
+    await first.send("hello");
+    const messages = fixture("background-turn", SESSION_ID);
+    fake.queries[0].emit(...messages.slice(0, messages.findIndex((message) => message.type === "result") + 1));
+    await flush();
+    void fake.queries[0].options.canUseTool!("Bash", { command: "ls" }, { signal: new AbortController().signal, toolUseID: "bg" } as never);
+    await flush();
+    expect(statuses.at(-1)).toBe("needs_attention");
+    expect(store.cutOff(SESSION_ID)).toBeNull();
+    first.stop();
+
+    await resume();
+    expect(fake.queries).toHaveLength(1);
+  });
+
+  it("continues nothing when the user stopped the turn in the same tick as the quit", async () => {
+    const first = session();
+    await first.send("hello");
+    await flush();
+    expect(store.cutOff(SESSION_ID)).toEqual({ unsent: [] });
+    first.interrupt();
+    first.stop();
+    expect(store.cutOff(SESSION_ID)).toBeNull();
+  });
+
+  it("drops a cut-off turn resumed while a terminal drives the conversation", async () => {
+    const first = session();
+    await first.send("hello");
+    await flush();
+    first.stop();
+
+    await resume({ handedOff: true });
+    expect(fake.queries).toHaveLength(1);
+    expect(store.cutOff(SESSION_ID)).toBeNull();
+  });
+
+  it("records the follow-ups still held when a stopped turn ends, and their turn once it starts", async () => {
+    const chat = session();
+    await chat.send("first");
+    await chat.send("also lint");
+    await flush();
+    const ids = fake.queries[0].sent.map((message) => message.uuid);
+    const [assistant] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "assistant");
+    const [result] = fixture("bash-turn", SESSION_ID).filter((message) => message.type === "result");
+    chat.interrupt();
+    fake.queries[0].emit({ ...assistant, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never, { ...result, user_message_uuid: ids[0], user_message_uuids: [ids[0]] } as never);
+    await flush();
+    expect(store.cutOff(SESSION_ID)).toEqual({ unsent: [{ id: ids[1], text: "also lint" }] });
+
+    chat.interrupt();
+    await flush();
+    expect(store.cutOff(SESSION_ID)).toBeNull();
+    fake.queries[0].emit({ ...assistant, user_message_uuid: ids[1], user_message_uuids: [ids[1]] } as never);
+    await flush();
+    expect(store.cutOff(SESSION_ID)).toEqual({ unsent: [] });
+  });
+
   it("keeps the record when a send still on its way gives up after the quit", async () => {
     fake = fakeQueryFactory({ holdModels: true });
     const first = session();
@@ -1099,7 +1233,7 @@ describe("ClaudeSession", () => {
     const switching = first.send("/model opus");
     await flush();
     const recorded = store.cutOff(SESSION_ID);
-    expect(recorded?.unsent.map(({ text }) => text)).toEqual(["/model opus"]);
+    expect(recorded).toEqual({ unsent: [] });
     first.stop();
     fake.queries[0].releaseModels();
     await expect(switching).rejects.toThrow();

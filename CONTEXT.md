@@ -31,7 +31,7 @@ _Avoid_: Merged, absorbed
 Several user messages Claude takes together to start one turn.
 
 **Cut-off turn**:
-A turn a quit or crash stopped while the chat was working, which Claude continues when the session is next resumed, along with any held follow-ups.
+A turn a quit or crash stopped while the chat was working, which Claude continues when the session is next resumed, along with any of the user's messages it had not received.
 A turn that ended, was stopped by the user or PlaneAI, or moved to a terminal is not cut off.
 _Avoid_: Interrupted turn (interrupting is the user's Stop)
 

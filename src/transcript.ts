@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { storedPlanLimits, upgradeStored, type ChatEvent, type ModelOption, type PlanLimits } from "./events";
 
@@ -175,8 +175,11 @@ export class TranscriptStore {
   }
 
   setCutOff(sessionId: string, cutOff: CutOff | null): void {
-    if (cutOff) writeFileSync(this.cutOffPath(sessionId), JSON.stringify(cutOff));
-    else rmSync(this.cutOffPath(sessionId), { force: true });
+    const path = this.cutOffPath(sessionId);
+    if (!cutOff) return rmSync(path, { force: true });
+    // Written aside then renamed, so a crash mid-write never leaves a torn record.
+    writeFileSync(`${path}.tmp`, JSON.stringify(cutOff));
+    renameSync(`${path}.tmp`, path);
   }
 
   /** Every session with data here. */
@@ -195,5 +198,6 @@ export class TranscriptStore {
     rmSync(this.conversationPath(sessionId), { force: true });
     rmSync(this.seqPath(sessionId), { force: true });
     rmSync(this.cutOffPath(sessionId), { force: true });
+    rmSync(`${this.cutOffPath(sessionId)}.tmp`, { force: true });
   }
 }

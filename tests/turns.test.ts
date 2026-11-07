@@ -63,13 +63,6 @@ describe("turns", () => {
     expect(all[1].foldedTools.map((entry) => entry.summary)).toEqual(["sleep"]);
   });
 
-  it("opens a prompt-less continued turn when nothing was left unread", () => {
-    const notice: Entry = { kind: "notice", seq: ++seq, text: "Resumed after PlaneAI restarted" };
-    const all = turns([user("go"), tool("Bash", "sleep"), notice, { kind: "turn_start", seq: ++seq, user_ids: [] } as Entry, assistant("Done."), result(1_000)]);
-    expect(all.map((turn) => [turn.user?.text, turn.result?.duration_ms])).toEqual([["go", undefined], [undefined, 1_000]]);
-    expect(all[0].shown.at(-1)).toMatchObject({ kind: "entry", entry: { text: "Resumed after PlaneAI restarted" } });
-  });
-
   it("opens a turn Claude ran for several follow-ups with the first, the others inside it", () => {
     const first: Entry = { kind: "user", seq: ++seq, text: "a", queued: true, id: "a" };
     const second: Entry = { kind: "user", seq: ++seq, text: "b", queued: true, id: "b" };

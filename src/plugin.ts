@@ -183,6 +183,8 @@ export class ClaudeChatPlugin {
     // A repeated resume must not cut off the turn the live session is running.
     if (!isNew && this.sessions.has(id)) return {};
     this.sessions.get(id)?.stop();
+    // Only a resume continues a cut-off turn; a start begins afresh.
+    if (isNew) this.store.setCutOff(id, null);
     const env = environment(params);
     const session = new ClaudeSession(
       {

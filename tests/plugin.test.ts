@@ -128,11 +128,6 @@ describe("ClaudeChatPlugin", () => {
     await flush();
     await instance.handle("plugin.shutdown", {});
 
-    await instance.handle("provider.session.start", params);
-    await flush();
-    expect(fake.queries).toHaveLength(1);
-    await instance.handle("plugin.shutdown", {});
-
     await instance.handle("provider.session.resume", params);
     await flush();
     expect(fake.queries[1].sent.map((message) => message.message.content)).toEqual(["PlaneAI restarted while you were working, which stopped you mid-turn. Continue where you left off."]);
@@ -142,6 +137,24 @@ describe("ClaudeChatPlugin", () => {
     await instance.handle("provider.session.resume", params);
     await flush();
     expect(fake.queries).toHaveLength(2);
+  });
+
+  it("drops a cut-off turn when PlaneAI starts the session afresh", async () => {
+    const { instance, fake, root } = plugin();
+    const params = { ...start(), env: { PATH: fakeClaudeBin() } };
+    await instance.handle("provider.session.start", params);
+    await instance.handle("provider.session.send", { session_id: SESSION_ID, text: "hi" });
+    await flush();
+    await instance.handle("plugin.shutdown", {});
+    expect(existsSync(join(root, `${SESSION_ID}.cutoff`))).toBe(true);
+
+    await instance.handle("provider.session.start", params);
+    await flush();
+    expect(existsSync(join(root, `${SESSION_ID}.cutoff`))).toBe(false);
+    await instance.handle("plugin.shutdown", {});
+    await instance.handle("provider.session.resume", params);
+    await flush();
+    expect(fake.queries).toHaveLength(1);
   });
 
   it("lists a session's slash commands for the chat's menu", async () => {

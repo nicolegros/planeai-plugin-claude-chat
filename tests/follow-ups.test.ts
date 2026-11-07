@@ -78,6 +78,7 @@ describe("FollowUpTracker", () => {
     tracker.sent("second", true, "second");
     expect(play(tracker, unstamped, result(), unstamped)).toEqual([null, null, null]);
     expect(tracker.holding).toBe(false);
+    expect(tracker.unsent).toEqual([]);
   });
 
   it("knows the text of the follow-ups Claude has not consumed, oldest first", () => {

@@ -36,7 +36,7 @@ Confirm your use is covered before relying on subscription login for this plugin
   It also tags that conversation `planeai:<session id>` in Claude Code, so a reinstalled plugin finds it again.
 - **Lazy start.** Starting or resuming a session spawns nothing; Claude starts on the first prompt or when the `/` menu first opens.
 - **Picks up after a restart.** When PlaneAI quits or crashes while Claude is working, Claude continues that turn when the session is next opened.
-  The chat notes that it resumed, and Claude is told it was stopped mid-turn, along with any follow-ups it had not received yet.
+  The chat notes that it resumed, and Claude is told it was stopped mid-turn, along with any messages it had not received yet.
   Disabling or updating the plugin mid-turn stops it the same way, so Claude continues then too.
   A turn that ended, was stopped, or moved to the terminal is not continued, nor is background work that runs on after its turn.
 - **Status.** The plugin reports `busy`, `idle` and `needs_attention` to PlaneAI, which drives the sidebar and notifications.

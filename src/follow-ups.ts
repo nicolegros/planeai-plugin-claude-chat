@@ -53,6 +53,8 @@ export class FollowUpTracker {
       started = this.startTurn(this.guessed);
     }
     if (frame.type === "result") {
+      // Without stamps nothing says which follow-ups Claude took, so none is still owed after a turn.
+      if (!this.stamping) this.held.clear();
       this.turnStamped = false;
       this.guessed = null;
       this.betweenTurns = this.stamping && this.held.size > 0;
