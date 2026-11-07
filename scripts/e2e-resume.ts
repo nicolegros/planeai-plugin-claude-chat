@@ -1,4 +1,4 @@
-// Plays PlaneAI against the packaged sidecar and the real `claude`: a turn cut off by a quit or a crash continues on resume.
+// Plays PlaneAI against the packaged sidecar and the real `claude`: a turn cut off by a quit or by PlaneAI dying continues on resume.
 //   bun scripts/e2e-resume.ts <sidecar binary> quit|crash
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import type { ChatEvent } from "../src/events";
 
 const [binary, mode] = process.argv.slice(2);
 if (!binary || (mode !== "quit" && mode !== "crash")) throw new Error("usage: bun scripts/e2e-resume.ts <sidecar binary> quit|crash");
@@ -13,9 +14,10 @@ const data = mkdtempSync(join(tmpdir(), "e2e-resume-data-"));
 const cwd = mkdtempSync(join(tmpdir(), "e2e-resume-cwd-"));
 const sessionId = randomUUID();
 const session = { session_id: sessionId, provider_id: "claude", cwd, env: { PATH: process.env.PATH ?? "" } };
+const RESUMED = "Resumed after PlaneAI restarted";
 const cutOffPath = join(data, "sessions", `${sessionId}.cutoff`);
 
-type Event = { seq: number; payload: Record<string, any> };
+type Event = { seq: number; payload: ChatEvent };
 
 class Host {
   readonly child: ChildProcessWithoutNullStreams;
@@ -83,7 +85,10 @@ await first.until((event) => event.payload.type === "tool" && event.payload.name
 if (mode === "crash") {
   await first.request("provider.session.send", { session_id: sessionId, text: "Also create d.txt containing 'four'." });
   await new Promise((resolve) => setTimeout(resolve, 2_000));
-  first.child.kill("SIGKILL");
+  // PlaneAI dying closes the sidecar's stdin; it must let go of Claude rather than keep driving the turn.
+  first.child.stdin.end();
+  const exited = await Promise.race([first.exited.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 10_000))]);
+  assert(exited, "the sidecar exits once PlaneAI is gone");
 } else {
   await new Promise((resolve) => setTimeout(resolve, 3_000));
   await first.request("plugin.shutdown", null);
@@ -99,9 +104,10 @@ const second = new Host();
 await second.request("plugin.handshake", {});
 await second.request("provider.sessions.reconcile", { sessions: [{ session_id: sessionId, provider_id: "claude", status: "busy" }] });
 await second.request("provider.session.resume", session);
-const notice = await second.until((event) => event.payload.type === "notice" && event.payload.text === "Resumed after PlaneAI restarted", 10_000, "the resume notice");
+const notice = await second.until((event) => event.payload.type === "notice" && event.payload.text === RESUMED, 10_000, "the resume notice");
 const turnStart = await second.until((event) => event.payload.type === "turn_start" && event.seq > notice.seq, 10_000, "the continued turn");
-if (mode === "crash") assert(turnStart.payload.user_ids.length === 1 && turnStart.payload.user_ids[0] === record.unsent[0]?.id, "the held follow-up opens the continued turn");
+const { user_ids } = turnStart.payload as Extract<ChatEvent, { type: "turn_start" }>;
+if (mode === "crash") assert(user_ids.length === 1 && user_ids[0] === record.unsent[0]?.id, "the held follow-up opens the continued turn");
 await second.until((event) => event.payload.type === "result", 240_000, "the continued turn's result");
 await new Promise((resolve) => setTimeout(resolve, 1_000));
 assert(!second.events.some((event) => event.payload.type === "user"), "no user bubble was invented");
@@ -111,7 +117,7 @@ if (mode === "crash") assert(readFileSync(join(cwd, "d.txt"), "utf8").trim() ===
 assert(second.statuses.at(-1) === "idle", "the session settles idle");
 assert(!existsSync(cutOffPath), "the record is gone once the turn finished");
 const snapshot = await second.request("claude.snapshot", { session_id: sessionId });
-assert(snapshot.events.some((event: Event) => event.payload.type === "notice" && event.payload.text === "Resumed after PlaneAI restarted"), "the notice is in the stored chat");
+assert(snapshot.events.some((event: Event) => event.payload.type === "notice" && event.payload.text === RESUMED), "the notice is in the stored chat");
 await second.request("plugin.shutdown", null);
 await second.exited;
 console.log("PASS");

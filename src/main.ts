@@ -44,3 +44,6 @@ peer = new JsonRpcPeer(process.stdin, process.stdout, async (method, params, sig
 
 console.error("claude-chat starting");
 await peer.serve();
+// PlaneAI is gone, as when it crashed: its sessions must not run on without it.
+await plugin.handle("plugin.shutdown", null);
+process.stdout.write("", () => process.exit(0));
